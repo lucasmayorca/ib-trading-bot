@@ -173,11 +173,6 @@ def logout():
 #  BRIDGE WEBSOCKET (data from user's local TWS)
 # ══════════════════════════════════════════════════════════════
 
-@socketio.on("connect")
-def handle_connect():
-    print(f"[WS] Connect handler called", flush=True)
-    return True
-
 @socketio.on("bridge_auth")
 def handle_bridge_auth(data):
     print(f"[WS] bridge_auth received: {data}", flush=True)
