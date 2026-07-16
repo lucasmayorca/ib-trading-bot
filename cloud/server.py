@@ -176,11 +176,17 @@ def logout():
 #  BRIDGE WEBSOCKET (data from user's local TWS)
 # ══════════════════════════════════════════════════════════════
 
+@socketio.on("connect")
+def handle_connect():
+    print(f"[WS] New connection: {request.sid}", flush=True)
+
 @socketio.on("bridge_auth")
 def handle_bridge_auth(data):
+    print(f"[WS] bridge_auth received: {data}", flush=True)
     token = data.get("bridge_token", "")
     user = db.get_user_by_token(token)
     if not user:
+        print(f"[WS] Auth failed - invalid token", flush=True)
         emit("auth_result", {"ok": False, "error": "Invalid bridge token"})
         disconnect()
         return

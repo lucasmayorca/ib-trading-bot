@@ -288,7 +288,7 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
     log(f"Conectando al servidor: {server_url}", C)
     try:
-        sio.connect(server_url, transports=["websocket"])
+        sio.connect(server_url)
     except Exception as e:
         log(f"No se pudo conectar al servidor: {e}", R)
         log("Verifica que la URL del servidor sea correcta", Y)
