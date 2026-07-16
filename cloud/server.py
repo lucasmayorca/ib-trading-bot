@@ -449,6 +449,170 @@ def bridge_files(filename):
         return Response(f.read(), mimetype="text/plain")
 
 
+@app.route("/download-bridge")
+@login_required
+def download_bridge():
+    user = db.get_user_by_email(request.user_email) if hasattr(request, 'user_email') else None
+    token = request.args.get("token", "")
+    server_url = request.host_url.rstrip("/")
+    platform = request.args.get("platform", "mac")
+
+    if platform == "windows":
+        filename = "Conectar-TWS.bat"
+        script = f'''@echo off
+chcp 65001 >nul 2>&1
+title IB Trading Bridge
+echo.
+echo  ============================================
+echo    IB Trading Bridge - Instalador Automatico
+echo  ============================================
+echo.
+
+where python >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [ERROR] Python no encontrado.
+    echo.
+    echo Descarga Python desde: https://www.python.org/downloads/
+    echo IMPORTANTE: Marca "Add Python to PATH" durante la instalacion.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo [OK] Python encontrado
+python --version
+echo.
+
+set INSTALL_DIR=%USERPROFILE%\\.ib-bridge
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+cd /d "%INSTALL_DIR%"
+
+if not exist "venv" (
+    echo Creando entorno virtual...
+    python -m venv venv
+)
+
+call venv\\Scripts\\activate.bat
+
+echo Instalando dependencias...
+pip install --upgrade pip -q 2>nul
+pip install "ibapi>=9.81.1" "python-socketio[client]>=5.12.0" "pandas>=2.0" "numpy>=1.24" -q 2>nul
+
+if not exist "bridge" mkdir "bridge"
+echo Descargando bridge...
+curl -sL {server_url}/bridge-files/main.py -o bridge\\main.py
+curl -sL {server_url}/bridge-files/indicators.py -o bridge\\indicators.py
+curl -sL {server_url}/bridge-files/signals.py -o bridge\\signals.py
+curl -sL {server_url}/bridge-files/__init__.py -o bridge\\__init__.py
+
+echo.
+echo  ============================================
+echo    Conectando a TWS...
+echo  ============================================
+echo.
+echo  Asegurate de tener TWS abierta con la API habilitada.
+echo  Puerto 7497 = paper trading, 7496 = live
+echo  Presiona Ctrl+C para detener.
+echo.
+
+python -m bridge.main --server {server_url} --token {token}
+
+pause
+'''
+        return Response(script, mimetype="application/octet-stream",
+                       headers={{"Content-Disposition": f"attachment; filename={filename}"}})
+
+    # macOS / Linux .command file
+    filename = "Conectar-TWS.command"
+    script = f'''#!/bin/bash
+# IB Trading Bridge — doble-click para conectar tu TWS
+# Token personalizado — no compartas este archivo.
+
+clear
+GREEN='\\033[0;32m'; RED='\\033[0;31m'; CYAN='\\033[0;36m'; YELLOW='\\033[1;33m'; NC='\\033[0m'
+SERVER="{server_url}"
+TOKEN="{token}"
+
+echo ""
+echo -e "${{CYAN}}  ============================================${{NC}}"
+echo -e "${{CYAN}}    IB Trading Bridge${{NC}}"
+echo -e "${{CYAN}}  ============================================${{NC}}"
+echo ""
+
+# --- Check Python ---
+PYTHON=""
+for cmd in python3 python; do
+    if command -v "$cmd" &>/dev/null; then
+        ver=$("$cmd" -c "import sys; print(f'{{sys.version_info.major}}.{{sys.version_info.minor}}')" 2>/dev/null)
+        major=$(echo "$ver" | cut -d. -f1)
+        minor=$(echo "$ver" | cut -d. -f2)
+        if [ "$major" -ge 3 ] 2>/dev/null && [ "$minor" -ge 10 ] 2>/dev/null; then
+            PYTHON="$cmd"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    echo -e "${{RED}}  Python 3.10+ no encontrado.${{NC}}"
+    echo ""
+    echo "  Descarga Python desde: https://www.python.org/downloads/"
+    echo ""
+    echo "  Presiona Enter para cerrar..."
+    read
+    exit 1
+fi
+echo -e "${{GREEN}}  Python:${{NC}} $($PYTHON --version)"
+
+# --- Install/Update ---
+DIR="$HOME/.ib-bridge"
+mkdir -p "$DIR"
+cd "$DIR"
+
+if [ ! -d "venv" ]; then
+    echo -e "${{CYAN}}  Creando entorno virtual (solo la primera vez)...${{NC}}"
+    $PYTHON -m venv venv
+fi
+
+source venv/bin/activate
+pip install --upgrade pip -q 2>/dev/null
+
+NEEDS_INSTALL=false
+python -c "import socketio, pandas, numpy, ibapi" 2>/dev/null || NEEDS_INSTALL=true
+
+if [ "$NEEDS_INSTALL" = true ]; then
+    echo -e "${{CYAN}}  Instalando dependencias (solo la primera vez)...${{NC}}"
+    pip install "ibapi>=9.81.1" "python-socketio[client]>=5.12.0" "pandas>=2.0" "numpy>=1.24" -q 2>/dev/null
+fi
+
+# --- Download latest bridge ---
+mkdir -p bridge
+curl -sL $SERVER/bridge-files/main.py -o bridge/main.py
+curl -sL $SERVER/bridge-files/indicators.py -o bridge/indicators.py
+curl -sL $SERVER/bridge-files/signals.py -o bridge/signals.py
+curl -sL $SERVER/bridge-files/__init__.py -o bridge/__init__.py
+
+echo ""
+echo -e "${{GREEN}}  ============================================${{NC}}"
+echo -e "${{GREEN}}    Conectando a TWS...${{NC}}"
+echo -e "${{GREEN}}  ============================================${{NC}}"
+echo ""
+echo -e "  Asegurate de tener TWS abierta con la API habilitada."
+echo -e "  Puerto 7497 = paper trading"
+echo -e "  Presiona Ctrl+C para detener."
+echo ""
+
+python -m bridge.main --server "$SERVER" --token "$TOKEN"
+
+echo ""
+echo "  Bridge detenido. Presiona Enter para cerrar..."
+read
+'''
+    resp = Response(script, mimetype="application/octet-stream",
+                   headers={"Content-Disposition": f"attachment; filename={filename}"})
+    return resp
+
+
 # ══════════════════════════════════════════════════════════════
 #  HTML PAGES
 # ══════════════════════════════════════════════════════════════
@@ -680,45 +844,94 @@ function renderPortfolio(){
 function renderSetup(){
   const c=document.getElementById('content');
   const serverUrl=window.location.origin;
-  c.innerHTML=`<div class="setup-card">
-    <h2>Conectar tu TWS</h2>
-    <p style="color:#8899aa;margin-bottom:20px;font-size:13px">
-      Sigue estos pasos para conectar tu Trader Workstation al dashboard.
+  const isMac=navigator.platform.toUpperCase().indexOf('MAC')>=0;
+  const isWin=navigator.platform.toUpperCase().indexOf('WIN')>=0;
+  const platform=isWin?'windows':'mac';
+  const fileExt=isWin?'.bat':'.command';
+
+  c.innerHTML=`<div class="setup-card" style="text-align:center;max-width:600px">
+    <h2 style="font-size:22px;margin-bottom:8px">Conectar tu TWS</h2>
+    <p style="color:#8899aa;margin-bottom:32px;font-size:14px">
+      Solo necesitas TWS abierta. El bridge se instala y conecta automaticamente.
     </p>
 
-    <div class="step"><h3>Paso 1 — Abrir TWS</h3>
-      <p>Abre Trader Workstation (TWS) o IB Gateway y habilita la API:<br>
-      <code>Edit → Global Configuration → API → Settings</code><br>
-      ✓ Enable ActiveX and Socket Clients<br>
-      ✓ Socket port: <code>7497</code> (paper) o <code>7496</code> (live)</p>
+    <div style="background:#0d1117;border:2px solid #238636;border-radius:12px;padding:32px;margin-bottom:24px">
+      <div style="font-size:48px;margin-bottom:16px">&#9889;</div>
+      <a href="/download-bridge?token=${bridgeToken||''}&platform=${platform}"
+         class="btn" style="display:inline-block;padding:16px 40px;font-size:17px;border-radius:8px;text-decoration:none;background:#238636;color:#fff;font-weight:700">
+        Descargar Conectar-TWS${fileExt}
+      </a>
+      <p style="color:#8899aa;margin-top:16px;font-size:13px">
+        Descarga el archivo → doble-click → listo.<br>
+        Instala todo automaticamente la primera vez.
+      </p>
     </div>
 
-    <div class="step"><h3>Paso 2 — Instalar el Bridge (una sola vez)</h3>
-      <p>Copia y pega este comando en tu terminal:</p>
-      <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)">curl -sL ${serverUrl}/install.sh | bash</pre>
-      <p style="margin-top:8px;color:#8899aa;font-size:12px">Requiere Python 3.10+. Instala todo automaticamente en <code>~/.ib-bridge/</code></p>
-      <details style="margin-top:8px"><summary style="color:#58a6ff;cursor:pointer;font-size:13px">Instalacion manual (alternativa)</summary>
-        <pre onclick="navigator.clipboard.writeText('pip install ibapi python-socketio[client] pandas numpy')">pip install ibapi python-socketio[client] pandas numpy</pre>
-        <p style="font-size:12px;color:#8899aa;margin-top:4px">Luego descarga los archivos del bridge desde <code>${serverUrl}/bridge-files/</code></p>
-      </details>
+    <div style="background:#141924;border:1px solid #1e2a3a;border-radius:8px;padding:20px;text-align:left;margin-bottom:20px">
+      <h3 style="font-size:15px;margin-bottom:12px;color:#58a6ff">Antes de conectar:</h3>
+      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+        <span style="color:#3fb950;font-size:18px">1.</span>
+        <div>
+          <p style="font-size:14px"><strong>Abri TWS</strong> (Trader Workstation o IB Gateway)</p>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
+        <span style="color:#3fb950;font-size:18px">2.</span>
+        <div>
+          <p style="font-size:14px"><strong>Habilita la API:</strong> Edit → Global Configuration → API → Settings</p>
+          <p style="font-size:12px;color:#8899aa;margin-top:2px">✓ Enable ActiveX and Socket Clients &nbsp;&nbsp; ✓ Puerto: 7497</p>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <span style="color:#3fb950;font-size:18px">3.</span>
+        <div>
+          <p style="font-size:14px"><strong>Doble-click en el archivo descargado</strong></p>
+          <p style="font-size:12px;color:#8899aa;margin-top:2px">Se abre la terminal, instala lo necesario, y conecta automaticamente</p>
+        </div>
+      </div>
     </div>
 
-    <div class="step"><h3>Paso 3 — Tu Token</h3>
-      <p>Este es tu token personal (no lo compartas):</p>
-      <div class="token-box" id="token-display">${bridgeToken||'Cargando...'}</div>
-      <button class="btn btn-sm" onclick="regenerateToken()">Regenerar Token</button>
+    <div style="background:#141924;border:1px solid #1e2a3a;border-radius:8px;padding:16px;text-align:left;margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <p style="font-size:12px;color:#8899aa">Estado de conexion</p>
+          <p id="bridge-live-status" style="font-size:14px;margin-top:4px">Verificando...</p>
+        </div>
+        <div id="status-dot" style="width:12px;height:12px;border-radius:50%;background:#484f58"></div>
+      </div>
     </div>
 
-    <div class="step"><h3>Paso 4 — Ejecutar</h3>
-      <p>Copia y pega este comando cada vez que quieras conectar:</p>
-      <pre id="bridge-cmd" onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)">~/.ib-bridge/venv/bin/ib-bridge --server ${serverUrl} --token ${bridgeToken||'TU_TOKEN'}</pre>
-      <p style="margin-top:8px;color:#8899aa;font-size:12px">Puerto 7497 = paper trading, agrega <code>--ib-port 7496</code> para live</p>
-    </div>
+    <details style="text-align:left">
+      <summary style="color:#58a6ff;cursor:pointer;font-size:13px;margin-bottom:12px">Opciones avanzadas</summary>
+      <div style="margin-top:12px">
+        <p style="font-size:12px;color:#8899aa;margin-bottom:4px">Tu bridge token:</p>
+        <div class="token-box" id="token-display" style="font-size:12px">${bridgeToken||'Cargando...'}</div>
+        <button class="btn btn-sm" onclick="regenerateToken()" style="margin-top:8px;font-size:12px">Regenerar Token</button>
 
-    <div class="step"><h3>Paso 5 — Listo</h3>
-      <p>El indicador arriba cambiara a <span style="color:#3fb950">● Conectado</span> cuando el bridge se conecte a TWS.</p>
-    </div>
+        <p style="font-size:12px;color:#8899aa;margin-top:16px;margin-bottom:4px">Comando manual (terminal):</p>
+        <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)" style="font-size:11px">curl -sL ${serverUrl}/install.sh | bash</pre>
+
+        <p style="font-size:12px;color:#8899aa;margin-top:12px;margin-bottom:4px">Ejecutar manualmente:</p>
+        <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)" style="font-size:11px">~/.ib-bridge/run-bridge.sh ${serverUrl} ${bridgeToken||'TOKEN'}</pre>
+
+        <p style="font-size:11px;color:#8899aa;margin-top:12px">Puerto 7497 = paper trading &nbsp;|&nbsp; 7496 = live</p>
+        <p style="font-size:11px;color:#8899aa">Requiere Python 3.10+ &nbsp;|&nbsp; Se instala en <code>~/.ib-bridge/</code></p>
+      </div>
+    </details>
   </div>`;
+
+  // Update live status
+  fetch('/api/status').then(r=>r.json()).then(d=>{
+    const el=document.getElementById('bridge-live-status');
+    const dot=document.getElementById('status-dot');
+    if(d.bridge_connected){
+      el.innerHTML='<span style="color:#3fb950;font-weight:600">Conectado</span> — recibiendo datos de TWS';
+      dot.style.background='#3fb950';
+    } else {
+      el.innerHTML='<span style="color:#484f58">Desconectado</span> — descarga y ejecuta el archivo para conectar';
+      dot.style.background='#484f58';
+    }
+  }).catch(()=>{});
 }
 
 async function regenerateToken(){
