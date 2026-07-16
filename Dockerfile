@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 5000
 
-CMD gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:${PORT:-5000} cloud.server:app
+CMD ["/bin/sh", "-c", "gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT cloud.server:app"]
