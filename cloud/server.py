@@ -15,7 +15,6 @@ import functools
 import threading
 from datetime import datetime
 
-import numpy as np
 from flask import Flask, request, jsonify, Response, redirect
 from flask_socketio import SocketIO, emit, disconnect
 from dotenv import load_dotenv
@@ -23,8 +22,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from cloud import db, auth
-import indicators
-import signals
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -67,17 +64,8 @@ def _clean(obj):
         return {k: _clean(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_clean(v) for v in obj]
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        v = float(obj)
-        return None if (math.isnan(v) or math.isinf(v)) else v
     if isinstance(obj, float):
         return None if (math.isnan(obj) or math.isinf(obj)) else obj
-    if isinstance(obj, np.ndarray):
-        return _clean(obj.tolist())
-    if isinstance(obj, (np.bool_,)):
-        return bool(obj)
     return obj
 
 
