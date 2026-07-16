@@ -175,7 +175,11 @@ def logout():
 
 @socketio.on("connect")
 def handle_connect():
-    print(f"[WS] New connection: {request.sid}", flush=True)
+    try:
+        sid = getattr(request, 'sid', 'unknown')
+        print(f"[WS] New connection: {sid}", flush=True)
+    except Exception as e:
+        print(f"[WS] New connection (sid error: {e})", flush=True)
 
 @socketio.on("bridge_auth")
 def handle_bridge_auth(data):
