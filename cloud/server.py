@@ -469,7 +469,8 @@ def api_options_lab(symbol):
 @login_required
 def api_trades_history():
     try:
-        with open("trades_imported.json", "r") as f:
+        trades_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trades_imported.json")
+        with open(trades_file, "r") as f:
             trades_data = json.load(f)
 
         trades = trades_data.get("trades", [])
@@ -504,7 +505,8 @@ def api_trades_history():
 @login_required
 def api_trades_history_chart(trade_id):
     try:
-        with open("trades_imported.json", "r") as f:
+        trades_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trades_imported.json")
+        with open(trades_file, "r") as f:
             trades_data = json.load(f)
 
         trades = trades_data.get("trades", [])
