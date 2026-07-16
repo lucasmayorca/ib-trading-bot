@@ -3,9 +3,10 @@ Cloud server — Flask + SocketIO.
 
 Serves the multi-tenant dashboard and receives real-time data from
 IB Bridge clients running on each user's machine.
-
-Run locally:  python -m cloud.server
 """
+
+from gevent import monkey
+monkey.patch_all()
 
 import os
 import json
@@ -28,7 +29,7 @@ from cloud import db, auth
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("JWT_SECRET", "change-me-in-production")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent")
 
 # Per-user live data store: { user_id: { ... } }
 user_data = {}
@@ -651,5 +652,5 @@ except Exception as e:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"[SERVER] Starting on port {port}")
-    socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
+    print(f"[SERVER] Starting on port {port} (gevent)")
+    socketio.run(app, host="0.0.0.0", port=port, debug=False)
