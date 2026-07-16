@@ -753,8 +753,8 @@ document.getElementById('form').onsubmit=async e=>{{
 
 
 def _dashboard_page():
-    from cloud.dashboard_html import get_dashboard_html
-    return get_dashboard_html()
+    from vista_web import DASHBOARD_HTML
+    return DASHBOARD_HTML
 
 
 # ══════════════════════════════════════════════════════════════
