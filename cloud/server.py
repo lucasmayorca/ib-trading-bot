@@ -348,6 +348,107 @@ def api_status():
     })
 
 
+@app.route("/install.sh")
+def install_script():
+    server_url = request.host_url.rstrip("/")
+    script = f'''#!/bin/bash
+set -e
+GREEN='\\033[0;32m'; YELLOW='\\033[1;33m'; RED='\\033[0;31m'; CYAN='\\033[0;36m'; NC='\\033[0m'
+
+echo ""
+echo "+==========================================+"
+echo "|    IB Trading Bridge — Installer          |"
+echo "+==========================================+"
+echo ""
+
+PYTHON=""
+for cmd in python3 python; do
+    if command -v "$cmd" &>/dev/null; then
+        ver=$("$cmd" -c "import sys; print(f'{{sys.version_info.major}}.{{sys.version_info.minor}}')" 2>/dev/null)
+        major=$(echo "$ver" | cut -d. -f1)
+        minor=$(echo "$ver" | cut -d. -f2)
+        if [ "$major" -ge 3 ] 2>/dev/null && [ "$minor" -ge 10 ] 2>/dev/null; then
+            PYTHON="$cmd"
+            break
+        fi
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    echo -e "${{RED}}Python 3.10+ no encontrado.${{NC}}"
+    echo "Instala Python desde: https://www.python.org/downloads/"
+    exit 1
+fi
+echo -e "${{GREEN}}Python encontrado:${{NC}} $($PYTHON --version)"
+
+INSTALL_DIR="$HOME/.ib-bridge"
+echo -e "${{CYAN}}Instalando en:${{NC}} $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+if [ ! -d "venv" ]; then
+    echo "Creando entorno virtual..."
+    $PYTHON -m venv venv
+fi
+
+source venv/bin/activate
+pip install --upgrade pip -q 2>/dev/null
+
+echo "Instalando IB Bridge..."
+pip install "ibapi>=9.81.1" "python-socketio[client]>=5.12.0" "pandas>=2.0" "numpy>=1.24" -q 2>/dev/null
+
+# Download bridge files
+mkdir -p bridge
+curl -sL {server_url}/bridge-files/main.py -o bridge/main.py
+curl -sL {server_url}/bridge-files/indicators.py -o bridge/indicators.py
+curl -sL {server_url}/bridge-files/signals.py -o bridge/signals.py
+curl -sL {server_url}/bridge-files/__init__.py -o bridge/__init__.py
+
+# Create launcher
+cat > run-bridge.sh << 'LAUNCHER'
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$DIR/venv/bin/activate"
+if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "Uso: ./run-bridge.sh SERVER_URL BRIDGE_TOKEN [IB_PORT]"
+    exit 1
+fi
+python -m bridge.main --server "$1" --token "$2" --ib-port "${{3:-7497}}"
+LAUNCHER
+chmod +x run-bridge.sh
+
+echo ""
+echo -e "${{GREEN}}+==========================================+${{NC}}"
+echo -e "${{GREEN}}|    Instalacion completa!                  |${{NC}}"
+echo -e "${{GREEN}}+==========================================+${{NC}}"
+echo ""
+echo -e "Para conectar tu TWS, ejecuta:"
+echo ""
+echo -e "  ${{CYAN}}cd ~/.ib-bridge && source venv/bin/activate${{NC}}"
+echo -e "  ${{CYAN}}python -m bridge.main --server {server_url} --token TU_TOKEN${{NC}}"
+echo ""
+echo -e "O usa el launcher:"
+echo -e "  ${{CYAN}}~/.ib-bridge/run-bridge.sh {server_url} TU_TOKEN${{NC}}"
+echo ""
+echo -e "${{YELLOW}}Requisitos:${{NC}} TWS o IB Gateway abierto con API habilitada (puerto 7497 o 7496)"
+echo ""
+'''
+    return Response(script, mimetype="text/plain")
+
+
+@app.route("/bridge-files/<filename>")
+def bridge_files(filename):
+    import os
+    allowed = {"main.py", "indicators.py", "signals.py", "__init__.py"}
+    if filename not in allowed:
+        return "Not found", 404
+    filepath = os.path.join(os.path.dirname(__file__), "..", "bridge", filename)
+    if not os.path.exists(filepath):
+        return "Not found", 404
+    with open(filepath) as f:
+        return Response(f.read(), mimetype="text/plain")
+
+
 # ══════════════════════════════════════════════════════════════
 #  HTML PAGES
 # ══════════════════════════════════════════════════════════════
@@ -594,10 +695,11 @@ function renderSetup(){
 
     <div class="step"><h3>Paso 2 — Instalar el Bridge (una sola vez)</h3>
       <p>Copia y pega este comando en tu terminal:</p>
-      <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)">curl -sL https://raw.githubusercontent.com/lucasmayorca/ib-trading-bot/main/install-bridge.sh | bash</pre>
+      <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)">curl -sL ${serverUrl}/install.sh | bash</pre>
       <p style="margin-top:8px;color:#8899aa;font-size:12px">Requiere Python 3.10+. Instala todo automaticamente en <code>~/.ib-bridge/</code></p>
       <details style="margin-top:8px"><summary style="color:#58a6ff;cursor:pointer;font-size:13px">Instalacion manual (alternativa)</summary>
-        <pre onclick="navigator.clipboard.writeText('pip install git+https://github.com/lucasmayorca/ib-trading-bot.git')">pip install git+https://github.com/lucasmayorca/ib-trading-bot.git</pre>
+        <pre onclick="navigator.clipboard.writeText('pip install ibapi python-socketio[client] pandas numpy')">pip install ibapi python-socketio[client] pandas numpy</pre>
+        <p style="font-size:12px;color:#8899aa;margin-top:4px">Luego descarga los archivos del bridge desde <code>${serverUrl}/bridge-files/</code></p>
       </details>
     </div>
 
