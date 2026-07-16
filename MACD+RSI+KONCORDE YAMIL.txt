@@ -1,0 +1,116 @@
+//@version=4
+study(title="MACD+RSI+KONCORDE YAMIL", shorttitle="MACD+RSI+KONCORDE YAMIL")
+
+//KONCORDE
+showkoncorde = input(true, title='Koncorde')
+deltaKon = input(-700, title="KONCORDE - Desfase")
+escalaKoncorde = input(2, "Escala Koncorde")
+
+calc_mfi(length) => rsi(sum(volume * (change(hlc3) <= 0 ? 0 : hlc3), length), sum(volume * (change(hlc3) >= 0 ? 0 : hlc3), length))
+
+tprice=ohlc4
+lengthEMA = 255
+m=15
+pvim = ema(pvi, m)
+pvimax = highest(pvim, 90)
+pvimin = lowest(pvim, 90)
+oscp = (pvi - pvim) * 100/ (pvimax - pvimin)
+nvim = ema(nvi, m)
+nvimax = highest(nvim, 90)
+nvimin = lowest(nvim, 90)
+azul = (nvi - nvim) * 100 / (nvimax - nvimin)
+xmf = calc_mfi(14)
+mult=2.0
+basis = sma(tprice, 25)
+dev = mult * stdev(tprice, 25)
+upper = basis + dev
+lower = basis - dev
+OB1 = (upper + lower) / 2.0
+OB2 = upper - lower
+BollOsc = ((tprice - OB1) / OB2 ) * 100
+xrsi = rsi(tprice, 14)
+calc_stoch(src, length,smoothFastD ) => sma(100 * (src - lowest(low, length)) / (highest(high, length) - lowest(low, length)), smoothFastD)
+
+stoc = calc_stoch(tprice, 21, 3)
+marron = (xrsi + xmf + BollOsc + (stoc / 3))/2
+verde = marron + oscp
+media = ema(marron, 21) //
+
+vl = plot(iff(showkoncorde, verde * escalaKoncorde + deltaKon, na), color=#25BC00, style=plot.style_columns, histbase=deltaKon, linewidth=4, title="Koncorde - verde")
+ml = plot(iff(showkoncorde, marron * escalaKoncorde + deltaKon, na), color=#FFC34C, style=plot.style_columns, histbase=deltaKon, linewidth=4, title="Koncorde - marron")
+al = plot(iff(showkoncorde, azul * escalaKoncorde + deltaKon, na), color=#6C3AFF, style=plot.style_columns, histbase=deltaKon, linewidth=4, title="Koncorde - azul")
+plot(iff(showkoncorde, marron * escalaKoncorde + deltaKon, na), color=color.new(#000000, 0), linewidth=2, title="Koncorde - lmarron")
+plot(iff(showkoncorde, media * escalaKoncorde + deltaKon, na), color=#FF0000, linewidth=2, title="Koncorde - media")
+hline(-700, color=color.black, linestyle=hline.style_solid)
+
+
+// MACD
+// Getting inputs
+showmacd = input(true, title='MADC')
+deltaMacd = input(700, title="MACD - Desfase")
+multMacd = input(5, title="MACD - Escala")
+fast_length = input(title="MACD - Fast Length", type=input.integer, defval=12)
+slow_length = input(title="MACD - Slow Length", type=input.integer, defval=26)
+src = input(title="MACD - Source", type=input.source, defval=close)
+signal_length = input(title="MACD - Signal Smoothing", type=input.integer, minval = 1, maxval = 50, defval = 9)
+sma_source = input(title="MACD - Simple MA(Oscillator)", type=input.bool, defval=false)
+sma_signal = input(title="MACD - Simple MA(Signal Line)", type=input.bool, defval=false)
+
+// Plot colors
+col_grow_above = #2AFF00
+col_grow_below = #FF0000
+col_fall_above = #168500
+col_fall_below = #980000
+col_macd = #0042FF
+col_signal = #FFA200
+
+// Calculating
+//[outMacD, outSignal, outHist] = macd(close, fastLength, slowLength, signalLength)
+fast_ma = sma_source ? sma(src, fast_length) : ema(src, fast_length)
+slow_ma = sma_source ? sma(src, slow_length) : ema(src, slow_length)
+macd = (fast_ma - slow_ma) / slow_ma * 1000 * multMacd
+signal = sma_signal ? sma(macd, signal_length) : ema(macd, signal_length)
+hist = macd - signal
+
+
+plot(iff(showmacd,hist ? hist + deltaMacd : na,na), title="MACD - Histogram", style=plot.style_columns, color=(hist>=0 ? (hist[1] < hist ? col_grow_above : col_fall_above) : (hist[1] < hist ? col_grow_below : col_fall_below) ),histbase=deltaMacd )
+plot(iff(showmacd,macd ? macd + deltaMacd: na,na), title="MACD", color=col_macd, linewidth=2)
+plot(iff(showmacd,signal ? signal + deltaMacd: na,na), title="MACD - Signal", color=col_signal, linewidth=2)
+
+hline(700, color=color.black, linestyle=hline.style_solid, linewidth=1)
+
+
+// STOCH (14,3,1)
+showrsi = input(true, title='RSI - STOCH')
+deltaRSI = input(0, title="RSI/STOCH - Desfase")
+multip = input(5, title="RSI/STOCH - Escalado")
+deltaSTOCH = deltaRSI-50*multip/2
+length = input(14, minval=1, title="STOCH - Periodo")
+smoothK = input(1, minval=1, title="STOCH - Smooth K")
+smoothD = input(3, minval=1, title="STOCH - Smooth D")
+k = sma ( stoch (close, high, low, length), smoothK)
+d = sma (k, smoothD)
+
+// RSI
+
+bandm= hline(iff(showrsi,0+deltaRSI,na), color=color.black, linewidth=1, linestyle=hline.style_solid)
+band0= hline(iff(showrsi,-20*multip+deltaRSI,na), color=color.new(#59FF00, 0), linewidth=2, linestyle=hline.style_dotted)
+band1= hline(iff(showrsi,20*multip+deltaRSI,na), color=color.new(#FF0000, 0), linewidth=2, linestyle=hline.style_dotted)
+fill(band1, band0, color=color.new(#FFFF00, 75), title='Background')
+lengthRSI = input(14, minval=1, title="RSI - Periodo")
+RSIMain = (rsi(close, lengthRSI) - 50)
+rsiPlot = plot(iff(showrsi,RSIMain*multip+deltaRSI,na), color=color.new(#000000, 0), linewidth  = 2)
+
+// Media móvil en RSI
+lengthMA = input(21, minval=1, title="RSI - Media Móvil Periodo")
+RSIMA = wma(RSIMain*multip+deltaRSI, lengthMA)
+plot(iff(showrsi,RSIMA,na), color=color.new(#78FF00, 0), linewidth=2, title="RSI - Media Móvil")
+
+
+// STOCH (14,3,1) en RSI
+showstoch = input(true, title='STOCH - RSI')
+deltaSTOCH_RSI = input(100, title="STOCH - RSI Desfase")
+kRSI = sma ( stoch (RSIMain, RSIMain, RSIMain, length), smoothK)
+dRSI = sma (kRSI, smoothD)
+plot(iff(false,kRSI ? kRSI + deltaSTOCH_RSI : na,na), title="STOCH - RSI K", color=color.new(#0000FF, 0), linewidth=2)
+plot(iff(false,dRSI ? dRSI + deltaSTOCH_RSI : na,na), title="STOCH - RSI D", color=color.new(#FFA500, 0), linewidth=2)

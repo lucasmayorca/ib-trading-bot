@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+portfolio_history.json
+trades_imported.json
+executions_history.json
+.DS_Store
