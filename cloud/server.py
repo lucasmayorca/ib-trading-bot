@@ -8,9 +8,6 @@ Run locally:  python -m cloud.server
 Deploy:       gunicorn --worker-class eventlet -w 1 cloud.server:app
 """
 
-import eventlet
-eventlet.monkey_patch()
-
 import os
 import json
 import math
@@ -32,7 +29,7 @@ from cloud import db, auth
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("JWT_SECRET", "change-me-in-production")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # Per-user live data store: { user_id: { ... } }
 user_data = {}
