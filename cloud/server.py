@@ -364,6 +364,62 @@ def api_status():
     })
 
 
+@app.route("/api/options-lab-top")
+@login_required
+def api_options_lab_top():
+    return Response(
+        to_json({
+            "coming_soon": True,
+            "message": "Options Lab disponible proximamente en la version cloud"
+        }),
+        mimetype="application/json",
+    )
+
+
+@app.route("/api/options-lab/<symbol>")
+@login_required
+def api_options_lab(symbol):
+    return Response(
+        to_json({
+            "coming_soon": True,
+            "symbol": symbol,
+            "message": "Analisis de opciones disponible proximamente"
+        }),
+        mimetype="application/json",
+    )
+
+
+@app.route("/api/trades-history")
+@login_required
+def api_trades_history():
+    return Response(
+        to_json({
+            "trades": [],
+            "summary": {
+                "total": 0,
+                "wins": 0,
+                "losses": 0,
+                "pnl": 0,
+                "win_rate": 0,
+            },
+            "coming_soon": True,
+        }),
+        mimetype="application/json",
+    )
+
+
+@app.route("/api/trades-history/chart/<trade_id>")
+@login_required
+def api_trades_history_chart(trade_id):
+    return Response(
+        to_json({
+            "coming_soon": True,
+            "trade_id": trade_id,
+        }),
+        mimetype="application/json",
+    )
+
+
 @app.route("/install.sh")
 def install_script():
     server_url = request.host_url.rstrip("/")
