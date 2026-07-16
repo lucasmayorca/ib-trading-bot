@@ -167,9 +167,15 @@ def fetch_historical(app, symbol, req_id, duration="1 Y"):
         duration, "1 day", "TRADES", 1, 1, False, [],
     )
     start = time.time()
-    while not app.hist_done.get(req_id, False) and time.time() - start < 30:
-        time.sleep(0.2)
-    return app.historical_data.get(req_id, [])
+    timeout = 15  # Reduced from 30s
+    while not app.hist_done.get(req_id, False) and time.time() - start < timeout:
+        time.sleep(0.1)  # More responsive polling
+    bars = app.historical_data.get(req_id, [])
+    if not bars:
+        log(f"  No bars for {symbol} (timeout after {timeout}s)", Y)
+    elif len(bars) < 50:
+        log(f"  {symbol}: only {len(bars)} bars (need 50)", Y)
+    return bars
 
 
 # ══════════════════════════════════════════════════════════════
@@ -194,9 +200,23 @@ def get_stock_list():
 #  ANALYSIS
 # ══════════════════════════════════════════════════════════════
 
+def _format_bar_date(raw_date):
+    """Convert IB bar date to YYYY-MM-DD format."""
+    s = str(raw_date).strip()
+    # IB formats: "20240315" (8 digits) or "2024-03-15" or "20240315  00:00:00" etc.
+    s = s.split()[0]  # drop any time component
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s  # already YYYY-MM-DD or similar
+
+
 def analyze_stock(ib_app, symbol, req_id):
     bars = fetch_historical(ib_app, symbol, req_id)
-    if not bars or len(bars) < 50:
+    if not bars:
+        log(f"  {symbol}: No bars returned", Y)
+        return None
+    if len(bars) < 50:
+        log(f"  {symbol}: Insufficient bars ({len(bars)} < 50), skipping", Y)
         return None
 
     try:
@@ -212,15 +232,52 @@ def analyze_stock(ib_app, symbol, req_id):
         signal_result = generate_signal(indicators)
 
         price = float(df["close"].iloc[-1])
+
+        ohlc = []
+        dates = []
+        for _, row in df.iterrows():
+            d = _format_bar_date(row.get("date", ""))
+            dates.append(d)
+            ohlc.append({
+                "time": d,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            })
+
+        chart_data = {
+            "ohlc": ohlc,
+            "dates": dates,
+            "macd": {
+                "hist": [float(v) if not pd.isna(v) else None for v in macd_df["hist"]],
+                "macd": [float(v) if not pd.isna(v) else None for v in macd_df["macd"]],
+                "signal": [float(v) if not pd.isna(v) else None for v in macd_df["signal"]],
+            },
+            "rsi": [float(v) if not pd.isna(v) else None for v in rsi_df["rsi"]],
+            "koncorde": {
+                "verde": [float(v) if not pd.isna(v) else None for v in koncorde_df["verde"]],
+                "marron": [float(v) if not pd.isna(v) else None for v in koncorde_df["marron"]],
+                "azul": [float(v) if not pd.isna(v) else None for v in koncorde_df["azul"]],
+                "media": [float(v) if not pd.isna(v) else None for v in koncorde_df["media"]],
+            },
+        }
+
         return clean({
             "symbol": symbol,
             "price": price,
             "signal": signal_result.get("signal", "NEUTRAL"),
-            "score": signal_result.get("score", 0),
-            "rsi": float(rsi_df["rsi"].iloc[-1]) if len(rsi_df) > 0 else 0,
-            "macd_status": signal_result.get("macd_detail", ""),
-            "koncorde_status": signal_result.get("koncorde_detail", ""),
-            "macd_histogram": float(macd_df["hist"].iloc[-1]) if len(macd_df) > 0 else 0,
+            "signal_label": signal_result.get("signal_label", "NEUTRAL"),
+            "strength": signal_result.get("strength", 0),
+            "conditions_met": signal_result.get("conditions_met", 0),
+            "macd_ok": signal_result.get("macd_ok", False),
+            "rsi_ok": signal_result.get("rsi_ok", False),
+            "konc_ok": signal_result.get("konc_ok", False),
+            "macd_detail": signal_result.get("macd_detail", ""),
+            "rsi_detail": signal_result.get("rsi_detail", ""),
+            "konc_detail": signal_result.get("konc_detail", ""),
+            "values": signal_result.get("values", {}),
+            "chart": chart_data,
         })
     except Exception as e:
         log(f"Analysis error for {symbol}: {e}", R)
@@ -291,19 +348,27 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
             log(f"Escaneando {len(stocks)} acciones...", C)
 
             results = {}
+            success_count = 0
             for i, symbol in enumerate(stocks):
                 req_id = 1000 + i
                 result = analyze_stock(ib_app, symbol, req_id)
                 if result:
                     results[symbol] = result
+                    success_count += 1
+                    log(f"  ✓ {symbol}: {result.get('signal', 'NEUTRAL')} (strength={result.get('strength', 0):.1f})", G)
                 time.sleep(0.5)
 
                 if (i + 1) % 10 == 0:
-                    sio.emit("analysis_batch", clean({"results": results}))
+                    if results:
+                        log(f"  Enviando {len(results)} análisis al servidor...", C)
+                        sio.emit("analysis_batch", clean({"results": results}))
                     results = {}
 
             if results:
+                log(f"  Enviando {len(results)} análisis finales al servidor...", C)
                 sio.emit("analysis_batch", clean({"results": results}))
+
+            log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
 
             ib_app.portfolio_positions = []
             ib_app.account_values = {}
