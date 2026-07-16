@@ -196,7 +196,7 @@ def get_stock_list(ib_app):
     """Try IB scanner first, fall back to hardcoded list."""
     try:
         from scanner import get_top_volume_stocks
-        stocks = get_top_volume_stocks(ib_app, count=75)
+        stocks = get_top_volume_stocks(count=75)
         if stocks and len(stocks) > 10:
             return stocks
     except Exception as e:
@@ -223,15 +223,12 @@ def analyze_stock(ib_app, symbol, req_id):
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        macd_line, signal_line, histogram = ind.calculate_macd(
-            df["close"], MACD_FAST, MACD_SLOW, MACD_SIGNAL
-        )
-        rsi = ind.calculate_rsi(df["close"], RSI_PERIOD)
-        koncorde = ind.calculate_koncorde(df)
+        macd_df = ind.calculate_macd(df)
+        rsi_df = ind.calculate_rsi(df)
+        koncorde_df = ind.calculate_koncorde(df)
 
-        signal_result = sig.generate_signal(
-            macd_line, signal_line, histogram, rsi, koncorde
-        )
+        indicators = {"macd": macd_df, "rsi": rsi_df, "koncorde": koncorde_df}
+        signal_result = sig.generate_signal(indicators)
 
         price = float(df["close"].iloc[-1])
         return clean({
@@ -239,10 +236,10 @@ def analyze_stock(ib_app, symbol, req_id):
             "price": price,
             "signal": signal_result.get("signal", "NEUTRAL"),
             "score": signal_result.get("score", 0),
-            "rsi": float(rsi.iloc[-1]) if len(rsi) > 0 else 0,
+            "rsi": float(rsi_df["rsi"].iloc[-1]) if len(rsi_df) > 0 else 0,
             "macd_status": signal_result.get("macd_detail", "—"),
             "koncorde_status": signal_result.get("koncorde_detail", "—"),
-            "macd_histogram": float(histogram.iloc[-1]) if len(histogram) > 0 else 0,
+            "macd_histogram": float(macd_df["hist"].iloc[-1]) if len(macd_df) > 0 else 0,
         })
     except Exception as e:
         log(f"Analysis error for {symbol}: {e}", R)
