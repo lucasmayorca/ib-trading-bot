@@ -334,7 +334,11 @@ def api_portfolio():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({
+        "status": "ok",
+        "async_mode": socketio.async_mode,
+        "server_mode": socketio.server.async_mode if hasattr(socketio, 'server') else "unknown",
+    })
 
 
 @app.route("/api/status")
