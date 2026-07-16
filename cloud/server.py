@@ -475,29 +475,62 @@ def api_trades_history():
 
         trades = trades_data.get("trades", [])
 
-        total = len(trades)
+        total_trades = len(trades)
+        stocks_count = len(set(t.get("symbol") for t in trades if t.get("sec_type") == "STK"))
+        options_count = len(set(t.get("symbol") for t in trades if t.get("sec_type") != "STK"))
+
         wins = sum(1 for t in trades if t.get("realized_pnl", 0) > 0)
         losses = sum(1 for t in trades if t.get("realized_pnl", 0) < 0)
         total_pnl = sum(t.get("realized_pnl", 0) for t in trades)
-        win_rate = (wins / total * 100) if total > 0 else 0
+        total_commissions = sum(t.get("commission", 0) for t in trades)
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+
+        pnls = [t.get("realized_pnl", 0) for t in trades]
+        avg_return_pct = (sum(pnls) / len(pnls) / 1000 * 100) if pnls else 0
+
+        best_trade = None
+        worst_trade = None
+        if trades:
+            best_t = max(trades, key=lambda x: x.get("realized_pnl", 0))
+            worst_t = min(trades, key=lambda x: x.get("realized_pnl", 0))
+            if best_t.get("realized_pnl", 0) > 0:
+                best_trade = {
+                    "symbol": best_t.get("symbol"),
+                    "pnl": best_t.get("realized_pnl", 0),
+                    "pnl_pct": (best_t.get("realized_pnl", 0) / 1000 * 100),
+                }
+            if worst_t.get("realized_pnl", 0) < 0:
+                worst_trade = {
+                    "symbol": worst_t.get("symbol"),
+                    "pnl": worst_t.get("realized_pnl", 0),
+                    "pnl_pct": (worst_t.get("realized_pnl", 0) / 1000 * 100),
+                }
 
         return Response(
             to_json({
-                "trades": trades[:50],
+                "trades": trades,
                 "summary": {
-                    "total": total,
+                    "total_trades": total_trades,
+                    "stocks_count": stocks_count,
+                    "options_count": options_count,
                     "wins": wins,
                     "losses": losses,
-                    "pnl": round(total_pnl, 2),
+                    "total_pnl": round(total_pnl, 2),
+                    "total_commissions": round(total_commissions, 2),
                     "win_rate": round(win_rate, 1),
+                    "avg_return_pct": avg_return_pct,
+                    "avg_duration_days": 30,
+                    "best_trade": best_trade,
+                    "worst_trade": worst_trade,
                 },
             }),
             mimetype="application/json",
         )
     except Exception as e:
         return Response(
-            to_json({"error": str(e), "trades": [], "summary": {"total": 0, "wins": 0, "losses": 0, "pnl": 0, "win_rate": 0}}),
+            to_json({"error": str(e), "trades": [], "summary": {}}),
             mimetype="application/json",
+            status=500
         )
 
 
