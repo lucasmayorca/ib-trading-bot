@@ -408,6 +408,7 @@ curl -sL {server_url}/bridge-files/__init__.py -o bridge/__init__.py
 cat > run-bridge.sh << 'LAUNCHER'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
 source "$DIR/venv/bin/activate"
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Uso: ./run-bridge.sh SERVER_URL BRIDGE_TOKEN [IB_PORT]"
