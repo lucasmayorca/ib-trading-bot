@@ -367,10 +367,29 @@ def api_status():
 @app.route("/api/options-lab-top")
 @login_required
 def api_options_lab_top():
+    store = get_user_store(request.user_id)
+    results = store.get("analysis", {})
+    if not results:
+        return Response(to_json({"strategies": []}), mimetype="application/json")
+
+    candidates = sorted(
+        [r for r in results.values() if r],
+        key=lambda x: x.get("strength", 0),
+        reverse=True
+    )[:10]
+
     return Response(
         to_json({
-            "coming_soon": True,
-            "message": "Options Lab disponible proximamente en la version cloud"
+            "strategies": [
+                {
+                    "symbol": c.get("symbol"),
+                    "price": c.get("price"),
+                    "signal": c.get("signal"),
+                    "strength": c.get("strength"),
+                    "message": "Análisis de opciones disponible próximamente"
+                }
+                for c in candidates
+            ]
         }),
         mimetype="application/json",
     )
@@ -379,11 +398,24 @@ def api_options_lab_top():
 @app.route("/api/options-lab/<symbol>")
 @login_required
 def api_options_lab(symbol):
+    store = get_user_store(request.user_id)
+    result = store.get("analysis", {}).get(symbol)
+
+    if not result:
+        return Response(
+            to_json({"error": "Symbol not found", "symbol": symbol}),
+            mimetype="application/json",
+            status=404
+        )
+
     return Response(
         to_json({
-            "coming_soon": True,
             "symbol": symbol,
-            "message": "Analisis de opciones disponible proximamente"
+            "price": result.get("price"),
+            "signal": result.get("signal"),
+            "strength": result.get("strength"),
+            "message": "Análisis de opciones disponible próximamente",
+            "coming_soon": True
         }),
         mimetype="application/json",
     )
@@ -392,32 +424,71 @@ def api_options_lab(symbol):
 @app.route("/api/trades-history")
 @login_required
 def api_trades_history():
-    return Response(
-        to_json({
-            "trades": [],
-            "summary": {
-                "total": 0,
-                "wins": 0,
-                "losses": 0,
-                "pnl": 0,
-                "win_rate": 0,
-            },
-            "coming_soon": True,
-        }),
-        mimetype="application/json",
-    )
+    try:
+        with open("trades_imported.json", "r") as f:
+            trades_data = json.load(f)
+
+        trades = trades_data.get("trades", [])
+
+        total = len(trades)
+        wins = sum(1 for t in trades if t.get("realized_pnl", 0) > 0)
+        losses = sum(1 for t in trades if t.get("realized_pnl", 0) < 0)
+        total_pnl = sum(t.get("realized_pnl", 0) for t in trades)
+        win_rate = (wins / total * 100) if total > 0 else 0
+
+        return Response(
+            to_json({
+                "trades": trades[:50],
+                "summary": {
+                    "total": total,
+                    "wins": wins,
+                    "losses": losses,
+                    "pnl": round(total_pnl, 2),
+                    "win_rate": round(win_rate, 1),
+                },
+            }),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return Response(
+            to_json({"error": str(e), "trades": [], "summary": {"total": 0, "wins": 0, "losses": 0, "pnl": 0, "win_rate": 0}}),
+            mimetype="application/json",
+        )
 
 
 @app.route("/api/trades-history/chart/<trade_id>")
 @login_required
 def api_trades_history_chart(trade_id):
-    return Response(
-        to_json({
-            "coming_soon": True,
-            "trade_id": trade_id,
-        }),
-        mimetype="application/json",
-    )
+    try:
+        with open("trades_imported.json", "r") as f:
+            trades_data = json.load(f)
+
+        trades = trades_data.get("trades", [])
+        trade = trades[int(trade_id)] if int(trade_id) < len(trades) else None
+
+        if not trade:
+            return Response(
+                to_json({"error": "Trade not found"}),
+                mimetype="application/json",
+                status=404
+            )
+
+        return Response(
+            to_json({
+                "trade": trade,
+                "symbol": trade.get("symbol"),
+                "date": trade.get("date"),
+                "pnl": trade.get("realized_pnl"),
+                "message": "Gráfico disponible próximamente"
+            }),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return Response(
+            to_json({"error": str(e)}),
+            mimetype="application/json",
+            status=400
+        )
 
 
 @app.route("/install.sh")
