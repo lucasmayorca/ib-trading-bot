@@ -61,6 +61,13 @@ def get_user_by_email(email):
         return cur.fetchone()
 
 
+def get_user_by_id(user_id):
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        return cur.fetchone()
+
+
 def get_user_by_token(token):
     with db() as conn:
         cur = conn.cursor()

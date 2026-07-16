@@ -277,14 +277,22 @@ def index():
 @login_required
 def api_data():
     store = get_user_store(request.user_id)
-    rows = []
+    results = {}
     for symbol in store.get("stocks", []):
         result = store.get("analysis", {}).get(symbol)
         if result:
-            rows.append(result)
+            results[symbol] = result
+
+    sorted_results = sorted(results.values(), key=lambda x: x.get("strength", 0), reverse=True)
+    top3 = []
+    for r in sorted_results[:3]:
+        if r.get("conditions_met", 0) >= 2 or r.get("signal") in ("BUY", "SELL"):
+            top3.append(r)
+
     return Response(
         to_json({
-            "stocks": rows,
+            "results": results,
+            "top3": top3,
             "last_update": store.get("last_update", ""),
             "bridge_connected": store.get("connected", False),
         }),
@@ -341,10 +349,18 @@ def health():
 @login_required
 def api_status():
     store = get_user_store(request.user_id)
+    email = ""
+    try:
+        user = db.get_user_by_id(request.user_id)
+        if user:
+            email = user.get("email", "")
+    except Exception:
+        pass
     return jsonify({
         "bridge_connected": store.get("connected", False),
         "stocks_count": len(store.get("stocks", [])),
         "last_update": store.get("last_update", ""),
+        "email": email,
     })
 
 
@@ -681,284 +697,8 @@ document.getElementById('form').onsubmit=async e=>{{
 
 
 def _dashboard_page():
-    return """<!DOCTYPE html>
-<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>IB Trading Dashboard</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0e17;color:#e0e0e0}
-.header{background:#141924;border-bottom:1px solid #1e2a3a;padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
-.header h1{font-size:18px;color:#fff}
-.status{display:flex;align-items:center;gap:8px;font-size:13px}
-.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
-.dot.on{background:#3fb950}.dot.off{background:#f85149}
-.tabs{display:flex;gap:0;background:#141924;border-bottom:1px solid #1e2a3a;padding:0 24px}
-.tab{padding:10px 20px;cursor:pointer;color:#8899aa;font-size:13px;border-bottom:2px solid transparent}
-.tab.active{color:#58a6ff;border-color:#58a6ff}
-.tab:hover{color:#c9d1d9}
-.content{padding:24px}
-.setup-card{background:#141924;border:1px solid #1e2a3a;border-radius:8px;padding:24px;max-width:700px;margin:0 auto}
-.setup-card h2{font-size:18px;margin-bottom:16px;color:#fff}
-.step{margin-bottom:20px;padding-left:16px;border-left:2px solid #238636}
-.step h3{font-size:14px;color:#58a6ff;margin-bottom:4px}
-.step p{font-size:13px;color:#8899aa;line-height:1.6}
-code{background:#161b22;padding:2px 6px;border-radius:4px;font-size:12px;color:#f0883e}
-pre{background:#161b22;padding:12px;border-radius:6px;font-size:12px;color:#c9d1d9;overflow-x:auto;
-margin:8px 0;cursor:pointer;position:relative}
-pre:hover::after{content:'Copiar';position:absolute;top:4px;right:8px;font-size:11px;color:#58a6ff}
-.token-box{background:#0d1117;border:1px solid #2a3a4a;border-radius:6px;padding:10px 14px;
-font-family:monospace;font-size:13px;color:#f0883e;word-break:break-all;margin:8px 0;position:relative}
-.btn{padding:6px 14px;background:#238636;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px}
-.btn:hover{background:#2ea043}
-.btn-danger{background:#da3633}.btn-danger:hover{background:#f85149}
-.btn-sm{padding:4px 10px;font-size:11px}
-
-/* Scanner table */
-table{width:100%;border-collapse:collapse;font-size:13px}
-th{text-align:left;padding:8px 12px;background:#141924;color:#8899aa;border-bottom:1px solid #1e2a3a;
-font-weight:500;position:sticky;top:0}
-td{padding:8px 12px;border-bottom:1px solid #1e2a3a}
-tr:hover{background:#161b22}
-.buy{color:#3fb950;font-weight:600}.sell{color:#f85149;font-weight:600}
-.score{font-weight:600}
-.empty{text-align:center;padding:60px;color:#484f58}
-.user-menu{display:flex;align-items:center;gap:12px}
-.user-email{color:#8899aa;font-size:12px}
-</style></head><body>
-<div class="header">
-  <h1>IB Trading Dashboard</h1>
-  <div class="user-menu">
-    <div class="status"><span class="dot off" id="dot"></span><span id="status-text">Desconectado</span></div>
-    <span class="user-email" id="user-email"></span>
-    <a href="/logout" class="btn btn-sm" style="background:#2a3a4a">Salir</a>
-  </div>
-</div>
-<div class="tabs">
-  <div class="tab active" data-tab="scanner">Escáner</div>
-  <div class="tab" data-tab="portfolio">Mi Cartera</div>
-  <div class="tab" data-tab="setup">Conectar TWS</div>
-</div>
-<div class="content" id="content"></div>
-
-<script>
-let currentTab='scanner', bridgeConnected=false, stocksData=[], bridgeToken='';
-
-// Tab switching
-document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
-  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  t.classList.add('active');
-  currentTab=t.dataset.tab;
-  render();
-});
-
-async function fetchStatus(){
-  try{
-    const r=await fetch('/api/status');
-    if(r.status===401){window.location='/login';return}
-    const d=await r.json();
-    bridgeConnected=d.bridge_connected;
-    document.getElementById('dot').className='dot '+(bridgeConnected?'on':'off');
-    document.getElementById('status-text').textContent=bridgeConnected
-      ?`Conectado — ${d.stocks_count} acciones (${d.last_update})`:'TWS Desconectado';
-  }catch(e){}
-}
-
-async function fetchData(){
-  try{
-    const r=await fetch('/api/data');
-    if(!r.ok)return;
-    const d=await r.json();
-    stocksData=d.stocks||[];
-    if(currentTab==='scanner')renderScanner();
-  }catch(e){}
-}
-
-async function fetchBridgeToken(){
-  try{
-    const r=await fetch('/api/bridge-token');
-    const d=await r.json();
-    bridgeToken=d.bridge_token;
-  }catch(e){}
-}
-
-function render(){
-  const c=document.getElementById('content');
-  if(currentTab==='scanner')renderScanner();
-  else if(currentTab==='portfolio')renderPortfolio();
-  else if(currentTab==='setup')renderSetup();
-}
-
-function renderScanner(){
-  const c=document.getElementById('content');
-  if(!bridgeConnected){
-    c.innerHTML='<div class="empty"><p style="font-size:16px;margin-bottom:8px">TWS no conectado</p><p style="color:#484f58">Conecta tu TWS usando la pestaña "Conectar TWS"</p></div>';
-    return;
-  }
-  if(!stocksData.length){
-    c.innerHTML='<div class="empty"><p>Escaneando mercado...</p></div>';
-    return;
-  }
-  let html='<table><thead><tr><th>Símbolo</th><th>Precio</th><th>Señal</th><th>Score</th><th>MACD</th><th>RSI</th><th>Koncorde</th></tr></thead><tbody>';
-  stocksData.sort((a,b)=>(b.score||0)-(a.score||0));
-  for(const s of stocksData){
-    const sig=s.signal||'—';
-    const cls=sig==='BUY'?'buy':sig==='SELL'?'sell':'';
-    html+=`<tr>
-      <td><strong>${s.symbol||''}</strong></td>
-      <td>$${(s.price||0).toFixed(2)}</td>
-      <td class="${cls}">${sig}</td>
-      <td class="score">${(s.score||0).toFixed(1)}</td>
-      <td>${s.macd_status||'—'}</td>
-      <td>${(s.rsi||0).toFixed(1)}</td>
-      <td>${s.koncorde_status||'—'}</td>
-    </tr>`;
-  }
-  html+='</tbody></table>';
-  c.innerHTML=html;
-}
-
-function renderPortfolio(){
-  const c=document.getElementById('content');
-  if(!bridgeConnected){
-    c.innerHTML='<div class="empty"><p>Conecta TWS para ver tu cartera</p></div>';
-    return;
-  }
-  c.innerHTML='<div class="empty"><p>Cargando cartera...</p></div>';
-  fetch('/api/portfolio').then(r=>r.json()).then(d=>{
-    if(!d.positions||!d.positions.length){
-      c.innerHTML='<div class="empty"><p>Sin posiciones abiertas</p></div>';
-      return;
-    }
-    let html='<table><thead><tr><th>Símbolo</th><th>Cantidad</th><th>Precio Mkt</th><th>Valor</th><th>P&L</th></tr></thead><tbody>';
-    for(const p of d.positions){
-      const pnl=p.unrealizedPNL||0;
-      const cls=pnl>=0?'buy':'sell';
-      html+=`<tr><td><strong>${p.symbol||''}</strong></td><td>${p.position||0}</td>
-        <td>$${(p.marketPrice||0).toFixed(2)}</td><td>$${(p.marketValue||0).toFixed(2)}</td>
-        <td class="${cls}">$${pnl.toFixed(2)}</td></tr>`;
-    }
-    html+='</tbody></table>';
-    c.innerHTML=html;
-  });
-}
-
-function renderSetup(){
-  const c=document.getElementById('content');
-  const serverUrl=window.location.origin;
-  const installCmd=`curl -sL ${serverUrl}/install.sh | bash`;
-  const runCmd=`~/.ib-bridge/run-bridge.sh ${serverUrl} ${bridgeToken||'TOKEN'}`;
-
-  c.innerHTML=`<div class="setup-card" style="text-align:center;max-width:620px">
-    <h2 style="font-size:22px;margin-bottom:8px">Conectar tu TWS</h2>
-    <p style="color:#8899aa;margin-bottom:28px;font-size:14px">
-      Solo necesitas TWS abierta y seguir estos 3 pasos.
-    </p>
-
-    <div style="background:#141924;border:1px solid #1e2a3a;border-radius:8px;padding:20px;text-align:left;margin-bottom:20px">
-
-      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:20px">
-        <span style="background:#238636;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">1</span>
-        <div style="flex:1">
-          <p style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px">Abri TWS</p>
-          <p style="font-size:13px;color:#8899aa;line-height:1.5">Abre Trader Workstation y habilita la API:<br>
-          <code>Edit → Global Configuration → API → Settings</code><br>
-          ✓ Enable ActiveX and Socket Clients &nbsp; ✓ Puerto: <code>7497</code></p>
-        </div>
-      </div>
-
-      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:20px">
-        <span style="background:#238636;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">2</span>
-        <div style="flex:1">
-          <p style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px">Instalar el Bridge <span style="font-size:11px;color:#8899aa;font-weight:400">(solo la primera vez)</span></p>
-          <p style="font-size:13px;color:#8899aa;margin-bottom:8px">Abri la Terminal y pega este comando:</p>
-          <div style="position:relative">
-            <pre id="install-cmd" style="padding-right:70px;font-size:12px;margin:0">${installCmd}</pre>
-            <button onclick="copyCmd('install-cmd','install-btn')" id="install-btn"
-              style="position:absolute;top:6px;right:6px;padding:4px 12px;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
-              Copiar
-            </button>
-          </div>
-          <p style="font-size:11px;color:#8899aa;margin-top:6px">Requiere Python 3.10+ &nbsp;|&nbsp; Se instala en <code>~/.ib-bridge/</code></p>
-        </div>
-      </div>
-
-      <div style="display:flex;align-items:flex-start;gap:12px">
-        <span style="background:#238636;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">3</span>
-        <div style="flex:1">
-          <p style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px">Conectar</p>
-          <p style="font-size:13px;color:#8899aa;margin-bottom:8px">Cada vez que quieras conectar, pega esto en la Terminal:</p>
-          <div style="position:relative">
-            <pre id="run-cmd" style="padding-right:70px;font-size:12px;margin:0">${runCmd}</pre>
-            <button onclick="copyCmd('run-cmd','run-btn')" id="run-btn"
-              style="position:absolute;top:6px;right:6px;padding:4px 12px;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
-              Copiar
-            </button>
-          </div>
-          <p style="font-size:11px;color:#8899aa;margin-top:6px">El indicador arriba cambiara a <span style="color:#3fb950">● Conectado</span></p>
-        </div>
-      </div>
-
-    </div>
-
-    <div style="background:#0d1117;border:1px solid #1e2a3a;border-radius:8px;padding:16px;text-align:left;margin-bottom:20px">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <p style="font-size:12px;color:#8899aa">Estado de conexion</p>
-          <p id="bridge-live-status" style="font-size:14px;margin-top:4px">Verificando...</p>
-        </div>
-        <div id="status-dot" style="width:12px;height:12px;border-radius:50%;background:#484f58"></div>
-      </div>
-    </div>
-
-    <details style="text-align:left">
-      <summary style="color:#58a6ff;cursor:pointer;font-size:13px">Opciones avanzadas</summary>
-      <div style="margin-top:12px;padding:12px;background:#0d1117;border-radius:6px">
-        <p style="font-size:12px;color:#8899aa;margin-bottom:4px">Tu bridge token (no lo compartas):</p>
-        <div class="token-box" id="token-display" style="font-size:11px">${bridgeToken||'Cargando...'}</div>
-        <button class="btn btn-sm" onclick="regenerateToken()" style="margin-top:8px;font-size:11px">Regenerar Token</button>
-        <p style="font-size:11px;color:#8899aa;margin-top:12px">Puerto 7497 = paper trading &nbsp;|&nbsp; Agrega <code>--ib-port 7496</code> para live</p>
-      </div>
-    </details>
-  </div>`;
-
-  fetch('/api/status').then(r=>r.json()).then(d=>{
-    const el=document.getElementById('bridge-live-status');
-    const dot=document.getElementById('status-dot');
-    if(d.bridge_connected){
-      el.innerHTML='<span style="color:#3fb950;font-weight:600">Conectado</span> — recibiendo datos de TWS';
-      dot.style.background='#3fb950';
-    } else {
-      el.innerHTML='<span style="color:#484f58">Desconectado</span> — segui los pasos de arriba para conectar';
-      dot.style.background='#484f58';
-    }
-  }).catch(()=>{});
-}
-
-function copyCmd(preId,btnId){
-  const text=document.getElementById(preId).textContent;
-  navigator.clipboard.writeText(text);
-  const btn=document.getElementById(btnId);
-  btn.textContent='Copiado!';
-  btn.style.background='#3fb950';
-  setTimeout(()=>{btn.textContent='Copiar';btn.style.background='#238636'},2000);
-}
-
-async function regenerateToken(){
-  if(!confirm('¿Regenerar token? El bridge actual se desconectará.'))return;
-  const r=await fetch('/api/bridge-token/regenerate',{method:'POST'});
-  const d=await r.json();
-  bridgeToken=d.bridge_token;
-  renderSetup();
-}
-
-// Init
-fetchBridgeToken();
-fetchStatus();
-fetchData();
-render();
-setInterval(fetchStatus,5000);
-setInterval(fetchData,15000);
-</script></body></html>"""
+    from cloud.dashboard_html import get_dashboard_html
+    return get_dashboard_html()
 
 
 # ══════════════════════════════════════════════════════════════
