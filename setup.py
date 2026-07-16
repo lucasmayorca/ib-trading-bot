@@ -4,19 +4,17 @@ setup(
     name="ib-trading-bridge",
     version="1.0.0",
     description="Bridge to connect Interactive Brokers TWS to IB Trading Dashboard",
-    packages=find_packages(),
+    packages=["bridge"],
     python_requires=">=3.10",
     install_requires=[
         "ibapi>=9.81.1",
-        "python-socketio[client]>=5.13.0",
-        "pandas",
-        "numpy",
-        "yfinance",
-        "scipy",
+        "python-socketio[client]>=5.12.0",
+        "pandas>=2.0",
+        "numpy>=1.24",
     ],
     entry_points={
         "console_scripts": [
-            "ib-bridge=cloud.bridge:main",
+            "ib-bridge=bridge.main:main",
         ],
     },
 )

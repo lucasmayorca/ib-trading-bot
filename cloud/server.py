@@ -592,9 +592,13 @@ function renderSetup(){
       ✓ Socket port: <code>7497</code> (paper) o <code>7496</code> (live)</p>
     </div>
 
-    <div class="step"><h3>Paso 2 — Instalar el Bridge</h3>
-      <p>En tu terminal:</p>
-      <pre onclick="navigator.clipboard.writeText('pip install ib-trading-bridge')">pip install ib-trading-bridge</pre>
+    <div class="step"><h3>Paso 2 — Instalar el Bridge (una sola vez)</h3>
+      <p>Copia y pega este comando en tu terminal:</p>
+      <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)">curl -sL https://raw.githubusercontent.com/lucasmayorca/ib-trading-bot/main/install-bridge.sh | bash</pre>
+      <p style="margin-top:8px;color:#8899aa;font-size:12px">Requiere Python 3.10+. Instala todo automaticamente en <code>~/.ib-bridge/</code></p>
+      <details style="margin-top:8px"><summary style="color:#58a6ff;cursor:pointer;font-size:13px">Instalacion manual (alternativa)</summary>
+        <pre onclick="navigator.clipboard.writeText('pip install git+https://github.com/lucasmayorca/ib-trading-bot.git')">pip install git+https://github.com/lucasmayorca/ib-trading-bot.git</pre>
+      </details>
     </div>
 
     <div class="step"><h3>Paso 3 — Tu Token</h3>
@@ -604,14 +608,13 @@ function renderSetup(){
     </div>
 
     <div class="step"><h3>Paso 4 — Ejecutar</h3>
-      <p>Copia y pega este comando:</p>
-      <pre id="bridge-cmd" onclick="navigator.clipboard.writeText(this.textContent)">ib-bridge --server ${serverUrl} --token ${bridgeToken||'TU_TOKEN'}</pre>
-      <p style="margin-top:8px">O si TWS está en un puerto diferente:</p>
-      <pre onclick="navigator.clipboard.writeText(this.textContent)">ib-bridge --server ${serverUrl} --token ${bridgeToken||'TU_TOKEN'} --ib-port 7496</pre>
+      <p>Copia y pega este comando cada vez que quieras conectar:</p>
+      <pre id="bridge-cmd" onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)">~/.ib-bridge/venv/bin/ib-bridge --server ${serverUrl} --token ${bridgeToken||'TU_TOKEN'}</pre>
+      <p style="margin-top:8px;color:#8899aa;font-size:12px">Puerto 7497 = paper trading, agrega <code>--ib-port 7496</code> para live</p>
     </div>
 
     <div class="step"><h3>Paso 5 — Listo</h3>
-      <p>El indicador arriba cambiará a <span style="color:#3fb950">● Conectado</span> cuando el bridge se conecte a TWS.</p>
+      <p>El indicador arriba cambiara a <span style="color:#3fb950">● Conectado</span> cuando el bridge se conecte a TWS.</p>
     </div>
   </div>`;
 }
