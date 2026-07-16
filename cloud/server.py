@@ -324,10 +324,54 @@ def api_bars(symbol, period):
 @login_required
 def api_portfolio():
     store = get_user_store(request.user_id)
+    positions = store.get("portfolio_positions", [])
+    analysis = store.get("analysis", {})
+    acct_vals = store.get("account_values", {})
+
+    total_value = sum(p.get("marketValue", 0) for p in positions)
+    total_cost = sum(p.get("averageCost", 0) * p.get("position", 0) for p in positions)
+    total_pnl = sum(p.get("unrealizedPNL", 0) for p in positions)
+    total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+
+    acct = {}
+    for key, val in acct_vals.items():
+        try:
+            acct[key] = {"value": float(val)}
+        except:
+            acct[key] = {"value": val}
+
+    positions_with_analysis = []
+    for pos in positions:
+        sym = pos.get("symbol", "")
+        scan_data = analysis.get(sym, {})
+
+        verdict = "HOLD"
+        if scan_data.get("signal") == "SELL":
+            verdict = "SELL"
+        elif scan_data.get("signal") == "BUY":
+            verdict = "ADD"
+
+        positions_with_analysis.append({
+            **pos,
+            "verdict": verdict,
+            "signal_label": scan_data.get("signal_label", ""),
+            "strength": scan_data.get("strength", 0),
+            "conditions_met": scan_data.get("conditions_met", 0),
+            "macd_ok": scan_data.get("macd_ok", False),
+            "rsi_ok": scan_data.get("rsi_ok", False),
+            "konc_ok": scan_data.get("konc_ok", False),
+        })
+
     return Response(
         to_json({
-            "positions": store.get("portfolio_positions", []),
-            "account_values": store.get("account_values", {}),
+            "positions": positions_with_analysis,
+            "total_value": total_value,
+            "total_cost": total_cost,
+            "total_pnl": total_pnl,
+            "total_pnl_pct": total_pnl_pct,
+            "num_positions": len(positions),
+            "account": acct,
+            "account_values": acct_vals,
             "open_orders": store.get("open_orders", []),
             "executions": store.get("executions", []),
             "bridge_connected": store.get("connected", False),
