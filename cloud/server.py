@@ -8,6 +8,9 @@ Run locally:  python -m cloud.server
 Deploy:       gunicorn --worker-class eventlet -w 1 cloud.server:app
 """
 
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import json
 import math
@@ -627,8 +630,9 @@ setInterval(fetchData,15000);
 #  MAIN
 # ══════════════════════════════════════════════════════════════
 
+db.init_db()
+
 if __name__ == "__main__":
-    db.init_db()
     port = int(os.environ.get("PORT", 5000))
     print(f"[SERVER] Starting on port {port}")
     socketio.run(app, host="0.0.0.0", port=port, debug=False)
