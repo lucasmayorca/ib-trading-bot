@@ -232,7 +232,13 @@ def handle_analysis_batch(data):
     if not user_id:
         return
     store = get_user_store(user_id)
-    for symbol, result in data.get("results", {}).items():
+    results = data.get("results", {})
+    print(f"[ANALYSIS_BATCH] User {user_id}: Received {len(results)} symbols", flush=True)
+    if results:
+        sample_sym = list(results.keys())[0]
+        sample = results[sample_sym]
+        print(f"[ANALYSIS_BATCH] Sample {sample_sym}: keys={list(sample.keys())}", flush=True)
+    for symbol, result in results.items():
         store["analysis"][symbol] = result
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
 
@@ -281,6 +287,8 @@ def api_data():
     for symbol in store.get("stocks", []):
         result = store.get("analysis", {}).get(symbol)
         if result:
+            # Ensure symbol is included in each result
+            result["symbol"] = symbol
             results[symbol] = result
 
     sorted_results = sorted(results.values(), key=lambda x: x.get("strength", 0), reverse=True)
