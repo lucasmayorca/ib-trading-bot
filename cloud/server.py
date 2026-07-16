@@ -332,6 +332,11 @@ def api_portfolio():
     )
 
 
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/status")
 @login_required
 def api_status():
@@ -633,9 +638,14 @@ setInterval(fetchData,15000);
 #  MAIN
 # ══════════════════════════════════════════════════════════════
 
-db.init_db()
+try:
+    db.init_db()
+    print("[SERVER] Database initialized")
+except Exception as e:
+    print(f"[SERVER] WARNING: Database init failed: {e}")
+    print("[SERVER] Server will start but registration/login won't work until DB is available")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"[SERVER] Starting on port {port}")
-    socketio.run(app, host="0.0.0.0", port=port, debug=False)
+    print(f"[SERVER] Starting on port {port} (async_mode=threading)")
+    socketio.run(app, host="0.0.0.0", port=port, debug=False, allow_unsafe_werkzeug=True)
