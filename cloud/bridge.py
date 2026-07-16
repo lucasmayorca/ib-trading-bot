@@ -10,13 +10,17 @@ Usage:
 import argparse
 import json
 import math
+import os
 import sys
 import threading
 import time
 from datetime import datetime
 
+import certifi
 import numpy as np
 import socketio
+
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
@@ -288,7 +292,7 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
     log(f"Conectando al servidor: {server_url}", C)
     try:
-        sio.connect(server_url)
+        sio.connect(server_url, transports=["websocket"])
     except Exception as e:
         log(f"No se pudo conectar al servidor: {e}", R)
         log("Verifica que la URL del servidor sea correcta", Y)
