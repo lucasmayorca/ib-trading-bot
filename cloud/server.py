@@ -844,54 +844,62 @@ function renderPortfolio(){
 function renderSetup(){
   const c=document.getElementById('content');
   const serverUrl=window.location.origin;
-  const isMac=navigator.platform.toUpperCase().indexOf('MAC')>=0;
-  const isWin=navigator.platform.toUpperCase().indexOf('WIN')>=0;
-  const platform=isWin?'windows':'mac';
-  const fileExt=isWin?'.bat':'.command';
+  const installCmd=`curl -sL ${serverUrl}/install.sh | bash`;
+  const runCmd=`~/.ib-bridge/run-bridge.sh ${serverUrl} ${bridgeToken||'TOKEN'}`;
 
-  c.innerHTML=`<div class="setup-card" style="text-align:center;max-width:600px">
+  c.innerHTML=`<div class="setup-card" style="text-align:center;max-width:620px">
     <h2 style="font-size:22px;margin-bottom:8px">Conectar tu TWS</h2>
-    <p style="color:#8899aa;margin-bottom:32px;font-size:14px">
-      Solo necesitas TWS abierta. El bridge se instala y conecta automaticamente.
+    <p style="color:#8899aa;margin-bottom:28px;font-size:14px">
+      Solo necesitas TWS abierta y seguir estos 3 pasos.
     </p>
 
-    <div style="background:#0d1117;border:2px solid #238636;border-radius:12px;padding:32px;margin-bottom:24px">
-      <div style="font-size:48px;margin-bottom:16px">&#9889;</div>
-      <a href="/download-bridge?token=${bridgeToken||''}&platform=${platform}"
-         class="btn" style="display:inline-block;padding:16px 40px;font-size:17px;border-radius:8px;text-decoration:none;background:#238636;color:#fff;font-weight:700">
-        Descargar Conectar-TWS${fileExt}
-      </a>
-      <p style="color:#8899aa;margin-top:16px;font-size:13px">
-        Descarga el archivo → doble-click → listo.<br>
-        Instala todo automaticamente la primera vez.
-      </p>
-    </div>
-
     <div style="background:#141924;border:1px solid #1e2a3a;border-radius:8px;padding:20px;text-align:left;margin-bottom:20px">
-      <h3 style="font-size:15px;margin-bottom:12px;color:#58a6ff">Antes de conectar:</h3>
-      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
-        <span style="color:#3fb950;font-size:18px">1.</span>
-        <div>
-          <p style="font-size:14px"><strong>Abri TWS</strong> (Trader Workstation o IB Gateway)</p>
+
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:20px">
+        <span style="background:#238636;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">1</span>
+        <div style="flex:1">
+          <p style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px">Abri TWS</p>
+          <p style="font-size:13px;color:#8899aa;line-height:1.5">Abre Trader Workstation y habilita la API:<br>
+          <code>Edit → Global Configuration → API → Settings</code><br>
+          ✓ Enable ActiveX and Socket Clients &nbsp; ✓ Puerto: <code>7497</code></p>
         </div>
       </div>
-      <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:10px">
-        <span style="color:#3fb950;font-size:18px">2.</span>
-        <div>
-          <p style="font-size:14px"><strong>Habilita la API:</strong> Edit → Global Configuration → API → Settings</p>
-          <p style="font-size:12px;color:#8899aa;margin-top:2px">✓ Enable ActiveX and Socket Clients &nbsp;&nbsp; ✓ Puerto: 7497</p>
+
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:20px">
+        <span style="background:#238636;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">2</span>
+        <div style="flex:1">
+          <p style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px">Instalar el Bridge <span style="font-size:11px;color:#8899aa;font-weight:400">(solo la primera vez)</span></p>
+          <p style="font-size:13px;color:#8899aa;margin-bottom:8px">Abri la Terminal y pega este comando:</p>
+          <div style="position:relative">
+            <pre id="install-cmd" style="padding-right:70px;font-size:12px;margin:0">${installCmd}</pre>
+            <button onclick="copyCmd('install-cmd','install-btn')" id="install-btn"
+              style="position:absolute;top:6px;right:6px;padding:4px 12px;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
+              Copiar
+            </button>
+          </div>
+          <p style="font-size:11px;color:#8899aa;margin-top:6px">Requiere Python 3.10+ &nbsp;|&nbsp; Se instala en <code>~/.ib-bridge/</code></p>
         </div>
       </div>
-      <div style="display:flex;align-items:flex-start;gap:10px">
-        <span style="color:#3fb950;font-size:18px">3.</span>
-        <div>
-          <p style="font-size:14px"><strong>Doble-click en el archivo descargado</strong></p>
-          <p style="font-size:12px;color:#8899aa;margin-top:2px">Se abre la terminal, instala lo necesario, y conecta automaticamente</p>
+
+      <div style="display:flex;align-items:flex-start;gap:12px">
+        <span style="background:#238636;color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0">3</span>
+        <div style="flex:1">
+          <p style="font-size:15px;font-weight:600;color:#fff;margin-bottom:4px">Conectar</p>
+          <p style="font-size:13px;color:#8899aa;margin-bottom:8px">Cada vez que quieras conectar, pega esto en la Terminal:</p>
+          <div style="position:relative">
+            <pre id="run-cmd" style="padding-right:70px;font-size:12px;margin:0">${runCmd}</pre>
+            <button onclick="copyCmd('run-cmd','run-btn')" id="run-btn"
+              style="position:absolute;top:6px;right:6px;padding:4px 12px;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
+              Copiar
+            </button>
+          </div>
+          <p style="font-size:11px;color:#8899aa;margin-top:6px">El indicador arriba cambiara a <span style="color:#3fb950">● Conectado</span></p>
         </div>
       </div>
+
     </div>
 
-    <div style="background:#141924;border:1px solid #1e2a3a;border-radius:8px;padding:16px;text-align:left;margin-bottom:20px">
+    <div style="background:#0d1117;border:1px solid #1e2a3a;border-radius:8px;padding:16px;text-align:left;margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
           <p style="font-size:12px;color:#8899aa">Estado de conexion</p>
@@ -902,25 +910,16 @@ function renderSetup(){
     </div>
 
     <details style="text-align:left">
-      <summary style="color:#58a6ff;cursor:pointer;font-size:13px;margin-bottom:12px">Opciones avanzadas</summary>
-      <div style="margin-top:12px">
-        <p style="font-size:12px;color:#8899aa;margin-bottom:4px">Tu bridge token:</p>
-        <div class="token-box" id="token-display" style="font-size:12px">${bridgeToken||'Cargando...'}</div>
-        <button class="btn btn-sm" onclick="regenerateToken()" style="margin-top:8px;font-size:12px">Regenerar Token</button>
-
-        <p style="font-size:12px;color:#8899aa;margin-top:16px;margin-bottom:4px">Comando manual (terminal):</p>
-        <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)" style="font-size:11px">curl -sL ${serverUrl}/install.sh | bash</pre>
-
-        <p style="font-size:12px;color:#8899aa;margin-top:12px;margin-bottom:4px">Ejecutar manualmente:</p>
-        <pre onclick="navigator.clipboard.writeText(this.textContent);this.style.borderColor='#3fb950';setTimeout(()=>this.style.borderColor='',1000)" style="font-size:11px">~/.ib-bridge/run-bridge.sh ${serverUrl} ${bridgeToken||'TOKEN'}</pre>
-
-        <p style="font-size:11px;color:#8899aa;margin-top:12px">Puerto 7497 = paper trading &nbsp;|&nbsp; 7496 = live</p>
-        <p style="font-size:11px;color:#8899aa">Requiere Python 3.10+ &nbsp;|&nbsp; Se instala en <code>~/.ib-bridge/</code></p>
+      <summary style="color:#58a6ff;cursor:pointer;font-size:13px">Opciones avanzadas</summary>
+      <div style="margin-top:12px;padding:12px;background:#0d1117;border-radius:6px">
+        <p style="font-size:12px;color:#8899aa;margin-bottom:4px">Tu bridge token (no lo compartas):</p>
+        <div class="token-box" id="token-display" style="font-size:11px">${bridgeToken||'Cargando...'}</div>
+        <button class="btn btn-sm" onclick="regenerateToken()" style="margin-top:8px;font-size:11px">Regenerar Token</button>
+        <p style="font-size:11px;color:#8899aa;margin-top:12px">Puerto 7497 = paper trading &nbsp;|&nbsp; Agrega <code>--ib-port 7496</code> para live</p>
       </div>
     </details>
   </div>`;
 
-  // Update live status
   fetch('/api/status').then(r=>r.json()).then(d=>{
     const el=document.getElementById('bridge-live-status');
     const dot=document.getElementById('status-dot');
@@ -928,10 +927,19 @@ function renderSetup(){
       el.innerHTML='<span style="color:#3fb950;font-weight:600">Conectado</span> — recibiendo datos de TWS';
       dot.style.background='#3fb950';
     } else {
-      el.innerHTML='<span style="color:#484f58">Desconectado</span> — descarga y ejecuta el archivo para conectar';
+      el.innerHTML='<span style="color:#484f58">Desconectado</span> — segui los pasos de arriba para conectar';
       dot.style.background='#484f58';
     }
   }).catch(()=>{});
+}
+
+function copyCmd(preId,btnId){
+  const text=document.getElementById(preId).textContent;
+  navigator.clipboard.writeText(text);
+  const btn=document.getElementById(btnId);
+  btn.textContent='Copiado!';
+  btn.style.background='#3fb950';
+  setTimeout(()=>{btn.textContent='Copiar';btn.style.background='#238636'},2000);
 }
 
 async function regenerateToken(){
