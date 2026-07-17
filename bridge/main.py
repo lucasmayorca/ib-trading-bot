@@ -451,7 +451,10 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
     log("Conectado a TWS", G)
 
-    sio = socketio.Client(reconnection=True, reconnection_delay=5, reconnection_delay_max=15)
+    sio = socketio.Client(
+        reconnection=True, reconnection_delay=5, reconnection_delay_max=15,
+        logger=True, engineio_logger=True,
+    )
     authenticated = threading.Event()
 
     @sio.on("auth_result")

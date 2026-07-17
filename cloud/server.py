@@ -33,7 +33,10 @@ import options_lab
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("JWT_SECRET", "change-me-in-production")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent")
+socketio = SocketIO(
+    app, cors_allowed_origins="*", async_mode="gevent",
+    logger=True, engineio_logger=True,
+)
 
 # Per-user live data store: { user_id: { ... } }
 user_data = {}
