@@ -3,6 +3,8 @@ Signal generation for the bridge (standalone).
 BUY/SELL when all 3 indicators align.
 """
 
+import numpy as np
+
 
 def check_buy_conditions(koncorde_df, macd_df, rsi_df):
     if len(koncorde_df) < 5 or len(macd_df) < 5 or len(rsi_df) < 5:
@@ -148,6 +150,74 @@ def check_sell_conditions(koncorde_df, macd_df, rsi_df):
     }
 
 
+def _classify_trend(signal, buy_details, sell_details, vals):
+    """
+    Genera una etiqueta descriptiva de tendencia basada en los 3 indicadores.
+    signal es BUY/SELL/HOLD; esta funcion devuelve un label mas granular.
+    """
+    if signal == "BUY":
+        if buy_details.get("strength", 0) >= 4:
+            return "COMPRA FUERTE"
+        return "COMPRA"
+
+    if signal == "SELL":
+        if sell_details.get("strength", 0) >= 4:
+            return "VENTA FUERTE"
+        return "VENTA"
+
+    # --- HOLD: analizar tendencia con los indicadores ---
+    buy_met = buy_details.get("conditions_met", 0)
+    sell_met = sell_details.get("conditions_met", 0)
+
+    rsi = vals.get("rsi")
+    macd_hist = vals.get("macd", {}).get("hist") if vals.get("macd") else None
+    konc = vals.get("koncorde", {})
+    marron = konc.get("marron")
+    media = konc.get("media")
+
+    # 2 de 3 condiciones de compra cumplidas
+    if buy_met == 2:
+        return "COMPRA INMINENTE"
+    # 2 de 3 condiciones de venta cumplidas
+    if sell_met == 2:
+        return "VENTA INMINENTE"
+
+    # 1 condicion: detectar hacia donde vira
+    bullish_hints = 0
+    bearish_hints = 0
+
+    if rsi is not None:
+        if rsi < 40:
+            bullish_hints += 1
+        elif rsi > 60:
+            bearish_hints += 1
+
+    if macd_hist is not None:
+        if macd_hist < 0 and buy_details.get("macd_ok"):
+            bullish_hints += 1
+        elif macd_hist > 0 and sell_details.get("macd_ok"):
+            bearish_hints += 1
+
+    if marron is not None and media is not None:
+        if marron < media and buy_details.get("konc_ok"):
+            bullish_hints += 1
+        elif marron > media and sell_details.get("konc_ok"):
+            bearish_hints += 1
+
+    if buy_met == 1 or bullish_hints >= 2:
+        return "VIRANDO A COMPRA"
+    if sell_met == 1 or bearish_hints >= 2:
+        return "VIRANDO A VENTA"
+
+    if rsi is not None:
+        if rsi < 35:
+            return "ZONA DE SOBREVENTA"
+        if rsi > 65:
+            return "ZONA DE SOBRECOMPRA"
+
+    return "NEUTRAL"
+
+
 def generate_signal(indicators):
     koncorde = indicators["koncorde"]
     macd = indicators["macd"]
@@ -176,12 +246,18 @@ def generate_signal(indicators):
     if len(rsi_data) > 0:
         last_vals["rsi"] = rsi_data.iloc[-1]["rsi"]
 
+    signal_label = _classify_trend(signal, buy_details, sell_details, last_vals)
+
     return {
         "signal": signal,
-        "score": details.get("strength", 0),
+        "signal_label": signal_label,
+        "strength": details.get("strength", 0),
         "conditions_met": details.get("conditions_met", 0),
+        "macd_ok": details.get("macd_ok", False),
+        "rsi_ok": details.get("rsi_ok", False),
+        "konc_ok": details.get("konc_ok", False),
         "macd_detail": details.get("macd_detail", ""),
         "rsi_detail": details.get("rsi_detail", ""),
-        "koncorde_detail": details.get("konc_detail", ""),
+        "konc_detail": details.get("konc_detail", ""),
         "values": last_vals,
     }
