@@ -1274,9 +1274,182 @@ document.getElementById('form').onsubmit=async e=>{{
 </script></body></html>"""
 
 
+def _inject_cloud_setup_tab(html):
+    """vista_web.py's DASHBOARD_HTML is the local (single-user, always-connected)
+    template. The cloud version reuses it verbatim for parity, but needs one
+    extra thing the local bot doesn't: a way to connect a per-user IB Bridge.
+    This splices in a "Conectar TWS" tab + bridge status header, leaving the
+    rest of the template completely untouched."""
+
+    # 1. Nav tab button
+    html = html.replace(
+        '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Historicos</button>\n</div>',
+        '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Historicos</button>\n'
+        '  <button class="nav-tab" onclick="switchTab(\'setup\')">Conectar TWS</button>\n</div>',
+    )
+
+    # 2. Header: bridge status + user email + logout (right side, stacked under the sub line)
+    html = html.replace(
+        '<div class="sub">MACD + RSI + KONCORDE &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n</div>',
+        '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">\n'
+        '    <div class="sub">MACD + RSI + KONCORDE &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n'
+        '    <div style="display:flex;align-items:center;gap:10px">\n'
+        '      <span id="bridge-dot" style="width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block"></span>\n'
+        '      <span id="bridge-status-text" style="font-size:12px;color:var(--muted)">Verificando...</span>\n'
+        '      <span id="user-email" style="color:var(--muted);font-size:11px"></span>\n'
+        '      <a href="/logout" style="color:var(--accent);font-size:11px;text-decoration:none;border:1px solid var(--border);padding:4px 10px;border-radius:6px">Salir</a>\n'
+        '    </div>\n  </div>\n</div>',
+    )
+
+    # 3. Tab content, inserted right before the footer
+    setup_tab_html = '''
+<!-- TAB: CONECTAR TWS -->
+<div id="tab-setup" class="tab-content">
+<div class="setup-section" style="max-width:640px;margin:32px auto;padding:0 16px">
+  <div class="setup-card" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:28px">
+    <h2 style="margin:0 0 4px">Conectar tu TWS</h2>
+    <p class="sub" style="margin:0 0 20px;color:var(--muted)">Solo necesitas TWS abierta y seguir estos 3 pasos.</p>
+    <div class="setup-steps" style="display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;gap:12px">
+        <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">1</span>
+        <div>
+          <h3 style="margin:0 0 4px;font-size:14px">Abri TWS</h3>
+          <p style="margin:0;font-size:13px;color:var(--muted)">Abre Trader Workstation y habilita la API:<br>
+          <code>Edit &rarr; Global Configuration &rarr; API &rarr; Settings</code><br>
+          &check; Enable ActiveX and Socket Clients &nbsp; &check; Puerto: <code>7497</code></p>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">2</span>
+        <div style="flex:1">
+          <h3 style="margin:0 0 4px;font-size:14px">Instalar el Bridge <span style="font-size:11px;color:var(--muted);font-weight:400">(solo la primera vez)</span></h3>
+          <p style="margin:0 0 8px;font-size:13px;color:var(--muted)">Abri la Terminal y pega este comando:</p>
+          <div style="position:relative">
+            <div id="install-cmd" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 90px 10px 12px;font-family:monospace;font-size:12px;overflow-x:auto;white-space:nowrap"></div>
+            <button id="install-btn" onclick="copyCmd('install-cmd','install-btn')" style="position:absolute;right:6px;top:6px;background:var(--accent);color:#fff;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px">Copiar</button>
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin-top:6px">Requiere Python 3.10+ &nbsp;|&nbsp; Se instala en <code>~/.ib-bridge/</code></p>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">3</span>
+        <div style="flex:1">
+          <h3 style="margin:0 0 4px;font-size:14px">Conectar</h3>
+          <p style="margin:0 0 8px;font-size:13px;color:var(--muted)">Cada vez que quieras conectar, pega esto en la Terminal:</p>
+          <div style="position:relative">
+            <div id="run-cmd" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 90px 10px 12px;font-family:monospace;font-size:12px;overflow-x:auto;white-space:nowrap"></div>
+            <button id="run-btn" onclick="copyCmd('run-cmd','run-btn')" style="position:absolute;right:6px;top:6px;background:var(--accent);color:#fff;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px">Copiar</button>
+          </div>
+          <p style="font-size:11px;color:var(--muted);margin-top:6px">El indicador de arriba cambiara a <span style="color:var(--buy)">&#9679; Conectado</span></p>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:20px;padding:14px;background:var(--bg);border-radius:8px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <p style="font-size:12px;color:var(--muted);margin:0">Estado de conexion</p>
+        <p id="setup-live-status" style="font-size:14px;margin:4px 0 0">Verificando...</p>
+      </div>
+      <div id="setup-status-dot" style="width:12px;height:12px;border-radius:50%;background:var(--dim)"></div>
+    </div>
+    <details style="text-align:left;margin-top:16px">
+      <summary style="color:var(--accent);cursor:pointer;font-size:13px">Opciones avanzadas</summary>
+      <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px">
+        <p style="font-size:12px;color:var(--muted);margin-bottom:4px">Tu bridge token (no lo compartas):</p>
+        <div id="token-display" style="font-family:monospace;font-size:12px;background:var(--surface);border:1px solid var(--border);padding:8px;border-radius:6px;word-break:break-all">Cargando...</div>
+        <button onclick="regenerateToken()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;margin-top:8px">Regenerar Token</button>
+        <p style="font-size:11px;color:var(--muted);margin-top:12px">Puerto 7497 = paper trading &nbsp;|&nbsp; Agrega <code>--ib-port 7496</code> para live</p>
+      </div>
+    </details>
+  </div>
+</div>
+</div>
+
+'''
+    html = html.replace('\n<div class="footer">', setup_tab_html + '<div class="footer">')
+
+    # 4. switchTab(): load the setup tab's dynamic content when opened
+    html = html.replace(
+        "if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}\n}",
+        "if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}\n"
+        "  if(tab==='setup')renderSetup();\n}",
+    )
+
+    # 5. New script block: bridge status polling + setup tab rendering.
+    #    Kept separate from vista_web.py's own <script> to avoid touching it.
+    cloud_script = '''
+<script>
+let _bridgeConnected=false;
+let _bridgeToken='';
+async function fetchStatus(){
+  try{
+    let r=await fetch('/api/status');
+    if(r.status===401){window.location='/login';return;}
+    let d=await r.json();
+    _bridgeConnected=d.bridge_connected;
+    document.getElementById('bridge-dot').style.background=_bridgeConnected?'var(--buy)':'var(--sell)';
+    document.getElementById('bridge-status-text').textContent=_bridgeConnected
+      ?'Conectado — '+d.stocks_count+' acciones'+(d.last_update?' ('+d.last_update+')':'')
+      :'TWS Desconectado';
+    if(d.email)document.getElementById('user-email').textContent=d.email;
+    if(document.getElementById('tab-setup').classList.contains('active'))renderSetup();
+  }catch(e){}
+}
+async function fetchBridgeToken(){
+  try{
+    let r=await fetch('/api/bridge-token');
+    if(r.status===401)return;
+    let d=await r.json();
+    _bridgeToken=d.bridge_token||'';
+  }catch(e){}
+}
+async function regenerateToken(){
+  if(!confirm('Regenerar token? El bridge actual se desconectara.'))return;
+  try{
+    let r=await fetch('/api/bridge-token/regenerate',{method:'POST'});
+    let d=await r.json();
+    _bridgeToken=d.bridge_token||'';
+    renderSetup();
+  }catch(e){}
+}
+function renderSetup(){
+  let serverUrl=window.location.origin;
+  let installCmd=document.getElementById('install-cmd');
+  let runCmd=document.getElementById('run-cmd');
+  if(installCmd)installCmd.textContent='curl -sL '+serverUrl+'/install.sh | bash';
+  if(runCmd)runCmd.textContent='~/.ib-bridge/run-bridge.sh '+serverUrl+' '+(_bridgeToken||'TOKEN');
+  let tokenEl=document.getElementById('token-display');
+  if(tokenEl)tokenEl.textContent=_bridgeToken||'Cargando...';
+  let statusEl=document.getElementById('setup-live-status');
+  let dotEl=document.getElementById('setup-status-dot');
+  if(statusEl&&dotEl){
+    if(_bridgeConnected){
+      statusEl.innerHTML='<span style="color:var(--buy);font-weight:600">Conectado</span> — recibiendo datos de TWS';
+      dotEl.style.background='var(--buy)';
+    }else{
+      statusEl.innerHTML='<span style="color:var(--dim)">Desconectado</span> — segui los pasos de arriba para conectar';
+      dotEl.style.background='var(--dim)';
+    }
+  }
+}
+function copyCmd(preId,btnId){
+  let text=document.getElementById(preId).textContent;
+  navigator.clipboard.writeText(text);
+  let btn=document.getElementById(btnId);
+  btn.textContent='Copiado!';
+  setTimeout(()=>{btn.textContent='Copiar'},2000);
+}
+fetchStatus();
+fetchBridgeToken();
+setInterval(fetchStatus,10000);
+</script>
+'''
+    html = html.replace("</body>\n</html>", cloud_script + "</body>\n</html>")
+    return html
+
+
 def _dashboard_page():
     from vista_web import DASHBOARD_HTML
-    return DASHBOARD_HTML
+    return _inject_cloud_setup_tab(DASHBOARD_HTML)
 
 
 # ══════════════════════════════════════════════════════════════
