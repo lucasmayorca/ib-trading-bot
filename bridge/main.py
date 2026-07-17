@@ -400,6 +400,29 @@ def analyze_stock(ib_app, symbol, req_id):
 #  MAIN BRIDGE LOOP
 # ══════════════════════════════════════════════════════════════
 
+def safe_emit(sio, event, data, retries=3, retry_delay=3):
+    """Emit that survives a mid-scan WebSocket drop instead of crashing the
+    whole bridge. python-socketio's Client auto-reconnects in the background,
+    but a call to emit() made while that reconnect is still in flight raises
+    immediately — so we wait for it and retry a few times before giving up
+    on just this one message."""
+    for attempt in range(retries):
+        try:
+            if not sio.connected:
+                log(f"  Conexion caida, esperando reconexion... (intento {attempt + 1}/{retries})", Y)
+                for _ in range(retry_delay * 10):
+                    if sio.connected:
+                        break
+                    time.sleep(0.1)
+            sio.emit(event, data)
+            return True
+        except Exception as e:
+            log(f"  No se pudo enviar '{event}' (intento {attempt + 1}/{retries}): {e}", Y)
+            time.sleep(retry_delay)
+    log(f"  Se descarto el envio de '{event}' tras {retries} intentos", R)
+    return False
+
+
 def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
     log(f"Conectando a TWS en {ib_host}:{ib_port}...", C)
     ib_app = BridgeIB()
@@ -433,7 +456,7 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
         dur = duration_map.get(period, "1 Y")
         log(f"Fetching bars for {symbol} ({period})", C)
         bars = fetch_historical(ib_app, symbol, 8000, duration=dur)
-        sio.emit("bars_data", clean({"symbol": symbol, "period": period, "bars": bars}))
+        safe_emit(sio, "bars_data", clean({"symbol": symbol, "period": period, "bars": bars}))
 
     log(f"Conectando al servidor: {server_url}", C)
     try:
@@ -456,64 +479,71 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
     initial_fills = fetch_new_fills(ib_app, 6999)
     if initial_fills:
         log(f"  {len(initial_fills)} fills recientes encontrados, enviando al servidor...", C)
-        sio.emit("trades_data", clean({"fills": initial_fills}))
+        safe_emit(sio, "trades_data", clean({"fills": initial_fills}))
 
     try:
         while True:
-            stocks = get_stock_list()
-            sio.emit("stock_list", {"symbols": stocks})
-            log(f"Escaneando {len(stocks)} acciones...", C)
+            try:
+                stocks = get_stock_list()
+                safe_emit(sio, "stock_list", {"symbols": stocks})
+                log(f"Escaneando {len(stocks)} acciones...", C)
 
-            results = {}
-            success_count = 0
-            for i, symbol in enumerate(stocks):
-                req_id = 1000 + i
-                result = analyze_stock(ib_app, symbol, req_id)
-                if result:
-                    results[symbol] = result
-                    success_count += 1
-                    log(f"  ✓ {symbol}: {result.get('signal', 'NEUTRAL')} (strength={result.get('strength', 0):.1f})", G)
-                time.sleep(0.5)
+                results = {}
+                success_count = 0
+                for i, symbol in enumerate(stocks):
+                    req_id = 1000 + i
+                    result = analyze_stock(ib_app, symbol, req_id)
+                    if result:
+                        results[symbol] = result
+                        success_count += 1
+                        log(f"  ✓ {symbol}: {result.get('signal', 'NEUTRAL')} (strength={result.get('strength', 0):.1f})", G)
+                    time.sleep(0.5)
 
-                if (i + 1) % 10 == 0:
-                    if results:
-                        log(f"  Enviando {len(results)} análisis al servidor...", C)
-                        sio.emit("analysis_batch", clean({"results": results}))
-                    results = {}
+                    if (i + 1) % 10 == 0:
+                        if results:
+                            log(f"  Enviando {len(results)} análisis al servidor...", C)
+                            safe_emit(sio, "analysis_batch", clean({"results": results}))
+                        results = {}
 
-            if results:
-                log(f"  Enviando {len(results)} análisis finales al servidor...", C)
-                sio.emit("analysis_batch", clean({"results": results}))
+                if results:
+                    log(f"  Enviando {len(results)} análisis finales al servidor...", C)
+                    safe_emit(sio, "analysis_batch", clean({"results": results}))
 
-            log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
+                log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
 
-            ib_app.portfolio_positions = []
-            ib_app.account_values = {}
-            ib_app.account_done = False
-            ib_app.open_orders = []
-            ib_app.open_orders_done = False
-            ib_app.reqAccountUpdates(True, "")
-            ib_app.reqAllOpenOrders()
+                ib_app.portfolio_positions = []
+                ib_app.account_values = {}
+                ib_app.account_done = False
+                ib_app.open_orders = []
+                ib_app.open_orders_done = False
+                ib_app.reqAccountUpdates(True, "")
+                ib_app.reqAllOpenOrders()
 
-            time.sleep(3)
-            sio.emit("portfolio_data", clean({
-                "positions": ib_app.portfolio_positions,
-                "account_values": ib_app.account_values,
-                "open_orders": ib_app.open_orders,
-                "executions": [],
-            }))
-            ib_app.reqAccountUpdates(False, "")
+                time.sleep(3)
+                safe_emit(sio, "portfolio_data", clean({
+                    "positions": ib_app.portfolio_positions,
+                    "account_values": ib_app.account_values,
+                    "open_orders": ib_app.open_orders,
+                    "executions": [],
+                }))
+                ib_app.reqAccountUpdates(False, "")
 
-            new_fills = fetch_new_fills(ib_app, 7000)
-            if new_fills:
-                log(f"  {len(new_fills)} fills nuevos detectados, enviando al servidor...", C)
-                sio.emit("trades_data", clean({"fills": new_fills}))
+                new_fills = fetch_new_fills(ib_app, 7000)
+                if new_fills:
+                    log(f"  {len(new_fills)} fills nuevos detectados, enviando al servidor...", C)
+                    safe_emit(sio, "trades_data", clean({"fills": new_fills}))
 
-            buy_count = sum(1 for r in results.values() if r.get("signal") == "BUY") if results else 0
-            sell_count = sum(1 for r in results.values() if r.get("signal") == "SELL") if results else 0
-            log(f"Scan completo — {buy_count} BUY, {sell_count} SELL senales", G)
-            log(f"Proximo scan en {SCAN_INTERVAL // 60} minutos...", W)
-            time.sleep(SCAN_INTERVAL)
+                buy_count = sum(1 for r in results.values() if r.get("signal") == "BUY") if results else 0
+                sell_count = sum(1 for r in results.values() if r.get("signal") == "SELL") if results else 0
+                log(f"Scan completo — {buy_count} BUY, {sell_count} SELL senales", G)
+                log(f"Proximo scan en {SCAN_INTERVAL // 60} minutos...", W)
+                time.sleep(SCAN_INTERVAL)
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as e:
+                log(f"Error durante el ciclo de escaneo: {e}", R)
+                log(f"Reintentando en {SCAN_INTERVAL // 60} minutos...", Y)
+                time.sleep(SCAN_INTERVAL)
 
     except KeyboardInterrupt:
         log("\nDeteniendo bridge...", Y)
