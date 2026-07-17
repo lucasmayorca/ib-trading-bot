@@ -400,12 +400,16 @@ def analyze_stock(ib_app, symbol, req_id):
 #  MAIN BRIDGE LOOP
 # ══════════════════════════════════════════════════════════════
 
-def safe_emit(sio, event, data, retries=3, retry_delay=3):
+def safe_emit(sio, event, data, server_url=None, authenticated=None, retries=5, retry_delay=3):
     """Emit that survives a mid-scan WebSocket drop instead of crashing the
-    whole bridge. python-socketio's Client auto-reconnects in the background,
-    but a call to emit() made while that reconnect is still in flight raises
-    immediately — so we wait for it and retry a few times before giving up
-    on just this one message."""
+    whole bridge. python-socketio's automatic reconnection only kicks in for
+    connections lost unexpectedly, and even then it only restores the
+    transport — it does not know to resend our 'bridge_auth' event, and in
+    practice it can also just get stuck (e.g. a Railway deploy/restart drops
+    everyone at once). So on top of waiting briefly, this forces a manual
+    reconnect if the client is still down after a bit, then waits for the
+    'connect' handler's re-auth handshake to finish before actually sending —
+    otherwise the server silently drops the message (unknown socket id)."""
     for attempt in range(retries):
         try:
             if not sio.connected:
@@ -414,6 +418,17 @@ def safe_emit(sio, event, data, retries=3, retry_delay=3):
                     if sio.connected:
                         break
                     time.sleep(0.1)
+                if not sio.connected and server_url:
+                    try:
+                        sio.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        sio.connect(server_url)
+                    except Exception as ce:
+                        log(f"  Reconexion manual fallo: {ce}", Y)
+            if sio.connected and authenticated is not None and not authenticated.is_set():
+                authenticated.wait(timeout=10)
             sio.emit(event, data)
             return True
         except Exception as e:
@@ -436,7 +451,7 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
     log("Conectado a TWS", G)
 
-    sio = socketio.Client(reconnection=True, reconnection_delay=5)
+    sio = socketio.Client(reconnection=True, reconnection_delay=5, reconnection_delay_max=15)
     authenticated = threading.Event()
 
     @sio.on("auth_result")
@@ -448,6 +463,21 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
             log(f"Auth failed: {data.get('error')}", R)
             sys.exit(1)
 
+    @sio.event
+    def connect():
+        # Fires on the *first* connect and on every automatic/manual
+        # reconnect. python-socketio only restores the transport — it has
+        # no idea about our app-level "bridge_auth" handshake, so we have
+        # to redo it here every time or the server will just ignore us
+        # (bridge_sessions won't have this new socket id mapped to a user).
+        log("Conectado al servidor (socket)", G)
+        authenticated.clear()
+        sio.emit("bridge_auth", {"bridge_token": bridge_token})
+
+    @sio.event
+    def disconnect():
+        log("Desconectado del servidor cloud", Y)
+
     @sio.on("request_bars")
     def on_request_bars(data):
         symbol = data.get("symbol")
@@ -456,7 +486,7 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
         dur = duration_map.get(period, "1 Y")
         log(f"Fetching bars for {symbol} ({period})", C)
         bars = fetch_historical(ib_app, symbol, 8000, duration=dur)
-        safe_emit(sio, "bars_data", clean({"symbol": symbol, "period": period, "bars": bars}))
+        safe_emit(sio, "bars_data", clean({"symbol": symbol, "period": period, "bars": bars}), server_url, authenticated)
 
     log(f"Conectando al servidor: {server_url}", C)
     try:
@@ -467,7 +497,6 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
         ib_app.disconnect()
         sys.exit(1)
 
-    sio.emit("bridge_auth", {"bridge_token": bridge_token})
     if not authenticated.wait(timeout=10):
         log("Timeout esperando autenticacion", R)
         ib_app.disconnect()
@@ -479,13 +508,13 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
     initial_fills = fetch_new_fills(ib_app, 6999)
     if initial_fills:
         log(f"  {len(initial_fills)} fills recientes encontrados, enviando al servidor...", C)
-        safe_emit(sio, "trades_data", clean({"fills": initial_fills}))
+        safe_emit(sio, "trades_data", clean({"fills": initial_fills}), server_url, authenticated)
 
     try:
         while True:
             try:
                 stocks = get_stock_list()
-                safe_emit(sio, "stock_list", {"symbols": stocks})
+                safe_emit(sio, "stock_list", {"symbols": stocks}, server_url, authenticated)
                 log(f"Escaneando {len(stocks)} acciones...", C)
 
                 results = {}
@@ -502,12 +531,12 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                     if (i + 1) % 10 == 0:
                         if results:
                             log(f"  Enviando {len(results)} análisis al servidor...", C)
-                            safe_emit(sio, "analysis_batch", clean({"results": results}))
+                            safe_emit(sio, "analysis_batch", clean({"results": results}), server_url, authenticated)
                         results = {}
 
                 if results:
                     log(f"  Enviando {len(results)} análisis finales al servidor...", C)
-                    safe_emit(sio, "analysis_batch", clean({"results": results}))
+                    safe_emit(sio, "analysis_batch", clean({"results": results}), server_url, authenticated)
 
                 log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
 
@@ -525,13 +554,13 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                     "account_values": ib_app.account_values,
                     "open_orders": ib_app.open_orders,
                     "executions": [],
-                }))
+                }), server_url, authenticated)
                 ib_app.reqAccountUpdates(False, "")
 
                 new_fills = fetch_new_fills(ib_app, 7000)
                 if new_fills:
                     log(f"  {len(new_fills)} fills nuevos detectados, enviando al servidor...", C)
-                    safe_emit(sio, "trades_data", clean({"fills": new_fills}))
+                    safe_emit(sio, "trades_data", clean({"fills": new_fills}), server_url, authenticated)
 
                 buy_count = sum(1 for r in results.values() if r.get("signal") == "BUY") if results else 0
                 sell_count = sum(1 for r in results.values() if r.get("signal") == "SELL") if results else 0
