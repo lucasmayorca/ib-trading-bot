@@ -23,8 +23,12 @@ from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
 from ibapi.execution import ExecutionFilter
 
-from bridge.indicators import calculate_macd, calculate_rsi, calculate_koncorde
+from bridge.indicators import calculate_macd, calculate_rsi, calculate_koncorde, sma, ema
 from bridge.signals import generate_signal
+from bridge.backtester import run_backtest
+
+MA_PERIODS = [200, 100, 50, 20]
+EMA_PERIOD = 9
 
 # ══════════════════════════════════════════════════════════════
 #  CONFIG
@@ -139,8 +143,12 @@ class BridgeIB(EWrapper, EClient):
         self.open_orders.append({
             "orderId": orderId, "symbol": contract.symbol,
             "action": order.action, "qty": float(order.totalQuantity),
-            "orderType": order.orderType, "lmtPrice": order.lmtPrice,
-            "auxPrice": order.auxPrice, "status": orderState.status,
+            "quantity": float(order.totalQuantity),
+            "orderType": order.orderType, "order_type": order.orderType,
+            "lmtPrice": order.lmtPrice, "lmt_price": order.lmtPrice,
+            "auxPrice": order.auxPrice, "aux_price": order.auxPrice,
+            "parent_id": int(getattr(order, "parentId", 0) or 0),
+            "status": orderState.status,
         })
 
     def openOrderEnd(self):
@@ -223,7 +231,7 @@ def fetch_historical(app, symbol, req_id, duration="1 Y"):
         duration, "1 day", "TRADES", 1, 1, False, [],
     )
     start = time.time()
-    timeout = 15  # Reduced from 30s
+    timeout = 25 if duration == "5 Y" else 15
     while not app.hist_done.get(req_id, False) and time.time() - start < timeout:
         time.sleep(0.1)  # More responsive polling
     bars = app.historical_data.get(req_id, [])
@@ -288,7 +296,7 @@ def _format_bar_date(raw_date):
 
 
 def analyze_stock(ib_app, symbol, req_id):
-    bars = fetch_historical(ib_app, symbol, req_id)
+    bars = fetch_historical(ib_app, symbol, req_id, duration="5 Y")
     if not bars:
         log(f"  {symbol}: No bars returned", Y)
         return None
@@ -307,8 +315,14 @@ def analyze_stock(ib_app, symbol, req_id):
 
         indicators = {"macd": macd_df, "rsi": rsi_df, "koncorde": koncorde_df}
         signal_result = generate_signal(indicators)
+        backtest_result = run_backtest(df, indicators_dict=indicators)
 
         price = float(df["close"].iloc[-1])
+        close = df["close"]
+
+        avg_vol = df["volume"].iloc[-20:].mean()
+        dv = float(price * avg_vol)
+        dollar_vol = dv if not (math.isnan(dv) or math.isinf(dv)) else 0.0
 
         ohlc = []
         dates = []
@@ -323,9 +337,28 @@ def analyze_stock(ib_app, symbol, req_id):
                 "close": float(row["close"]),
             })
 
+        mas = {}
+        for p in MA_PERIODS:
+            if len(close) >= p:
+                ma_series = sma(close, p)
+                mas[f"sma{p}"] = [round(float(x), 2) if not pd.isna(x) else None for x in ma_series]
+                mas[f"sma{p}_val"] = round(float(ma_series.iloc[-1]), 2)
+            else:
+                mas[f"sma{p}"] = []
+                mas[f"sma{p}_val"] = None
+
+        if len(close) >= EMA_PERIOD:
+            ema_series = ema(close, EMA_PERIOD)
+            mas["ema9"] = [round(float(x), 2) if not pd.isna(x) else None for x in ema_series]
+            mas["ema9_val"] = round(float(ema_series.iloc[-1]), 2)
+        else:
+            mas["ema9"] = []
+            mas["ema9_val"] = None
+
         chart_data = {
             "ohlc": ohlc,
             "dates": dates,
+            "mas": mas,
             "macd": {
                 "hist": [float(v) if not pd.isna(v) else None for v in macd_df["hist"]],
                 "macd": [float(v) if not pd.isna(v) else None for v in macd_df["macd"]],
@@ -343,6 +376,7 @@ def analyze_stock(ib_app, symbol, req_id):
         return clean({
             "symbol": symbol,
             "price": price,
+            "dollar_vol": dollar_vol,
             "signal": signal_result.get("signal", "NEUTRAL"),
             "signal_label": signal_result.get("signal_label", "NEUTRAL"),
             "strength": signal_result.get("strength", 0),
@@ -354,6 +388,7 @@ def analyze_stock(ib_app, symbol, req_id):
             "rsi_detail": signal_result.get("rsi_detail", ""),
             "konc_detail": signal_result.get("konc_detail", ""),
             "values": signal_result.get("values", {}),
+            "backtest": backtest_result,
             "chart": chart_data,
         })
     except Exception as e:

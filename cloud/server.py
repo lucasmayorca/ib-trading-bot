@@ -307,20 +307,47 @@ def index():
 @app.route("/api/data")
 @login_required
 def api_data():
+    from vista_web import compute_top3
+
     store = get_user_store(request.user_id)
+    analysis = store.get("analysis", {})
+
     results = {}
     for symbol in store.get("stocks", []):
-        result = store.get("analysis", {}).get(symbol)
-        if result:
-            # Ensure symbol is included in each result
-            result["symbol"] = symbol
-            results[symbol] = result
+        sig = analysis.get(symbol)
+        if not sig:
+            results[symbol] = None
+            continue
 
-    sorted_results = sorted(results.values(), key=lambda x: x.get("strength", 0), reverse=True)
-    top3 = []
-    for r in sorted_results[:3]:
-        if r.get("conditions_met", 0) >= 2 or r.get("signal") in ("BUY", "SELL"):
-            top3.append(r)
+        bt = sig.get("backtest", {}) or {}
+        results[symbol] = {
+            "symbol": symbol,
+            "signal": sig.get("signal", "HOLD"),
+            "signal_label": sig.get("signal_label", sig.get("signal", "HOLD")),
+            "strength": float(sig.get("strength", 0)),
+            "conditions_met": int(sig.get("conditions_met", 0)),
+            "macd_ok": bool(sig.get("macd_ok", False)),
+            "rsi_ok": bool(sig.get("rsi_ok", False)),
+            "konc_ok": bool(sig.get("konc_ok", False)),
+            "macd_detail": sig.get("macd_detail", ""),
+            "rsi_detail": sig.get("rsi_detail", ""),
+            "konc_detail": sig.get("konc_detail", ""),
+            "price": float(sig.get("price", 0)),
+            "dollar_vol": float(sig.get("dollar_vol", 0)),
+            "values": sig.get("values", {}),
+            "chart": sig.get("chart"),
+            "confidence": bt.get("confidence", 0),
+            "buy_avg_return": bt.get("buy_avg_return"),
+            "sell_avg_return": bt.get("sell_avg_return"),
+            "buy_count": bt.get("buy_count", 0),
+            "sell_count": bt.get("sell_count", 0),
+        }
+
+    try:
+        top3 = compute_top3(analysis)
+    except Exception as e:
+        print(f"[TOP3] Error: {e}", flush=True)
+        top3 = []
 
     return Response(
         to_json({
@@ -353,61 +380,267 @@ def api_bars(symbol, period):
     return jsonify({"status": "requested", "message": "Data is being fetched, retry in a few seconds"}), 202
 
 
+def _build_cloud_position_analysis(sym, position, data, n_bars=90):
+    """Cloud equivalent of vista_web._build_position_deep_analysis(), but takes
+    the analysis dict explicitly (from this user's bridge-fed store) instead of
+    reading vista_web's own module-global analysis_cache."""
+    from vista_web import (
+        _compute_price_levels, _generate_rationale, _generate_thesis,
+        _score_stock, _extract_chart_data, _compute_signal_markers,
+        _compute_position_verdict, _fetch_fundamentals, fundamentals_cache,
+    )
+
+    if data is None or not (data.get("chart") or {}).get("ohlc"):
+        return None
+
+    try:
+        _fetch_fundamentals([sym])
+    except Exception as e:
+        print(f"[PORTFOLIO_DEEP] Fundamentals error for {sym}: {e}", flush=True)
+    fund_entry = fundamentals_cache.get(sym, {})
+    fund = fund_entry.get("data", {}) if isinstance(fund_entry, dict) else {}
+
+    try:
+        levels = _compute_price_levels(data)
+    except Exception:
+        levels = {"entry_low": 0, "entry_high": 0, "target": 0, "stop_loss": 0,
+                  "atr": 0, "risk_reward": 0, "target_pct": 0,
+                  "target_basis": "", "horizon_weeks": ""}
+    try:
+        rationale = _generate_rationale(sym, data, levels)
+    except Exception:
+        rationale = []
+    try:
+        thesis = _generate_thesis(sym, data, levels, fund)
+    except Exception:
+        thesis = ""
+
+    try:
+        ohlc_slice, mas_sliced, _ = _extract_chart_data(data, n_bars)
+    except Exception:
+        ohlc_slice, mas_sliced = [], {}
+    try:
+        sig_markers = _compute_signal_markers(data, n_bars)
+    except Exception:
+        sig_markers = []
+
+    chart = data.get("chart") or {}
+    total = len(chart.get("ohlc", []))
+    start = max(0, total - n_bars)
+    all_dates = chart.get("dates", [])
+    dates_slice = all_dates[start:] if len(all_dates) > start else all_dates
+
+    macd_full = chart.get("macd", {})
+    chart_macd = {
+        "macd": (macd_full.get("macd") or [])[start:],
+        "signal": (macd_full.get("signal") or [])[start:],
+        "hist": (macd_full.get("hist") or [])[start:],
+    }
+    chart_rsi = (chart.get("rsi") or [])[start:]
+    konc_full = chart.get("koncorde", {})
+    chart_koncorde = {
+        "verde": (konc_full.get("verde") or [])[start:],
+        "marron": (konc_full.get("marron") or [])[start:],
+        "azul": (konc_full.get("azul") or [])[start:],
+        "media": (konc_full.get("media") or [])[start:],
+    }
+
+    verdict = _compute_position_verdict(data, position)
+    bt = data.get("backtest", {}) or {}
+    sig = data.get("signal", "HOLD")
+
+    score = 0
+    try:
+        s = _score_stock(sym, data)
+        if s is not None:
+            score = round(s, 1)
+    except Exception:
+        pass
+
+    return {
+        "signal": sig,
+        "signal_label": data.get("signal_label", sig),
+        "strength": data.get("strength", 0) or 0,
+        "conditions_met": data.get("conditions_met", 0) or 0,
+        "confidence": bt.get("confidence", 0) or 0,
+        "score": score,
+        "price": data.get("price", 0),
+        "entry_low": levels.get("entry_low", 0),
+        "entry_high": levels.get("entry_high", 0),
+        "target": levels.get("target", 0),
+        "stop_loss": levels.get("stop_loss", 0),
+        "risk_reward": levels.get("risk_reward", 0),
+        "atr": levels.get("atr", 0),
+        "target_pct": levels.get("target_pct", 0),
+        "target_basis": levels.get("target_basis", ""),
+        "horizon": levels.get("horizon_weeks", ""),
+        "thesis": thesis,
+        "win_rate": (bt.get("sell_win_rate", 0) if sig == "SELL"
+                     else bt.get("buy_win_rate", 0)) or 0,
+        "avg_return": (bt.get("sell_avg_return") if sig == "SELL"
+                       else bt.get("buy_avg_return")),
+        "rationale": rationale,
+        "chart_ohlc": ohlc_slice,
+        "chart_mas": mas_sliced,
+        "chart_markers": sig_markers,
+        "chart_dates": dates_slice,
+        "chart_macd": chart_macd,
+        "chart_rsi": chart_rsi,
+        "chart_koncorde": chart_koncorde,
+        "fundamentals": fund,
+        "verdict": verdict.get("verdict", "HOLD"),
+        "urgency": verdict.get("urgency", "low"),
+        "headline": verdict.get("headline", "HOLD"),
+        "verdict_reason": verdict.get("reason", ""),
+        "trend": verdict.get("trend", "flat"),
+        "macd_ok": data.get("macd_ok", False),
+        "rsi_ok": data.get("rsi_ok", False),
+        "konc_ok": data.get("konc_ok", False),
+        "macd_detail": data.get("macd_detail", ""),
+        "rsi_detail": data.get("rsi_detail", ""),
+        "konc_detail": data.get("konc_detail", ""),
+        "values": data.get("values", {}),
+    }
+
+
 @app.route("/api/portfolio")
 @login_required
 def api_portfolio():
+    from portfolio import extract_sl_tp_by_symbol, _classify_position, _generate_portfolio_alerts
+
     store = get_user_store(request.user_id)
-    positions = store.get("portfolio_positions", [])
+    raw_positions = store.get("portfolio_positions", [])
     analysis = store.get("analysis", {})
     acct_vals = store.get("account_values", {})
+    open_orders = store.get("open_orders", [])
 
-    total_value = sum(p.get("marketValue", 0) for p in positions)
-    total_cost = sum(p.get("averageCost", 0) * p.get("position", 0) for p in positions)
-    total_pnl = sum(p.get("unrealizedPNL", 0) for p in positions)
-    total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+    active_positions = [p for p in raw_positions if p.get("position", 0) != 0]
+
+    sl_tp_map = extract_sl_tp_by_symbol(open_orders)
+
+    positions_enriched = []
+    total_value = 0.0
+    total_cost = 0.0
+    total_pnl_realizado = 0.0
+
+    for p in active_positions:
+        sym = p.get("symbol", "")
+        cantidad = p.get("position", 0)
+        costo_prom = p.get("averageCost", 0) or 0
+        precio_actual = p.get("marketPrice", 0) or 0
+        valor_mercado = abs(p.get("marketValue", 0) or 0)
+        pnl = p.get("unrealizedPNL", 0) or 0
+        pnl_realizado = p.get("realizedPNL", 0) or 0
+
+        if not precio_actual or precio_actual <= 0:
+            precio_actual = costo_prom
+            valor_mercado = abs(cantidad) * precio_actual
+
+        costo_total = abs(cantidad) * costo_prom
+        pnl_pct = (pnl / costo_total * 100) if costo_total > 0 else 0.0
+
+        total_value += valor_mercado
+        total_cost += costo_total
+        total_pnl_realizado += pnl_realizado
+
+        es_etf, sector = _classify_position(sym, p.get("secType", "STK"))
+        order_info = sl_tp_map.get(sym, {})
+        sl_price = order_info.get("stop_loss")
+        tp_price = order_info.get("take_profit")
+
+        positions_enriched.append({
+            "symbol": sym,
+            "tipo": p.get("secType", "STK"),
+            "cuenta": "",
+            "moneda": "USD",
+            "cantidad": cantidad,
+            "costo_promedio": round(costo_prom, 4),
+            "precio_actual": round(precio_actual, 2) if precio_actual else None,
+            "costo_total": round(costo_total, 2),
+            "valor_mercado": round(valor_mercado, 2),
+            "pnl": round(pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
+            "pnl_realizado": round(pnl_realizado, 2),
+            "es_etf": es_etf,
+            "sector": sector,
+            "peso_portafolio": 0,
+            "stop_loss": round(sl_price, 2) if sl_price else None,
+            "take_profit": round(tp_price, 2) if tp_price else None,
+        })
+
+    for p in positions_enriched:
+        if total_value > 0:
+            p["peso_portafolio"] = round(p["valor_mercado"] / total_value, 4)
+    positions_enriched.sort(key=lambda x: x["valor_mercado"], reverse=True)
+
+    total_pnl = sum(p["pnl"] for p in positions_enriched)
+    total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0.0
+
+    indicators_data = {}
+    for p in positions_enriched:
+        sym = p["symbol"]
+        data = analysis.get(sym)
+        if data:
+            indicators_data[sym] = {
+                "signal": data.get("signal", "HOLD"),
+                "signal_label": data.get("signal_label", data.get("signal", "HOLD")),
+                "strength": data.get("strength", 0),
+                "conditions_met": data.get("conditions_met", 0),
+                "macd_ok": data.get("macd_ok", False),
+                "rsi_ok": data.get("rsi_ok", False),
+                "konc_ok": data.get("konc_ok", False),
+                "macd_detail": data.get("macd_detail", ""),
+                "rsi_detail": data.get("rsi_detail", ""),
+                "konc_detail": data.get("konc_detail", ""),
+                "price": data.get("price", 0),
+                "values": data.get("values", {}),
+            }
+
+    for p in positions_enriched:
+        sym = p["symbol"]
+        if sym in indicators_data:
+            p["indicadores"] = indicators_data[sym]
+        try:
+            deep = _build_cloud_position_analysis(sym, p, analysis.get(sym))
+            if deep:
+                p["analysis"] = deep
+                ind = p.get("indicadores") or {}
+                ind.setdefault("signal", deep.get("signal", "HOLD"))
+                ind.setdefault("signal_label", deep.get("signal_label", deep.get("signal", "HOLD")))
+                ind.setdefault("strength", deep.get("strength", 0))
+                ind.setdefault("conditions_met", deep.get("conditions_met", 0))
+                p["indicadores"] = ind
+        except Exception as e:
+            print(f"[PORTFOLIO_DEEP] Error for {sym}: {e}", flush=True)
+
+    try:
+        alerts = _generate_portfolio_alerts(positions_enriched, {}, indicators_data)
+    except Exception as e:
+        print(f"[PORTFOLIO_ALERTS] Error: {e}", flush=True)
+        alerts = []
 
     acct = {}
     for key, val in acct_vals.items():
         try:
-            acct[key] = {"value": float(val)}
-        except:
-            acct[key] = {"value": val}
-
-    positions_with_analysis = []
-    for pos in positions:
-        sym = pos.get("symbol", "")
-        scan_data = analysis.get(sym, {})
-
-        verdict = "HOLD"
-        if scan_data.get("signal") == "SELL":
-            verdict = "SELL"
-        elif scan_data.get("signal") == "BUY":
-            verdict = "ADD"
-
-        positions_with_analysis.append({
-            **pos,
-            "verdict": verdict,
-            "signal_label": scan_data.get("signal_label", ""),
-            "strength": scan_data.get("strength", 0),
-            "conditions_met": scan_data.get("conditions_met", 0),
-            "macd_ok": scan_data.get("macd_ok", False),
-            "rsi_ok": scan_data.get("rsi_ok", False),
-            "konc_ok": scan_data.get("konc_ok", False),
-        })
+            acct[key] = {"value": float(val), "currency": "USD"}
+        except (ValueError, TypeError):
+            acct[key] = {"value": val, "currency": "USD"}
 
     return Response(
         to_json({
-            "positions": positions_with_analysis,
-            "total_value": total_value,
-            "total_cost": total_cost,
-            "total_pnl": total_pnl,
-            "total_pnl_pct": total_pnl_pct,
-            "num_positions": len(positions),
+            "positions": positions_enriched,
+            "total_value": round(total_value, 2),
+            "total_cost": round(total_cost, 2),
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round(total_pnl_pct, 2),
+            "total_pnl_realizado": round(total_pnl_realizado, 2),
+            "num_positions": len(positions_enriched),
+            "composition": {},
             "account": acct,
-            "account_values": acct_vals,
-            "open_orders": store.get("open_orders", []),
-            "executions": store.get("executions", []),
+            "indicators": indicators_data,
+            "alerts": alerts,
             "bridge_connected": store.get("connected", False),
+            "warnings": [],
         }),
         mimetype="application/json",
     )
