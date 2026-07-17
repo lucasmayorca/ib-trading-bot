@@ -424,7 +424,17 @@ def api_debug():
     stocks = store.get("stocks", [])
     analysis = store.get("analysis", {})
 
+    all_connected_users = []
+    for sid, uid in bridge_sessions.items():
+        try:
+            u = db.get_user_by_id(uid)
+            all_connected_users.append({"user_id": uid, "email": u.get("email", "") if u else "?"})
+        except Exception:
+            all_connected_users.append({"user_id": uid, "email": "?"})
+
     return jsonify({
+        "current_user_id": request.user_id,
+        "current_user_email": request.user_email,
         "bridge_connected": store.get("connected", False),
         "stocks_sent_by_bridge": len(stocks),
         "stocks_list": stocks[:10],  # First 10
@@ -433,6 +443,7 @@ def api_debug():
         "analysis_sample": analysis.get(stocks[0], {}) if stocks else None,
         "last_update": store.get("last_update", ""),
         "bridge_sessions_total": len(bridge_sessions),
+        "all_connected_bridge_users": all_connected_users,
     })
 
 
