@@ -8,3 +8,12 @@ PyJWT
 bcrypt
 psycopg2-binary
 python-dotenv
+
+# Needed because cloud/server.py imports vista_web.py (and its own
+# transitive imports: scanner.py, options_lab.py, portfolio.py, backtester.py)
+# to reuse the exact same dashboard/analysis logic as the local bot.
+numpy
+pandas
+yfinance
+scipy
+ibapi==9.81.1.post1
