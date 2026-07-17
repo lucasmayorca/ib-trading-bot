@@ -996,6 +996,7 @@ mkdir -p bridge
 curl -sL {server_url}/bridge-files/main.py -o bridge/main.py
 curl -sL {server_url}/bridge-files/indicators.py -o bridge/indicators.py
 curl -sL {server_url}/bridge-files/signals.py -o bridge/signals.py
+curl -sL {server_url}/bridge-files/backtester.py -o bridge/backtester.py
 curl -sL {server_url}/bridge-files/__init__.py -o bridge/__init__.py
 
 # Create launcher
@@ -1034,7 +1035,7 @@ echo ""
 @app.route("/bridge-files/<filename>")
 def bridge_files(filename):
     import os
-    allowed = {"main.py", "indicators.py", "signals.py", "__init__.py"}
+    allowed = {"main.py", "indicators.py", "signals.py", "backtester.py", "__init__.py"}
     if filename not in allowed:
         return "Not found", 404
     filepath = os.path.join(os.path.dirname(__file__), "..", "bridge", filename)
@@ -1098,6 +1099,7 @@ echo Descargando bridge...
 curl -sL {server_url}/bridge-files/main.py -o bridge\\main.py
 curl -sL {server_url}/bridge-files/indicators.py -o bridge\\indicators.py
 curl -sL {server_url}/bridge-files/signals.py -o bridge\\signals.py
+curl -sL {server_url}/bridge-files/backtester.py -o bridge\\backtester.py
 curl -sL {server_url}/bridge-files/__init__.py -o bridge\\__init__.py
 
 echo.
@@ -1185,6 +1187,7 @@ mkdir -p bridge
 curl -sL $SERVER/bridge-files/main.py -o bridge/main.py
 curl -sL $SERVER/bridge-files/indicators.py -o bridge/indicators.py
 curl -sL $SERVER/bridge-files/signals.py -o bridge/signals.py
+curl -sL $SERVER/bridge-files/backtester.py -o bridge/backtester.py
 curl -sL $SERVER/bridge-files/__init__.py -o bridge/__init__.py
 
 echo ""
@@ -1415,7 +1418,7 @@ function renderSetup(){
   let serverUrl=window.location.origin;
   let installCmd=document.getElementById('install-cmd');
   let runCmd=document.getElementById('run-cmd');
-  if(installCmd)installCmd.textContent='curl -sL '+serverUrl+'/install.sh | bash';
+  if(installCmd)installCmd.textContent='curl -sL https://raw.githubusercontent.com/lucasmayorca/ib-trading-bot/main/install-bridge.sh | bash';
   if(runCmd)runCmd.textContent='~/.ib-bridge/run-bridge.sh '+serverUrl+' '+(_bridgeToken||'TOKEN');
   let tokenEl=document.getElementById('token-display');
   if(tokenEl)tokenEl.textContent=_bridgeToken||'Cargando...';

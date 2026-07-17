@@ -68,7 +68,8 @@ source venv/bin/activate
 
 echo "Instalando dependencias..."
 pip install --upgrade pip -q 2>/dev/null
-pip install "git+https://github.com/lucasmayorca/ib-trading-bot.git" --upgrade -q 2>&1 | grep -v "already satisfied" || true
+pip uninstall -y ib-trading-bridge -q 2>/dev/null || true
+pip install "git+https://github.com/lucasmayorca/ib-trading-bot.git" --no-cache-dir --force-reinstall --upgrade -q 2>&1 | grep -v "already satisfied" || true
 
 echo ""
 echo -e "${GREEN}+==========================================+${NC}"
