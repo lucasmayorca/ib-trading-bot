@@ -35,7 +35,13 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("JWT_SECRET", "change-me-in-production")
 socketio = SocketIO(
     app, cors_allowed_origins="*", async_mode="gevent",
-    logger=True, engineio_logger=True,
+    # Default max_http_buffer_size is 1MB, meant for typical chat-app-sized
+    # payloads. Full parity with vista_web.py means each stock's analysis
+    # batch carries 5 years of daily OHLC + MACD + RSI + Koncorde series
+    # (~1260 bars x 8 arrays), so a batch of 10 symbols easily runs several
+    # MB. Without raising this, engineio silently kills the connection with
+    # "packet is too large" the moment the first real batch goes out.
+    max_http_buffer_size=25 * 1024 * 1024,
 )
 
 # Per-user live data store: { user_id: { ... } }
