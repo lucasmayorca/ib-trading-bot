@@ -21,6 +21,7 @@ import socketio
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
+from ibapi.execution import ExecutionFilter
 
 from bridge.indicators import calculate_macd, calculate_rsi, calculate_koncorde
 from bridge.signals import generate_signal
@@ -89,6 +90,10 @@ class BridgeIB(EWrapper, EClient):
         self.account_done = False
         self.open_orders = []
         self.open_orders_done = False
+        self.pending_execs = {}       # exec_id -> partial fill dict (awaiting commission report)
+        self.new_fills = []           # completed fills (exec + commission), ready to send
+        self.executions_done = False
+        self.sent_order_ids = set()   # order_ids already emitted to the server this run
 
     def nextValidId(self, orderId):
         self.connected_event.set()
@@ -149,6 +154,57 @@ class BridgeIB(EWrapper, EClient):
         if tickType in types:
             self.market_data[reqId][types[tickType]] = price
 
+    # --- Executions (fills, for Trades Historicos) ---
+    def execDetails(self, reqId, contract, execution):
+        try:
+            raw_time = str(execution.time or "").strip()
+            date_part = raw_time.split()[0] if raw_time else ""
+            date_str = _format_bar_date(date_part) if date_part else ""
+            try:
+                weekday = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A") if date_str else ""
+            except ValueError:
+                weekday = ""
+
+            is_option = contract.secType == "OPT"
+            symbol = contract.localSymbol if is_option and contract.localSymbol else contract.symbol
+
+            self.pending_execs[execution.execId] = {
+                "symbol": symbol,
+                "action": "BUY" if execution.side == "BOT" else "SELL",
+                "filled_qty": float(execution.shares),
+                "avg_fill_price": float(execution.price),
+                "lmt_price": float(execution.price),
+                "order_type": "",
+                "exchange": execution.exchange,
+                "parent_id": 0,
+                "order_id": execution.orderId,
+                "perm_id": str(execution.permId),
+                "date": date_str,
+                "datetime": date_str,
+                "weekday": weekday,
+                "hour": None,
+                "sec_type": contract.secType,
+                "currency": contract.currency,
+                "realized_pnl": 0.0,
+                "commission": 0.0,
+            }
+        except Exception as e:
+            log(f"execDetails error: {e}", Y)
+
+    def execDetailsEnd(self, reqId):
+        self.executions_done = True
+
+    def commissionReport(self, commissionReport):
+        pending = self.pending_execs.get(commissionReport.execId)
+        if pending is None:
+            return
+        pending["commission"] = float(commissionReport.commission or 0)
+        rpnl = commissionReport.realizedPNL
+        if rpnl is not None and rpnl < 1e15:  # IB sends a sentinel huge value when N/A
+            pending["realized_pnl"] = float(rpnl)
+        self.new_fills.append(pending)
+        del self.pending_execs[commissionReport.execId]
+
 
 def make_contract(symbol):
     c = Contract()
@@ -176,6 +232,27 @@ def fetch_historical(app, symbol, req_id, duration="1 Y"):
     elif len(bars) < 50:
         log(f"  {symbol}: only {len(bars)} bars (need 50)", Y)
     return bars
+
+
+def fetch_new_fills(app, req_id):
+    """Pull executions IB reports since the bridge connected (reqExecutions
+    typically only surfaces recent/current-session fills), pair each with
+    its commission report, and return the ones not yet sent."""
+    app.executions_done = False
+    app.reqExecutions(req_id, ExecutionFilter())
+
+    start = time.time()
+    while not app.executions_done and time.time() - start < 10:
+        time.sleep(0.1)
+    time.sleep(1.5)  # commissionReport callbacks trail execDetails slightly
+
+    fills = app.new_fills
+    app.new_fills = []
+
+    new_fills = [f for f in fills if f["order_id"] not in app.sent_order_ids]
+    for f in new_fills:
+        app.sent_order_ids.add(f["order_id"])
+    return new_fills
 
 
 # ══════════════════════════════════════════════════════════════
@@ -341,6 +418,11 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
     log("Bridge activo — escaneando mercado cada 5 minutos", G)
     log("Presiona Ctrl+C para detener\n", W)
 
+    initial_fills = fetch_new_fills(ib_app, 6999)
+    if initial_fills:
+        log(f"  {len(initial_fills)} fills recientes encontrados, enviando al servidor...", C)
+        sio.emit("trades_data", clean({"fills": initial_fills}))
+
     try:
         while True:
             stocks = get_stock_list()
@@ -386,6 +468,11 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 "executions": [],
             }))
             ib_app.reqAccountUpdates(False, "")
+
+            new_fills = fetch_new_fills(ib_app, 7000)
+            if new_fills:
+                log(f"  {len(new_fills)} fills nuevos detectados, enviando al servidor...", C)
+                sio.emit("trades_data", clean({"fills": new_fills}))
 
             buy_count = sum(1 for r in results.values() if r.get("signal") == "BUY") if results else 0
             sell_count = sum(1 for r in results.values() if r.get("signal") == "SELL") if results else 0

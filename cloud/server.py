@@ -15,6 +15,8 @@ import functools
 import threading
 from datetime import datetime
 
+import numpy as np
+
 from flask import Flask, request, jsonify, Response, redirect
 from flask_socketio import SocketIO, emit, disconnect
 from dotenv import load_dotenv
@@ -22,6 +24,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from cloud import db, auth
+import config
+import options_lab
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -50,6 +54,7 @@ def get_user_store(user_id):
                 "account_values": {},
                 "open_orders": [],
                 "executions": [],
+                "live_trades": [],
                 "last_update": None,
             }
         return user_data[user_id]
@@ -269,6 +274,26 @@ def handle_bars_data(data):
         store[key] = data.get("bars", [])
 
 
+@socketio.on("trades_data")
+def handle_trades_data(data):
+    """New fills reported by the bridge since it last connected (from
+    reqExecutions). Appended to the user's live trade log, deduped against
+    the seed history in _merged_trades_file_path()."""
+    user_id = bridge_sessions.get(request.sid)
+    if not user_id:
+        return
+    store = get_user_store(user_id)
+    new_fills = data.get("fills", [])
+    if not new_fills:
+        return
+    existing_keys = {t.get("order_id") for t in store["live_trades"] if t.get("order_id")}
+    for fill in new_fills:
+        if fill.get("order_id") and fill["order_id"] in existing_keys:
+            continue
+        store["live_trades"].append(fill)
+    print(f"[TRADES_DATA] User {user_id}: +{len(new_fills)} fills reported (total live: {len(store['live_trades'])})", flush=True)
+
+
 # ══════════════════════════════════════════════════════════════
 #  DASHBOARD API (serves data to the web frontend)
 # ══════════════════════════════════════════════════════════════
@@ -447,125 +472,210 @@ def api_debug():
     })
 
 
+def _build_options_signal_data(data):
+    vals = data.get("values", {}) or {}
+    macd_vals = vals.get("macd", {})
+    chart = data.get("chart", {}) or {}
+    macd_chart = chart.get("macd", {}) or {}
+    hist_arr = macd_chart.get("hist", [])
+
+    return {
+        "signal": data.get("signal", "HOLD"),
+        "signal_label": data.get("signal_label", "NEUTRAL"),
+        "strength": data.get("strength", 0),
+        "rsi": vals.get("rsi"),
+        "macd_hist": macd_vals.get("hist"),
+        "macd_hist_prev": hist_arr[-2] if len(hist_arr) >= 2 else None,
+        "conditions_met": data.get("conditions_met", 0),
+    }
+
+
 @app.route("/api/options-lab-top")
 @login_required
 def api_options_lab_top():
     store = get_user_store(request.user_id)
-    results = store.get("analysis", {})
-    if not results:
-        return Response(to_json({"strategies": []}), mimetype="application/json")
+    analysis = store.get("analysis", {})
 
-    candidates = sorted(
-        [r for r in results.values() if r],
-        key=lambda x: x.get("strength", 0),
-        reverse=True
-    )[:10]
+    # 1. Pre-screen: score all stocks quickly for options potential
+    candidates = []
+    for sym, data in analysis.items():
+        if not data:
+            continue
+        price = data.get("price", 0)
+        if price <= 0:
+            continue
+        chart = data.get("chart", {}) or {}
+        ohlc = chart.get("ohlc", [])
+        if len(ohlc) < 100:
+            continue
 
-    return Response(
-        to_json({
-            "strategies": [
-                {
-                    "symbol": c.get("symbol"),
-                    "price": c.get("price"),
-                    "signal": c.get("signal"),
-                    "strength": c.get("strength"),
-                    "message": "Análisis de opciones disponible próximamente"
-                }
-                for c in candidates
-            ]
-        }),
-        mimetype="application/json",
-    )
+        signal = data.get("signal", "HOLD")
+        strength = data.get("strength", 0) or 0
+        conditions = data.get("conditions_met", 0) or 0
+
+        closes = [b["close"] for b in ohlc]
+        iv_data = options_lab.iv_analysis(closes)
+        hv_rank = iv_data.get("hv_rank") or 50
+        iv_regime = iv_data.get("iv_regime", "normal")
+
+        opt_score = 0.0
+        if signal in ("BUY", "SELL"):
+            opt_score += 40 + strength * 5
+        elif conditions >= 2:
+            opt_score += 25 + strength * 3
+        elif conditions >= 1:
+            opt_score += 10
+
+        if iv_regime == "high":
+            opt_score += 20
+        elif iv_regime == "low":
+            opt_score += 15
+
+        if hv_rank > 80 or hv_rank < 20:
+            opt_score += 10
+
+        dv = data.get("dollar_vol", 0) or 0
+        if dv > 500e6:
+            opt_score += 5
+        elif dv > 100e6:
+            opt_score += 3
+
+        candidates.append((sym, data, opt_score))
+
+    candidates.sort(key=lambda x: x[2], reverse=True)
+
+    # 2. Full analysis on top candidates
+    results = []
+    for sym, data, opt_score in candidates[:10]:
+        price = data.get("price", 0)
+        signal_data = _build_options_signal_data(data)
+        chart = data.get("chart", {}) or {}
+        ohlc = chart.get("ohlc", [])
+        closes = np.array([b["close"] for b in ohlc], dtype=float)
+        highs_arr = np.array([b["high"] for b in ohlc], dtype=float)
+        lows_arr = np.array([b["low"] for b in ohlc], dtype=float)
+
+        try:
+            lab = options_lab.generate_options_lab(
+                symbol=sym, price=price, signal_data=signal_data,
+                closes=closes, highs=highs_arr, lows=lows_arr,
+                risk_free_rate=config.OPTIONS_RISK_FREE_RATE,
+                dte_options=config.OPTIONS_DTE_TARGETS,
+            )
+            lab["stock_score"] = round(opt_score, 1)
+            results.append(lab)
+        except Exception as e:
+            print(f"[OPTIONS_LAB] Error for {sym}: {e}", flush=True)
+
+    results.sort(key=lambda r: (
+        r.get("strategies", [{}])[0].get("score", 0) if r.get("strategies") else 0
+    ) + r.get("stock_score", 0), reverse=True)
+
+    return Response(to_json({"opportunities": results}), mimetype="application/json")
 
 
 @app.route("/api/options-lab/<symbol>")
 @login_required
 def api_options_lab(symbol):
+    symbol = symbol.upper()
     store = get_user_store(request.user_id)
-    result = store.get("analysis", {}).get(symbol)
+    data = store.get("analysis", {}).get(symbol)
 
-    if not result:
+    if not data:
         return Response(
-            to_json({"error": "Symbol not found", "symbol": symbol}),
+            to_json({"error": f"No hay datos para {symbol}"}),
             mimetype="application/json",
-            status=404
+            status=404,
         )
 
-    return Response(
-        to_json({
-            "symbol": symbol,
-            "price": result.get("price"),
-            "signal": result.get("signal"),
-            "strength": result.get("strength"),
-            "message": "Análisis de opciones disponible próximamente",
-            "coming_soon": True
-        }),
-        mimetype="application/json",
-    )
+    price = data.get("price", 0)
+    if price <= 0:
+        return Response(
+            to_json({"error": f"Precio no disponible para {symbol}"}),
+            mimetype="application/json",
+            status=400,
+        )
+
+    signal_data = _build_options_signal_data(data)
+    chart = data.get("chart", {}) or {}
+    ohlc = chart.get("ohlc", [])
+    if len(ohlc) < 100:
+        return Response(
+            to_json({"error": f"Datos historicos insuficientes para {symbol}"}),
+            mimetype="application/json",
+            status=400,
+        )
+
+    closes = np.array([b["close"] for b in ohlc], dtype=float)
+    highs = np.array([b["high"] for b in ohlc], dtype=float)
+    lows = np.array([b["low"] for b in ohlc], dtype=float)
+
+    try:
+        result = options_lab.generate_options_lab(
+            symbol=symbol,
+            price=price,
+            signal_data=signal_data,
+            closes=closes,
+            highs=highs,
+            lows=lows,
+            risk_free_rate=config.OPTIONS_RISK_FREE_RATE,
+            dte_options=config.OPTIONS_DTE_TARGETS,
+        )
+    except Exception as e:
+        print(f"[OPTIONS_LAB] Error for {symbol}: {e}", flush=True)
+        return Response(
+            to_json({"error": f"Error generando Options Lab: {str(e)}"}),
+            mimetype="application/json",
+            status=500,
+        )
+
+    return Response(to_json(result), mimetype="application/json")
+
+
+SEED_TRADES_DIR = os.path.join(os.path.dirname(__file__), "seed_trades")
+
+
+def _merged_trades_file_path(user_id):
+    """Combine the one-time seed (historical fills exported from IB) with
+    fills the bridge has reported live since connecting, into a temp file
+    that build_trades_history() can read."""
+    seed_path = os.path.join(SEED_TRADES_DIR, f"user_{user_id}.json")
+    seed_trades = []
+    if os.path.exists(seed_path):
+        with open(seed_path) as f:
+            seed_trades = json.load(f).get("trades", [])
+
+    store = get_user_store(user_id)
+    live_trades = store.get("live_trades", [])
+
+    seen_keys = set()
+    combined = []
+    for t in seed_trades + live_trades:
+        key = t.get("order_id") or t.get("perm_id") or (t.get("symbol"), t.get("date"), t.get("action"), t.get("filled_qty"), t.get("avg_fill_price"))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        combined.append(t)
+
+    tmp_dir = os.path.join(os.path.dirname(__file__), "_tmp_trades")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, f"user_{user_id}.json")
+    with open(tmp_path, "w") as f:
+        json.dump({"trades": combined}, f)
+    return tmp_path
 
 
 @app.route("/api/trades-history")
 @login_required
 def api_trades_history():
+    from vista_web import build_trades_history
     try:
-        trades_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trades_imported.json")
-        with open(trades_file, "r") as f:
-            trades_data = json.load(f)
-
-        trades = trades_data.get("trades", [])
-
-        total_trades = len(trades)
-        stocks_count = len(set(t.get("symbol") for t in trades if t.get("sec_type") == "STK"))
-        options_count = len(set(t.get("symbol") for t in trades if t.get("sec_type") != "STK"))
-
-        wins = sum(1 for t in trades if t.get("realized_pnl", 0) > 0)
-        losses = sum(1 for t in trades if t.get("realized_pnl", 0) < 0)
-        total_pnl = sum(t.get("realized_pnl", 0) for t in trades)
-        total_commissions = sum(t.get("commission", 0) for t in trades)
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-
-        pnls = [t.get("realized_pnl", 0) for t in trades]
-        avg_return_pct = (sum(pnls) / len(pnls) / 1000 * 100) if pnls else 0
-
-        best_trade = None
-        worst_trade = None
-        if trades:
-            best_t = max(trades, key=lambda x: x.get("realized_pnl", 0))
-            worst_t = min(trades, key=lambda x: x.get("realized_pnl", 0))
-            if best_t.get("realized_pnl", 0) > 0:
-                best_trade = {
-                    "symbol": best_t.get("symbol"),
-                    "pnl": best_t.get("realized_pnl", 0),
-                    "pnl_pct": (best_t.get("realized_pnl", 0) / 1000 * 100),
-                }
-            if worst_t.get("realized_pnl", 0) < 0:
-                worst_trade = {
-                    "symbol": worst_t.get("symbol"),
-                    "pnl": worst_t.get("realized_pnl", 0),
-                    "pnl_pct": (worst_t.get("realized_pnl", 0) / 1000 * 100),
-                }
-
-        return Response(
-            to_json({
-                "trades": trades,
-                "summary": {
-                    "total_trades": total_trades,
-                    "stocks_count": stocks_count,
-                    "options_count": options_count,
-                    "wins": wins,
-                    "losses": losses,
-                    "total_pnl": round(total_pnl, 2),
-                    "total_commissions": round(total_commissions, 2),
-                    "win_rate": round(win_rate, 1),
-                    "avg_return_pct": avg_return_pct,
-                    "avg_duration_days": 30,
-                    "best_trade": best_trade,
-                    "worst_trade": worst_trade,
-                },
-            }),
-            mimetype="application/json",
-        )
+        trades_file = _merged_trades_file_path(request.user_id)
+        result = build_trades_history(trades_file=trades_file)
+        return Response(to_json(result), mimetype="application/json")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return Response(
             to_json({"error": str(e), "trades": [], "summary": {}}),
             mimetype="application/json",
@@ -576,37 +686,27 @@ def api_trades_history():
 @app.route("/api/trades-history/chart/<trade_id>")
 @login_required
 def api_trades_history_chart(trade_id):
-    try:
-        trades_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "trades_imported.json")
-        with open(trades_file, "r") as f:
-            trades_data = json.load(f)
+    from vista_web import _fetch_trade_chart_data, _generate_trade_thesis
 
-        trades = trades_data.get("trades", [])
-        trade = trades[int(trade_id)] if int(trade_id) < len(trades) else None
+    symbol = request.args.get("symbol", "")
+    entry_date = request.args.get("entry", "")
+    exit_date = request.args.get("exit", "")
 
-        if not trade:
-            return Response(
-                to_json({"error": "Trade not found"}),
-                mimetype="application/json",
-                status=404
-            )
+    if not symbol or not entry_date or not exit_date:
+        return Response(to_json({"error": "Faltan parametros"}), status=400, mimetype="application/json")
 
-        return Response(
-            to_json({
-                "trade": trade,
-                "symbol": trade.get("symbol"),
-                "date": trade.get("date"),
-                "pnl": trade.get("realized_pnl"),
-                "message": "Gráfico disponible próximamente"
-            }),
-            mimetype="application/json",
-        )
-    except Exception as e:
-        return Response(
-            to_json({"error": str(e)}),
-            mimetype="application/json",
-            status=400
-        )
+    chart = _fetch_trade_chart_data(symbol.upper(), entry_date, exit_date)
+    if chart is None:
+        return Response(to_json({"error": f"No se pudieron obtener datos para {symbol}"}),
+                        status=404, mimetype="application/json")
+
+    ind_entry = chart.get("indicators_at_entry")
+    ind_exit = chart.get("indicators_at_exit")
+    entry_thesis, exit_thesis = _generate_trade_thesis(symbol, entry_date, exit_date, ind_entry, ind_exit)
+    chart["entry_thesis"] = entry_thesis
+    chart["exit_thesis"] = exit_thesis
+
+    return Response(to_json(chart), mimetype="application/json")
 
 
 @app.route("/install.sh")

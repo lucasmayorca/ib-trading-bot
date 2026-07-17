@@ -1974,16 +1974,14 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="tab-optionslab" class="tab-content">
 <div class="portfolio-section" id="optionslab-section">
   <div class="port-title"><em>OPTIONS LAB</em> &mdash; Estrategias de Opciones</div>
-  <div id="olab-loading" style="color:var(--muted);text-align:center;padding:40px">
-    Selecciona un simbolo del scanner o carga las top oportunidades.
-  </div>
+  <div id="olab-loading" style="color:var(--muted);text-align:center;padding:40px">Analizando mejores oportunidades de opciones...</div>
 
-  <!-- Controles -->
-  <div id="olab-controls" style="padding:12px 20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-    <input type="text" id="olab-symbol-input" placeholder="Ticker (ej: AAPL)" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 14px;border-radius:6px;font-size:13px;width:140px;font-family:inherit">
-    <button onclick="loadOptionsLab()" style="background:var(--accent);color:#000;border:none;padding:8px 18px;border-radius:6px;font-weight:700;font-size:13px;cursor:pointer">Analizar</button>
-    <button onclick="loadOptionsLabTop()" style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:8px 18px;border-radius:6px;font-weight:700;font-size:13px;cursor:pointer">Top 5 Oportunidades</button>
-    <span id="olab-status" style="color:var(--muted);font-size:12px"></span>
+  <!-- Controles (secundario, para buscar un simbolo especifico) -->
+  <div id="olab-controls" style="padding:8px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <input type="text" id="olab-symbol-input" placeholder="Analizar otro ticker..." style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;font-size:12px;width:160px;font-family:inherit" onkeydown="if(event.key==='Enter')loadOptionsLab()">
+    <button onclick="loadOptionsLab()" style="background:var(--accent);color:#000;border:none;padding:6px 14px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer">Analizar</button>
+    <button onclick="loadOptionsLabTop()" style="background:var(--surface);color:var(--text);border:1px solid var(--border);padding:6px 14px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer">&#x21BB; Recargar Top</button>
+    <span id="olab-status" style="color:var(--muted);font-size:11px"></span>
   </div>
 
   <div id="olab-content" style="display:none">
@@ -2043,6 +2041,7 @@ let _thData=null;
 let _thLoaded=false;
 let _thFilter='all';
 let _thCharts={};
+let _olabLoaded=false;
 
 function switchTab(tab){
   _activeTab=tab;
@@ -2052,6 +2051,7 @@ function switchTab(tab){
   document.getElementById('tab-'+tab).classList.add('active');
   if(tab==='portfolio'&&!_portLoaded){_portLoaded=true;loadPortfolio();}
   if(tab==='trades'&&!_thLoaded){_thLoaded=true;loadTradesHistory();}
+  if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}
 }
 
 function loadPortfolio(){
@@ -3465,37 +3465,50 @@ function loadOptionsLab(sym){
   sym=sym||(document.getElementById('olab-symbol-input').value||'').trim().toUpperCase();
   if(!sym){document.getElementById('olab-status').textContent='Ingresa un ticker';return;}
   document.getElementById('olab-symbol-input').value=sym;
-  document.getElementById('olab-status').textContent='Analizando '+sym+'...';
+  document.getElementById('olab-loading').style.display='';
+  document.getElementById('olab-loading').textContent='Analizando opciones para '+sym+'...';
+  document.getElementById('olab-status').textContent='';
   document.getElementById('olab-content').style.display='none';
   document.getElementById('olab-multi').style.display='none';
 
   fetch('/api/options-lab/'+sym)
     .then(r=>r.json())
     .then(d=>{
+      document.getElementById('olab-loading').style.display='none';
       if(d.error){document.getElementById('olab-status').textContent=d.error;return;}
       _olabData=d;
-      document.getElementById('olab-status').textContent='';
+      document.getElementById('olab-status').textContent='Analisis de '+sym;
       renderOptionsLab(d);
     })
-    .catch(e=>{document.getElementById('olab-status').textContent='Error: '+e;});
+    .catch(e=>{
+      document.getElementById('olab-loading').style.display='';
+      document.getElementById('olab-loading').textContent='Error: '+e;
+    });
 }
 
 function loadOptionsLabTop(){
-  document.getElementById('olab-status').textContent='Calculando top 5 oportunidades...';
+  document.getElementById('olab-loading').style.display='';
+  document.getElementById('olab-loading').textContent='Analizando mejores oportunidades de opciones...';
+  document.getElementById('olab-status').textContent='';
   document.getElementById('olab-content').style.display='none';
   document.getElementById('olab-multi').style.display='none';
 
   fetch('/api/options-lab-top')
     .then(r=>r.json())
     .then(d=>{
+      document.getElementById('olab-loading').style.display='none';
       if(!d.opportunities||!d.opportunities.length){
-        document.getElementById('olab-status').textContent='No hay oportunidades disponibles aun. Espera al primer escaneo.';
+        document.getElementById('olab-loading').style.display='';
+        document.getElementById('olab-loading').textContent='No hay oportunidades disponibles aun. El scanner necesita completar al menos un ciclo de analisis.';
         return;
       }
-      document.getElementById('olab-status').textContent='';
+      document.getElementById('olab-status').textContent=d.opportunities.length+' oportunidades encontradas';
       renderOptionsLabMulti(d.opportunities);
     })
-    .catch(e=>{document.getElementById('olab-status').textContent='Error: '+e;});
+    .catch(e=>{
+      document.getElementById('olab-loading').style.display='';
+      document.getElementById('olab-loading').textContent='Error cargando oportunidades: '+e;
+    });
 }
 
 function renderOptionsLab(d){
@@ -4852,25 +4865,78 @@ def api_options_lab(symbol):
 
 @flask_app.route("/api/options-lab-top")
 def api_options_lab_top():
-    """Genera Options Lab para las top oportunidades del scanner.
-    Devuelve las 5 mejores oportunidades con sus estrategias de opciones."""
-    results = []
+    """Analiza TODAS las acciones del scanner para encontrar las mejores
+    oportunidades de opciones. Rankea por una combinacion de:
+    - Fuerza de senal tecnica (del scanner)
+    - Desalineacion de IV (opciones caras o baratas)
+    - Calidad del mejor strategy score
+    Devuelve las top 10 oportunidades con analisis completo."""
 
-    # Get top scored stocks
-    scored = []
+    # 1. Pre-screen: score all stocks quickly for options potential
+    candidates = []
     for sym, data in analysis_cache.items():
         if data is None:
             continue
-        score = _score_stock(sym, data)
-        if score is not None and score > 20:
-            scored.append((sym, data, score))
-    scored.sort(key=lambda x: x[2], reverse=True)
-
-    for sym, data, stock_score in scored[:5]:
         price = data.get("price", 0)
         if price <= 0:
             continue
+        chart = data.get("chart", {}) or {}
+        ohlc = chart.get("ohlc", [])
+        if len(ohlc) < 100:
+            continue
 
+        # Quick options-opportunity score (no full lab yet)
+        signal = data.get("signal", "HOLD")
+        strength = data.get("strength", 0) or 0
+        conditions = data.get("conditions_met", 0) or 0
+        bt = data.get("backtest", {}) or {}
+        confidence = bt.get("confidence", 0) or 0
+
+        # IV pre-check (fast)
+        closes = [b["close"] for b in ohlc]
+        iv_data = options_lab.iv_analysis(closes)
+        hv_rank = iv_data.get("hv_rank") or 50
+        iv_regime = iv_data.get("iv_regime", "normal")
+
+        # Options opportunity score (different from stock signal score)
+        opt_score = 0.0
+
+        # Active signals are the best candidates
+        if signal in ("BUY", "SELL"):
+            opt_score += 40 + strength * 5
+        elif conditions >= 2:
+            opt_score += 25 + strength * 3
+        elif conditions >= 1:
+            opt_score += 10
+
+        # IV extremes create opportunities regardless of signal
+        if iv_regime == "high":
+            opt_score += 20  # sell premium
+        elif iv_regime == "low":
+            opt_score += 15  # buy premium cheap
+
+        # HV rank extremes
+        if hv_rank > 80 or hv_rank < 20:
+            opt_score += 10
+
+        # Backtest confidence
+        opt_score += min(confidence / 100, 1.0) * 15
+
+        # Liquidity bonus (more liquid = better fills)
+        dv = data.get("dollar_vol", 0) or 0
+        if dv > 500e6:
+            opt_score += 5
+        elif dv > 100e6:
+            opt_score += 3
+
+        candidates.append((sym, data, opt_score, iv_data))
+
+    candidates.sort(key=lambda x: x[2], reverse=True)
+
+    # 2. Full analysis on top candidates
+    results = []
+    for sym, data, opt_score, iv_pre in candidates[:10]:
+        price = data.get("price", 0)
         vals = data.get("values", {}) or {}
         macd_vals = vals.get("macd", {})
         chart = data.get("chart", {}) or {}
@@ -4888,9 +4954,6 @@ def api_options_lab_top():
         }
 
         ohlc = chart.get("ohlc", [])
-        if len(ohlc) < 100:
-            continue
-
         closes = np.array([b["close"] for b in ohlc], dtype=float)
         highs_arr = np.array([b["high"] for b in ohlc], dtype=float)
         lows_arr = np.array([b["low"] for b in ohlc], dtype=float)
@@ -4902,10 +4965,15 @@ def api_options_lab_top():
                 risk_free_rate=config.OPTIONS_RISK_FREE_RATE,
                 dte_options=config.OPTIONS_DTE_TARGETS,
             )
-            lab["stock_score"] = round(stock_score, 1)
+            lab["stock_score"] = round(opt_score, 1)
             results.append(lab)
         except Exception as e:
             print(f"  Options Lab error for {sym}: {e}")
+
+    # 3. Re-sort by best strategy score within each result
+    results.sort(key=lambda r: (
+        r.get("strategies", [{}])[0].get("score", 0) if r.get("strategies") else 0
+    ) + r.get("stock_score", 0), reverse=True)
 
     return Response(to_json({"opportunities": results}), mimetype="application/json")
 
@@ -5108,13 +5176,14 @@ def _generate_post_trade_analysis(trade):
     return " ".join(lessons)
 
 
-def build_trades_history():
+def build_trades_history(trades_file=None):
     """Build full trades history from trades_imported.json."""
     import os
     from collections import defaultdict
     from datetime import datetime as dt, timedelta
 
-    trades_file = os.path.join(os.path.dirname(__file__), "trades_imported.json")
+    if trades_file is None:
+        trades_file = os.path.join(os.path.dirname(__file__), "trades_imported.json")
     if not os.path.exists(trades_file):
         return {"trades": [], "summary": {}}
 
