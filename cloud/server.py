@@ -411,8 +411,28 @@ def api_status():
     return jsonify({
         "bridge_connected": store.get("connected", False),
         "stocks_count": len(store.get("stocks", [])),
+        "analysis_count": len(store.get("analysis", {})),
         "last_update": store.get("last_update", ""),
         "email": email,
+    })
+
+
+@app.route("/api/debug")
+@login_required
+def api_debug():
+    store = get_user_store(request.user_id)
+    stocks = store.get("stocks", [])
+    analysis = store.get("analysis", {})
+
+    return jsonify({
+        "bridge_connected": store.get("connected", False),
+        "stocks_sent_by_bridge": len(stocks),
+        "stocks_list": stocks[:10],  # First 10
+        "analysis_received": len(analysis),
+        "analysis_symbols": list(analysis.keys())[:10],  # First 10
+        "analysis_sample": analysis.get(stocks[0], {}) if stocks else None,
+        "last_update": store.get("last_update", ""),
+        "bridge_sessions_total": len(bridge_sessions),
     })
 
 
