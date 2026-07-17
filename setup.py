@@ -11,6 +11,8 @@ setup(
         "python-socketio[client]>=5.12.0",
         "pandas>=2.0",
         "numpy>=1.24",
+        "requests>=2.28",
+        "certifi",
     ],
     entry_points={
         "console_scripts": [

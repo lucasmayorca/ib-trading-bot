@@ -15,8 +15,10 @@ import threading
 import time
 from datetime import datetime
 
+import certifi
 import numpy as np
 import pandas as pd
+import requests
 import socketio
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
@@ -400,16 +402,18 @@ def analyze_stock(ib_app, symbol, req_id):
 #  MAIN BRIDGE LOOP
 # ══════════════════════════════════════════════════════════════
 
-def safe_emit(sio, event, data, server_url=None, authenticated=None, retries=5, retry_delay=3):
+def safe_emit(sio, event, data, server_url=None, authenticated=None, retries=8, retry_delay=4):
     """Emit that survives a mid-scan WebSocket drop instead of crashing the
-    whole bridge. python-socketio's automatic reconnection only kicks in for
-    connections lost unexpectedly, and even then it only restores the
-    transport — it does not know to resend our 'bridge_auth' event, and in
-    practice it can also just get stuck (e.g. a Railway deploy/restart drops
-    everyone at once). So on top of waiting briefly, this forces a manual
-    reconnect if the client is still down after a bit, then waits for the
-    'connect' handler's re-auth handshake to finish before actually sending —
-    otherwise the server silently drops the message (unknown socket id)."""
+    whole bridge. Just waits for python-socketio's own background
+    reconnection (reconnection=True) to restore the transport and for the
+    'connect' handler's re-auth handshake to finish, then sends.
+
+    Important: this must NOT also trigger a manual sio.connect()/disconnect()
+    here. Doing that raced with the library's own auto-reconnect thread and
+    produced two simultaneous connections fighting each other — the server
+    logs showed a fresh connection authenticate successfully and then get
+    closed within milliseconds, on a loop, every ~20s (exactly pingTimeout).
+    Let the library own reconnection; we only wait for it."""
     for attempt in range(retries):
         try:
             if not sio.connected:
@@ -418,17 +422,10 @@ def safe_emit(sio, event, data, server_url=None, authenticated=None, retries=5, 
                     if sio.connected:
                         break
                     time.sleep(0.1)
-                if not sio.connected and server_url:
-                    try:
-                        sio.disconnect()
-                    except Exception:
-                        pass
-                    try:
-                        sio.connect(server_url)
-                    except Exception as ce:
-                        log(f"  Reconexion manual fallo: {ce}", Y)
             if sio.connected and authenticated is not None and not authenticated.is_set():
                 authenticated.wait(timeout=10)
+            if not sio.connected:
+                raise RuntimeError("aun desconectado tras esperar")
             sio.emit(event, data)
             return True
         except Exception as e:
@@ -451,9 +448,22 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
     log("Conectado a TWS", G)
 
+    # engineio's polling transport uses `requests`, which bundles its own
+    # trust store and just works. But the WebSocket upgrade goes through
+    # websocket-client instead, which falls back to the *platform* default
+    # trust store unless explicitly told otherwise — and on plenty of
+    # machines (this one included) that store doesn't have the right chain,
+    # so every WS upgrade fails with a swallowed SSLCertVerificationError,
+    # falls back to long-polling, and that then dies to its own too-short
+    # read timeout in a loop. Passing a Session with .verify pointed at
+    # certifi's bundle makes engineio thread the same CA path into the
+    # WebSocket handshake too.
+    http_session = requests.Session()
+    http_session.verify = certifi.where()
+
     sio = socketio.Client(
         reconnection=True, reconnection_delay=5, reconnection_delay_max=15,
-        logger=True, engineio_logger=True,
+        http_session=http_session,
     )
     authenticated = threading.Event()
 
