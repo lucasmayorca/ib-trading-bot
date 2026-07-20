@@ -402,6 +402,29 @@ def analyze_stock(ib_app, symbol, req_id):
 #  MAIN BRIDGE LOOP
 # ══════════════════════════════════════════════════════════════
 
+def _refresh_portfolio(ib_app, log, timeout=15):
+    """Pull current positions/account values/open orders from TWS.
+    Leaves reqAccountUpdates subscribed on return -- the caller unsubscribes
+    (reqAccountUpdates(False, "")) after it has sent the data, matching the
+    original single-use-per-cycle flow."""
+    ib_app.portfolio_positions = []
+    ib_app.account_values = {}
+    ib_app.account_done = False
+    ib_app.open_orders = []
+    ib_app.open_orders_done = False
+    ib_app.reqAccountUpdates(True, "")
+    ib_app.reqAllOpenOrders()
+
+    # A fixed sleep here is fragile — right after a big stock scan TWS can
+    # be slow to flush the account download, and a short wait would ship
+    # an empty portfolio. Poll accountDownloadEnd instead.
+    wait_start = time.time()
+    while not ib_app.account_done and time.time() - wait_start < timeout:
+        time.sleep(0.2)
+    if not ib_app.account_done:
+        log(f"  Timeout esperando datos de cartera de TWS ({timeout}s), usando lo que haya", Y)
+
+
 def safe_emit(sio, event, data, server_url=None, authenticated=None, retries=8, retry_delay=4):
     """Emit that survives a mid-scan WebSocket drop instead of crashing the
     whole bridge. Just waits for python-socketio's own background
@@ -523,10 +546,29 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
         log(f"  {len(initial_fills)} fills recientes encontrados, enviando al servidor...", C)
         safe_emit(sio, "trades_data", clean({"fills": initial_fills}), server_url, authenticated)
 
+    # Seed ib_app.portfolio_positions before the very first scan cycle so
+    # held stocks get merged into the watchlist from cycle 1 (otherwise
+    # they'd only show up starting cycle 2, once a portfolio_data refresh
+    # has actually run once).
+    _refresh_portfolio(ib_app, log)
+    ib_app.reqAccountUpdates(False, "")
+
     try:
         while True:
             try:
                 stocks = get_stock_list()
+                # The scan watchlist is a fixed list of well-known large
+                # caps -- it has no idea what the user actually holds. Mi
+                # Cartera's chart reuses the Scanner's cached analysis for
+                # each symbol, so a held stock that isn't on that fixed
+                # list (e.g. IBIT) would never get analyzed and its chart
+                # would show "Sin datos historicos disponibles" forever.
+                # Merge current holdings in so every position gets a chart.
+                held_stocks = {p["symbol"] for p in ib_app.portfolio_positions if p.get("secType") == "STK"}
+                for sym in held_stocks:
+                    if sym not in stocks:
+                        stocks.append(sym)
+
                 safe_emit(sio, "stock_list", {"symbols": stocks}, server_url, authenticated)
                 log(f"Escaneando {len(stocks)} acciones...", C)
 
@@ -553,23 +595,7 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
                 log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
 
-                ib_app.portfolio_positions = []
-                ib_app.account_values = {}
-                ib_app.account_done = False
-                ib_app.open_orders = []
-                ib_app.open_orders_done = False
-                ib_app.reqAccountUpdates(True, "")
-                ib_app.reqAllOpenOrders()
-
-                # A fixed sleep here is fragile — right after a 49-stock scan
-                # TWS can be slow to flush the account download, and a fixed
-                # 3s wait would ship an empty portfolio. Poll accountDownloadEnd
-                # instead, up to 15s.
-                wait_start = time.time()
-                while not ib_app.account_done and time.time() - wait_start < 15:
-                    time.sleep(0.2)
-                if not ib_app.account_done:
-                    log("  Timeout esperando datos de cartera de TWS (15s), enviando lo que haya", Y)
+                _refresh_portfolio(ib_app, log)
 
                 log(f"  Enviando cartera: {len(ib_app.portfolio_positions)} posiciones, {len(ib_app.open_orders)} ordenes abiertas...", C)
                 safe_emit(sio, "portfolio_data", clean({
