@@ -1370,6 +1370,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 /* === COUNTERS === */
 .counters{display:flex;gap:8px;padding:12px 32px;background:var(--bg);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
 .counter{padding:5px 14px;border-radius:8px;font-weight:700;font-size:12px;letter-spacing:.3px;border:1px solid transparent;transition:all .15s;cursor:default}
+.tab-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px}
+.tab-loading-spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.tab-loading-text{color:var(--muted);font-size:13px;text-align:center;max-width:400px;line-height:1.5}
 .c-buy{background:rgba(16,185,129,.1);color:var(--buy);border-color:rgba(16,185,129,.2)}
 .c-sell{background:rgba(239,68,68,.1);color:var(--sell);border-color:rgba(239,68,68,.2)}
 .c-hold{background:rgba(245,158,11,.1);color:var(--hold);border-color:rgba(245,158,11,.2)}
@@ -2017,7 +2021,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span class="sep" data-col="conf" style="text-align:right" onclick="sortListBy('conf')">Conf</span>
     <span data-col="buy_ret" style="text-align:right" title="Retorno prom. senales de compra (backtest 5Y)" onclick="sortListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno prom. senales de venta (backtest 5Y)" onclick="sortListBy('sell_ret')">Ret.V</span>
   </div>
-  <div id="stock-list"></div>
+  <div id="stock-list"><div id="scanner-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div></div>
 </div>
 </div>
 
@@ -2037,7 +2041,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span class="sep" data-col="conf" style="text-align:right" onclick="sortEtfListBy('conf')">Conf</span>
     <span data-col="buy_ret" style="text-align:right" title="Retorno prom. senales de compra (backtest 5Y)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno prom. senales de venta (backtest 5Y)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
   </div>
-  <div id="etf-list"></div>
+  <div id="etf-list"><div id="etf-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div></div>
 </div>
 </div>
 
@@ -2045,7 +2049,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="tab-portfolio" class="tab-content">
 <div class="portfolio-section" id="portfolio-section">
   <div class="port-title"><em>MI CARTERA</em> &mdash; Posiciones & Analisis</div>
-  <div id="port-loading" style="color:var(--muted);text-align:center;padding:40px">Cargando cartera...</div>
+  <div id="port-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Cargando cartera... los datos se actualizan con el escaner.</div></div>
   <div id="port-content" style="display:none">
     <!-- Summary cards -->
     <div class="port-summary" id="port-summary"></div>
@@ -2075,7 +2079,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="tab-optionslab" class="tab-content">
 <div class="portfolio-section" id="optionslab-section">
   <div class="port-title"><em>OPTIONS LAB</em> &mdash; Estrategias de Opciones</div>
-  <div id="olab-loading" style="color:var(--muted);text-align:center;padding:40px">Analizando mejores oportunidades de opciones...</div>
+  <div id="olab-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando mejores oportunidades de opciones...</div></div>
 
   <!-- Controles (secundario, para buscar un simbolo especifico) -->
   <div id="olab-controls" style="padding:8px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -2111,7 +2115,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="tab-trades" class="tab-content">
 <div class="th-section" id="trades-section">
   <div class="th-title"><em>TRADES HISTORICOS</em> &mdash; Analisis de Operaciones Cerradas</div>
-  <div id="th-loading" style="color:var(--muted);text-align:center;padding:40px">Cargando trades historicos...</div>
+  <div id="th-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Cargando trades historicos...</div></div>
   <div id="th-content" style="display:none">
     <div class="th-summary" id="th-summary"></div>
     <div class="th-filters" id="th-filters">
@@ -2165,14 +2169,14 @@ function loadPortfolio(){
   fetch('/api/portfolio').then(r=>r.json()).then(data=>{
     _portData=data;
     if(data.error){
-      document.getElementById('port-loading').textContent='Error: '+data.error;
+      document.getElementById('port-loading').innerHTML='<div class="tab-loading-text" style="color:var(--sell)">Error: '+data.error+'</div>';
       return;
     }
     document.getElementById('port-loading').style.display='none';
     document.getElementById('port-content').style.display='';
     renderPortfolio(data);
   }).catch(err=>{
-    document.getElementById('port-loading').textContent='Error cargando cartera: '+err.message;
+    document.getElementById('port-loading').innerHTML='<div class="tab-loading-text" style="color:var(--sell)">Error cargando cartera: '+err.message+'</div>';
   });
 }
 
@@ -3624,6 +3628,9 @@ function update(){
         '</div></details>';
       idx++;
     }
+    if(!html&&total===0){
+      html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div>';
+    }
     document.getElementById("stock-list").innerHTML=html;
 
     // Draw RSI sparklines for stocks with observations
@@ -3905,6 +3912,9 @@ function updateEtf(){
         '</div></div></details>';
       idx++;
     }
+    if(!html&&total===0){
+      html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div>';
+    }
     document.getElementById("etf-list").innerHTML=html;
 
     document.querySelectorAll('#tab-etf details[open]').forEach(d=>{
@@ -4171,7 +4181,7 @@ function loadOptionsLab(sym){
   if(!sym){document.getElementById('olab-status').textContent='Ingresa un ticker';return;}
   document.getElementById('olab-symbol-input').value=sym;
   document.getElementById('olab-loading').style.display='';
-  document.getElementById('olab-loading').textContent='Analizando opciones para '+sym+'...';
+  document.getElementById('olab-loading').innerHTML='<div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando opciones para '+sym+'...</div>';
   document.getElementById('olab-status').textContent='';
   document.getElementById('olab-content').style.display='none';
   document.getElementById('olab-multi').style.display='none';
@@ -4187,13 +4197,13 @@ function loadOptionsLab(sym){
     })
     .catch(e=>{
       document.getElementById('olab-loading').style.display='';
-      document.getElementById('olab-loading').textContent='Error: '+e;
+      document.getElementById('olab-loading').innerHTML='<div class="tab-loading-text" style="color:var(--sell)">Error: '+e+'</div>';
     });
 }
 
 function loadOptionsLabTop(){
   document.getElementById('olab-loading').style.display='';
-  document.getElementById('olab-loading').textContent='Analizando mejores oportunidades de opciones...';
+  document.getElementById('olab-loading').innerHTML='<div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando mejores oportunidades de opciones...</div>';
   document.getElementById('olab-status').textContent='';
   document.getElementById('olab-content').style.display='none';
   document.getElementById('olab-multi').style.display='none';
@@ -4204,7 +4214,7 @@ function loadOptionsLabTop(){
       document.getElementById('olab-loading').style.display='none';
       if(!d.opportunities||!d.opportunities.length){
         document.getElementById('olab-loading').style.display='';
-        document.getElementById('olab-loading').textContent='No hay oportunidades disponibles aun. El scanner necesita completar al menos un ciclo de analisis.';
+        document.getElementById('olab-loading').innerHTML='<div class="tab-loading-text">No hay oportunidades disponibles aun. El scanner necesita completar al menos un ciclo de analisis.</div>';
         return;
       }
       document.getElementById('olab-status').textContent=d.opportunities.length+' oportunidades encontradas';
@@ -4212,7 +4222,7 @@ function loadOptionsLabTop(){
     })
     .catch(e=>{
       document.getElementById('olab-loading').style.display='';
-      document.getElementById('olab-loading').textContent='Error cargando oportunidades: '+e;
+      document.getElementById('olab-loading').innerHTML='<div class="tab-loading-text" style="color:var(--sell)">Error cargando oportunidades: '+e+'</div>';
     });
 }
 
