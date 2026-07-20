@@ -1413,6 +1413,9 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
         print(f"  [Portfolio] Error guardando snapshot: {e}")
         warnings.append(f"Error guardando snapshot diario: {e}")
 
+    # 7b. Metricas agregadas de cartera (beta, yield, P/E, distribucion de senales)
+    metrics = _compute_portfolio_metrics(positions_enriched, total_value)
+
     # 8. Alertas del portafolio
     alerts = _generate_portfolio_alerts(positions_enriched, composition, indicators_data)
 
@@ -1437,6 +1440,7 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
         "history_analysis": history_analysis,
         "history_chart": history_chart,
         "alerts": alerts,
+        "metrics": metrics,
         "timestamp": portfolio_data["timestamp"],
         "warnings": warnings,
     }
@@ -1464,6 +1468,119 @@ def _format_account_data(account_data):
             "currency": info.get("currency", "USD"),
         }
     return formatted
+
+
+def _compute_portfolio_metrics(positions, total_value):
+    """
+    Metricas agregadas y simples de la cartera para el header informativo.
+
+    Devuelve:
+      beta               — beta ponderado por peso (vs S&P 500)
+      dividend_yield_pct — yield promedio ponderado (%)
+      pe                 — P/E promedio ponderado
+      strength           — fuerza tecnica promedio ponderada (0-5.1)
+      score              — score tecnico promedio ponderado (0-100)
+      risk_reward        — R/R promedio ponderado (solo posiciones con senal)
+      signal_counts      — {buy, sell, hold, actionable}
+      next_earnings      — {symbol, date, days_until} o None
+      coverage           — dict con % del portfolio cubierto por cada metrica
+
+    Todas las metricas ponderan por peso_portafolio y omiten posiciones sin dato.
+    """
+    if not positions or total_value <= 0:
+        return {}
+
+    def _wavg(field_extractor):
+        """Weighted average sobre posiciones con dato valido."""
+        num = 0.0
+        wt = 0.0
+        for p in positions:
+            w = p.get("peso_portafolio", 0) or 0
+            if w <= 0:
+                continue
+            v = field_extractor(p)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+                if fv != fv or fv in (float("inf"), float("-inf")):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            num += fv * w
+            wt += w
+        if wt <= 0:
+            return None, 0.0
+        return num / wt, wt
+
+    def _fund(p, key):
+        deep = p.get("analysis") or {}
+        fund = deep.get("fundamentals") or {}
+        return fund.get(key)
+
+    beta, cov_beta = _wavg(lambda p: _fund(p, "beta"))
+    # yfinance ya devuelve dividendYield como decimal (0.015 = 1.5%)
+    dy, cov_dy = _wavg(lambda p: (_fund(p, "dividend_yield") or 0) * 100
+                                    if _fund(p, "dividend_yield") is not None else None)
+    pe, cov_pe = _wavg(lambda p: _fund(p, "trailing_pe"))
+
+    strength, _ = _wavg(lambda p: (p.get("analysis") or {}).get("strength"))
+    score, _ = _wavg(lambda p: (p.get("analysis") or {}).get("score"))
+
+    # R/R solo cuenta posiciones con senal tecnica (BUY/SELL), no HOLD
+    def _rr(p):
+        d = p.get("analysis") or {}
+        sig = d.get("signal", "HOLD")
+        if sig not in ("BUY", "SELL"):
+            return None
+        return d.get("risk_reward")
+    rr, _ = _wavg(_rr)
+
+    # Distribucion de senales (por conteo, no por peso)
+    counts = {"buy": 0, "sell": 0, "hold": 0}
+    for p in positions:
+        sig = ((p.get("analysis") or {}).get("signal")
+               or (p.get("indicadores") or {}).get("signal")
+               or "HOLD").upper()
+        if sig == "BUY":
+            counts["buy"] += 1
+        elif sig == "SELL":
+            counts["sell"] += 1
+        else:
+            counts["hold"] += 1
+    counts["actionable"] = counts["buy"] + counts["sell"]
+
+    # Proximo earnings (mas cercano en el tiempo, solo futuros)
+    next_earn = None
+    for p in positions:
+        earn = _fund(p, "earnings")
+        if not earn:
+            continue
+        d = earn.get("days_until")
+        if d is None or d < 0:
+            continue
+        if next_earn is None or d < next_earn["days_until"]:
+            next_earn = {
+                "symbol": p["symbol"],
+                "date": earn.get("next_date"),
+                "days_until": d,
+            }
+
+    return {
+        "beta": round(beta, 2) if beta is not None else None,
+        "dividend_yield_pct": round(dy, 2) if dy is not None else None,
+        "pe": round(pe, 1) if pe is not None else None,
+        "strength": round(strength, 2) if strength is not None else None,
+        "score": round(score, 1) if score is not None else None,
+        "risk_reward": round(rr, 2) if rr is not None else None,
+        "signal_counts": counts,
+        "next_earnings": next_earn,
+        "coverage": {
+            "beta_pct": round(cov_beta * 100, 0),
+            "dy_pct": round(cov_dy * 100, 0),
+            "pe_pct": round(cov_pe * 100, 0),
+        },
+    }
 
 
 def _generate_portfolio_alerts(positions, composition, indicators):

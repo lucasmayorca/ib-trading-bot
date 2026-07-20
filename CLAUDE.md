@@ -63,6 +63,10 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 
 `signal_label` is display-only; `signal` (BUY/SELL/HOLD) drives order execution in `bot.py`.
 The thesis (`_generate_thesis`) and rationale (`_generate_rationale`) use `signal_label` for direction consistency.
+`_label_is_bearish(label)` (vista_web.py) is the shared bearish/bullish check used by `_compute_price_levels`
+(entry/target/stop), `_score_stock` (win_rate/avg_return component), and the recommendation/portfolio deep-analysis
+win_rate/avg_return fields — always branch on `signal_label` here, not raw `signal`, since INMINENTE/VIRANDO/ZONA
+labels can be directional while `signal` is still HOLD.
 
 ## Configuration (config.py)
 - `SCAN_COUNT = 75` stocks

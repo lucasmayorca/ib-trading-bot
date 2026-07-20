@@ -128,6 +128,77 @@ def make_contract(symbol, exchange="SMART", currency="USD"):
     return contract
 
 
+# ══════════════════════════════════════════════════════════════
+#  ETF SCANNER
+# ══════════════════════════════════════════════════════════════
+
+FALLBACK_ETFS = [
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "EFA", "EEM",
+    "VWO", "VEA", "IEMG", "AGG", "BND", "TLT", "IEF", "SHY",
+    "LQD", "HYG", "TIP", "VCIT", "VNQ", "XLRE", "IYR", "VNQI",
+    "XLF", "XLK", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU",
+    "XLB", "XLC", "ARKK", "ARKW", "ARKG", "ARKF",
+    "GLD", "SLV", "GDX", "IAU", "USO", "UNG",
+    "SMH", "SOXX", "XBI", "IBB", "ITB", "XHB",
+    "KRE", "XME", "XRT", "HACK", "BOTZ", "ROBO",
+    "VIG", "SCHD", "DVY", "HDV", "VYM", "DGRO",
+    "MTUM", "VLUE", "QUAL", "SIZE", "USMV",
+    "RSP", "SPHD", "SPLV", "MOAT", "COWZ",
+    "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
+]
+
+
+def get_fallback_etfs():
+    """Retorna lista de ETFs fallback como dicts."""
+    return [
+        {"rank": i + 1, "symbol": s, "secType": "STK", "exchange": "SMART", "currency": "USD", "conId": 0}
+        for i, s in enumerate(FALLBACK_ETFS)
+    ]
+
+
+def get_top_volume_etfs(count=None):
+    """
+    Obtiene los top N ETFs por volumen del dia via IB Scanner.
+    Retorna lista de dicts con info de cada ETF.
+    """
+    if count is None:
+        count = config.SCAN_COUNT
+
+    app = ScannerApp()
+    app.connect(config.IB_HOST, config.IB_PORT, config.IB_CLIENT_ID + 11)
+
+    thread = threading.Thread(target=app.run, daemon=True)
+    thread.start()
+    time.sleep(2)
+
+    if not app.connected:
+        print("ERROR: ETF Scanner no pudo conectar a TWS")
+        app.disconnect()
+        return get_fallback_etfs()[:count]
+
+    sub = ScannerSubscription()
+    sub.instrument = "STK.ETF"
+    sub.locationCode = "STK.US.MAJOR"
+    sub.scanCode = "MOST_ACTIVE"
+    sub.numberOfRows = count
+
+    app.reqScannerSubscription(2, sub, [], [])
+
+    timeout = 15
+    start = time.time()
+    while not app.scan_done and time.time() - start < timeout:
+        time.sleep(0.5)
+
+    app.disconnect()
+    time.sleep(0.5)
+
+    if not app.symbols:
+        print(f"  ETF Scanner sin resultados. Usando lista fallback de {count} ETFs.")
+        return get_fallback_etfs()[:count]
+
+    return app.symbols
+
+
 if __name__ == "__main__":
     print(f"Buscando top {config.SCAN_COUNT} acciones por volumen...\n")
     stocks = get_top_volume_stocks()

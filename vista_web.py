@@ -23,7 +23,7 @@ import pandas as pd
 import config
 import indicators
 import signals
-from scanner import get_top_volume_stocks
+from scanner import get_top_volume_stocks, get_top_volume_etfs
 import backtester
 import yfinance as yf
 import portfolio
@@ -180,6 +180,11 @@ fundamentals_cache = {}    # {symbol: {"data": {...}, "ts": timestamp}}
 last_update_time = ""
 update_lock = threading.Lock()
 
+etf_list = []              # list of ETF symbol strings
+etf_analysis_cache = {}    # {symbol: result_dict}
+etf_last_update_time = ""
+etf_update_lock = threading.Lock()
+
 
 def fetch_historical(app, symbol, req_id, duration=None):
     contract = make_contract(symbol)
@@ -321,6 +326,49 @@ def analysis_loop():
             run_analysis()
         except Exception as e:
             print(f"  Error en analisis: {e}")
+        time.sleep(config.VISTA_REFRESH_SECONDS)
+
+
+# ══════════════════════════════════════════════════════════════
+#  ETF ANALYSIS (parallel to stock scanner)
+# ══════════════════════════════════════════════════════════════
+
+def get_etf_rt_price(symbol):
+    idx = None
+    for i, s in enumerate(etf_list):
+        if s == symbol:
+            idx = i
+            break
+    if idx is None:
+        return None, {}
+    mkt = ib_app.market_data.get(7000 + idx, {})
+    rt = mkt.get("delayed_last") or mkt.get("last")
+    return rt if rt and rt > 0 else None, mkt
+
+
+def run_etf_analysis():
+    global etf_analysis_cache, etf_last_update_time
+    total = len(etf_list)
+    for i, symbol in enumerate(etf_list):
+        req_id = 3000 + i
+        print(f"  [ETF] Analizando {symbol}... ({i + 1}/{total})")
+        df = fetch_historical(ib_app, symbol, req_id,
+                              duration=config.BACKTEST_DURATION)
+        result = analyze_symbol(df)
+        with etf_update_lock:
+            etf_analysis_cache[symbol] = result
+            etf_last_update_time = datetime.now().strftime("%H:%M:%S")
+        time.sleep(1)
+
+    print(f"  [ETF] Analisis completo: {etf_last_update_time}")
+
+
+def etf_analysis_loop():
+    while True:
+        try:
+            run_etf_analysis()
+        except Exception as e:
+            print(f"  [ETF] Error en analisis: {e}")
         time.sleep(config.VISTA_REFRESH_SECONDS)
 
 
@@ -1932,6 +1980,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div class="counters" id="counters"></div>
 <div class="nav-tabs">
   <button class="nav-tab active" onclick="switchTab('scanner')">Scanner</button>
+  <button class="nav-tab" onclick="switchTab('etf')">ETF Scanner</button>
   <button class="nav-tab" onclick="switchTab('portfolio')">Mi Cartera</button>
   <button class="nav-tab" onclick="switchTab('optionslab')">Options Lab</button>
   <button class="nav-tab" onclick="switchTab('trades')">Trades Historicos</button>
@@ -1956,6 +2005,26 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 </div>
 </div>
 
+<!-- TAB: ETF SCANNER -->
+<div id="tab-etf" class="tab-content">
+<div class="counters" id="etf-counters"></div>
+<div id="etf-top3-section" class="top3-section" style="display:none"></div>
+<div class="content">
+  <div class="list-header" id="etf-list-header">
+    <span></span><span data-col="sym" onclick="sortEtfListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" onclick="sortEtfListBy('price')">Precio</span>
+    <span data-col="signal" onclick="sortEtfListBy('signal')">Senal</span><span data-col="strength" style="text-align:right" title="Fuerza de la senal (0-5.1)" onclick="sortEtfListBy('strength')">Str</span>
+    <span class="sep" data-col="sma200" style="text-align:right" onclick="sortEtfListBy('sma200')">200</span><span data-col="sma100" style="text-align:right" onclick="sortEtfListBy('sma100')">100</span>
+    <span data-col="sma50" style="text-align:right" onclick="sortEtfListBy('sma50')">50</span><span data-col="sma20" style="text-align:right" onclick="sortEtfListBy('sma20')">20</span>
+    <span data-col="ema9" style="text-align:right" onclick="sortEtfListBy('ema9')">9e</span>
+    <span class="sep" data-col="macd" style="text-align:right" onclick="sortEtfListBy('macd')">MACD</span><span data-col="rsi" style="text-align:right" onclick="sortEtfListBy('rsi')">RSI</span>
+    <span data-col="konc" style="text-align:right" onclick="sortEtfListBy('konc')">Konc</span><span data-col="cond" onclick="sortEtfListBy('cond')">C</span>
+    <span class="sep" data-col="conf" style="text-align:right" onclick="sortEtfListBy('conf')">Conf</span>
+    <span data-col="buy_ret" style="text-align:right" title="Retorno prom. senales de compra (backtest 5Y)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno prom. senales de venta (backtest 5Y)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
+  </div>
+  <div id="etf-list"></div>
+</div>
+</div>
+
 <!-- TAB: MI CARTERA -->
 <div id="tab-portfolio" class="tab-content">
 <div class="portfolio-section" id="portfolio-section">
@@ -1966,6 +2035,9 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <div class="port-summary" id="port-summary"></div>
     <!-- Alerts -->
     <div class="port-alerts" id="port-alerts"></div>
+
+    <!-- Metricas agregadas de la cartera -->
+    <div class="port-metrics" id="port-metrics"></div>
 
     <!-- Tablero de veredictos por posicion -->
     <div class="port-verdicts">
@@ -2055,16 +2127,20 @@ let _thLoaded=false;
 let _thFilter='all';
 let _thCharts={};
 let _olabLoaded=false;
+let _etfData=null,_etfCharts={},_etfPeriods={};
+let _etfLoaded=false;
+let _etfSortCol='vol',_etfSortDir='desc';
 
 function switchTab(tab){
   _activeTab=tab;
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
-  document.querySelector('.nav-tab[onclick*="'+tab+'"]').classList.add('active');
+  document.querySelector('.nav-tab[onclick*="\''+tab+'\'"]').classList.add('active');
   document.getElementById('tab-'+tab).classList.add('active');
   if(tab==='portfolio'&&!_portLoaded){_portLoaded=true;loadPortfolio();}
   if(tab==='trades'&&!_thLoaded){_thLoaded=true;loadTradesHistory();}
   if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}
+  if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}
 }
 
 function loadPortfolio(){
@@ -3462,8 +3538,315 @@ function update(){
 
 update();
 setInterval(update,REFRESH_MS);
-// Sub-tabs de cartera y sus helpers removidos (redesign).
 
+// ══════════════════════════════════════════════════════════════
+//  ETF SCANNER
+// ══════════════════════════════════════════════════════════════
+
+function _getEtfSortVal(r,col){
+  if(!r)return null;
+  let mas=r.chart?r.chart.mas:{};
+  let vals=r.values||{};
+  let konc=vals.koncorde||{};
+  switch(col){
+    case 'sym':return r.symbol||'';
+    case 'price':return r.price||0;
+    case 'signal':return r.signal==='BUY'?2:(r.signal==='SELL'?1:0);
+    case 'strength':return r.strength||0;
+    case 'sma200':return mas.sma200_val!=null&&r.price?((r.price-mas.sma200_val)/mas.sma200_val*100):null;
+    case 'sma100':return mas.sma100_val!=null&&r.price?((r.price-mas.sma100_val)/mas.sma100_val*100):null;
+    case 'sma50':return mas.sma50_val!=null&&r.price?((r.price-mas.sma50_val)/mas.sma50_val*100):null;
+    case 'sma20':return mas.sma20_val!=null&&r.price?((r.price-mas.sma20_val)/mas.sma20_val*100):null;
+    case 'ema9':return mas.ema9_val!=null&&r.price?((r.price-mas.ema9_val)/mas.ema9_val*100):null;
+    case 'macd':return vals.macd?vals.macd.hist:null;
+    case 'rsi':return vals.rsi!=null?vals.rsi:null;
+    case 'konc':return konc.marron!=null?konc.marron:null;
+    case 'cond':return r.conditions_met||0;
+    case 'conf':return r.confidence!=null?r.confidence:null;
+    case 'buy_ret':return r.buy_avg_return!=null?r.buy_avg_return:null;
+    case 'sell_ret':return r.sell_avg_return!=null?r.sell_avg_return:null;
+    case 'vol':return r.dollar_vol||0;
+    default:return 0;
+  }
+}
+
+function sortEtfEntries(entries){
+  return Object.keys(entries).sort((a,b)=>{
+    let ra=entries[a],rb=entries[b];
+    if(!ra&&!rb)return 0;if(!ra)return 1;if(!rb)return-1;
+    let va=_getEtfSortVal(ra,_etfSortCol);
+    let vb=_getEtfSortVal(rb,_etfSortCol);
+    if(va==null&&vb==null)return 0;if(va==null)return 1;if(vb==null)return-1;
+    let cmp;
+    if(_etfSortCol==='sym')cmp=va.localeCompare(vb);
+    else cmp=va-vb;
+    return _etfSortDir==='asc'?cmp:-cmp;
+  });
+}
+
+function sortEtfListBy(col){
+  if(_etfSortCol===col){_etfSortDir=_etfSortDir==='asc'?'desc':'asc';}
+  else{_etfSortCol=col;_etfSortDir=(col==='sym'?'asc':'desc');}
+  document.querySelectorAll('#etf-list-header .sort-arrow').forEach(e=>e.remove());
+  let span=document.querySelector('#etf-list-header [data-col="'+col+'"]');
+  if(span){
+    let arrow=document.createElement('span');
+    arrow.className='sort-arrow';
+    arrow.textContent=_etfSortDir==='asc'?'▲':'▼';
+    span.appendChild(arrow);
+  }
+  if(_etfData)updateEtf();
+}
+
+function setEtfPeriod(idx,sym,p){
+  _etfPeriods[idx]=p;
+  let bar=document.getElementById('etf_pb_'+idx);
+  if(bar)bar.querySelectorAll('.period-btn').forEach(b=>{b.classList.toggle('active',b.dataset.p===p);});
+  renderEtfDetailCharts(idx,sym,p);
+}
+
+function destroyEtfDetailCharts(idx){
+  ['macd','rsi','konc'].forEach(k=>{
+    let key='etf_'+k+'_'+idx;
+    if(_etfCharts[key]){_etfCharts[key].destroy();delete _etfCharts[key];}
+  });
+  let ckey='etf_candle_'+idx;
+  if(_etfCharts[ckey]){_etfCharts[ckey].remove();delete _etfCharts[ckey];}
+}
+
+function renderEtfDetailCharts(idx,sym,period){
+  destroyEtfDetailCharts(idx);
+  if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
+  let bars=DAILY_BARS[period]||252;
+  if(period==='1D'||period==='1W'){
+    let apiP=period==='1D'?'15m':'4h';
+    fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
+      if(d.ohlc)renderCandleIntraday('etf_candle_'+idx,d.ohlc);
+    });
+  } else {
+    renderCandleDaily('etf_candle_'+idx,r.chart.ohlc,r.chart.mas,bars);
+  }
+  renderDetailIndicators('etf_macd_'+idx,'etf_rsi_'+idx,'etf_konc_'+idx,r.chart,bars,_etfCharts,'etf_');
+}
+
+function renderDetailIndicators(macdId,rsiId,koncId,chart,bars,chartsObj,prefix){
+  let dates=(chart.dates||[]).slice(-(bars));
+  let macd=chart.macd||{};let mh=(macd.hist||[]).slice(-bars);let mm=(macd.macd||[]).slice(-bars);let ms=(macd.signal||[]).slice(-bars);
+  let rsiArr=(chart.rsi||[]).slice(-bars);
+  let konc=chart.koncorde||{};let kv=(konc.verde||[]).slice(-bars);let km=(konc.marron||[]).slice(-bars);let ka=(konc.azul||[]).slice(-bars);let kmed=(konc.media||[]).slice(-bars);
+
+  let el1=document.getElementById(macdId);
+  if(el1){
+    chartsObj[macdId]=new Chart(el1,{type:'bar',data:{labels:dates,datasets:[
+      {label:'Hist',data:mh,backgroundColor:mh.map(v=>v>=0?'#34d39966':'#f8717166'),borderWidth:0,order:2},
+      {label:'MACD',data:mm,borderColor:'#60a5fa',borderWidth:1.5,type:'line',pointRadius:0,order:1},
+      {label:'Signal',data:ms,borderColor:'#f97316',borderWidth:1.5,type:'line',pointRadius:0,order:1}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'#334155'}}}}});
+  }
+
+  let el2=document.getElementById(rsiId);
+  if(el2){
+    chartsObj[rsiId]=new Chart(el2,{type:'line',data:{labels:dates,datasets:[
+      {data:rsiArr,borderColor:'#c084fc',borderWidth:1.5,pointRadius:0,fill:false},
+      {data:Array(dates.length).fill(70),borderColor:'#f8717140',borderWidth:1,pointRadius:0,borderDash:[4,4],fill:false},
+      {data:Array(dates.length).fill(30),borderColor:'#34d39940',borderWidth:1,pointRadius:0,borderDash:[4,4],fill:false}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{min:0,max:100,grid:{color:'#334155'}}}}});
+  }
+
+  let el3=document.getElementById(koncId);
+  if(el3){
+    chartsObj[koncId]=new Chart(el3,{type:'bar',data:{labels:dates,datasets:[
+      {label:'Verde',data:kv,backgroundColor:'#34d39960',order:3},
+      {label:'Marron',data:km,backgroundColor:'#a0845c80',order:2},
+      {label:'Azul',data:ka,backgroundColor:'#60a5fa60',order:4},
+      {label:'Media',data:kmed,borderColor:'#fbbf24',borderWidth:1.5,type:'line',pointRadius:0,order:1,fill:false}
+    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'#334155'}}}}});
+  }
+}
+
+function updateEtf(){
+  fetch("/api/etf-data").then(r=>r.json()).then(data=>{
+    _etfData=data;
+    let entries=data.results;
+    let buy=0,sell=0,buyNear=0,sellNear=0,turnBuy=0,turnSell=0,zone=0,neutral=0,nodata=0,total=Object.keys(entries).length;
+    for(let s in entries){
+      let r=entries[s];
+      if(!r){nodata++;continue;}
+      if(r.signal==='BUY')buy++;
+      else if(r.signal==='SELL')sell++;
+      else{
+        let l=r.signal_label||'';
+        if(l.includes('INMINENTE')&&l.includes('COMPRA'))buyNear++;
+        else if(l.includes('INMINENTE')&&l.includes('VENTA'))sellNear++;
+        else if(l.includes('VIRANDO')&&l.includes('COMPRA'))turnBuy++;
+        else if(l.includes('VIRANDO')&&l.includes('VENTA'))turnSell++;
+        else if(l.includes('SOBREVENTA')||l.includes('SOBRECOMPRA'))zone++;
+        else neutral++;
+      }
+    }
+    let ch='<span class="counter c-total">Total '+total+'</span>';
+    if(buy)ch+='<span class="counter c-buy">Compra '+buy+'</span>';
+    if(sell)ch+='<span class="counter c-sell">Venta '+sell+'</span>';
+    if(buyNear)ch+='<span class="counter c-buy-near">Compra Inminente '+buyNear+'</span>';
+    if(sellNear)ch+='<span class="counter c-sell-near">Venta Inminente '+sellNear+'</span>';
+    if(turnBuy)ch+='<span class="counter c-turning-buy">Virando a Compra '+turnBuy+'</span>';
+    if(turnSell)ch+='<span class="counter c-turning-sell">Virando a Venta '+turnSell+'</span>';
+    if(zone)ch+='<span class="counter c-zone">Zona Extrema '+zone+'</span>';
+    if(neutral)ch+='<span class="counter c-neutral">Neutral '+neutral+'</span>';
+    if(nodata)ch+='<span class="counter c-nodata">Sin datos '+nodata+'</span>';
+    document.getElementById("etf-counters").innerHTML=ch;
+
+    // Top 3 ETF recommendations
+    renderEtfTop3(data.top3);
+
+    let sorted=sortEtfEntries(entries);
+    let openSet=new Set();
+    document.querySelectorAll('#tab-etf details[open]').forEach(d=>{if(d.dataset.sym)openSet.add(d.dataset.sym);});
+    for(let k in _etfCharts)destroyEtfDetailCharts(k);
+
+    let html="";
+    let idx=0;
+    for(let sym of sorted){
+      let r=entries[sym];
+      if(!r){
+        let na='<span class="iv v-na">---</span>';
+        html+='<details data-sym="'+sym+'" data-idx="'+idx+'"><summary>'+
+          '<div class="stock-row">'+
+          '<span class="arrow">&#9654;</span><span class="sym">'+sym+'</span>'+
+          '<span class="price" style="color:var(--dim)">---</span><span></span>'+na+
+          na+na+na+na+na+na+na+na+
+          '<span class="cond cond-0">--</span>'+na+na+na+
+          '</div></summary>'+
+          '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
+        idx++;continue;
+      }
+
+      let cond=r.conditions_met||0;
+      let isOpen=openSet.has(sym);
+      let mh=r.values&&r.values.macd?r.values.macd.hist:null;
+      let rv=r.values?r.values.rsi:null;
+      let km=r.values&&r.values.koncorde?r.values.koncorde.marron:null;
+      let mas=r.chart?r.chart.mas:null;
+
+      let ts=buildTechSummary(r);
+
+      html+='<details data-sym="'+sym+'" data-idx="'+idx+'"'+(isOpen?' open':'')+'>';
+      html+='<summary><div class="stock-row">'+
+        '<span class="arrow">&#9654;</span>'+
+        '<span class="sym">'+sym+'</span>'+
+        '<span class="price">'+fp(r.price)+'</span>'+
+        badge(r.signal,r.signal_label)+fstr(r.strength,r.signal,r)+
+        fma(mas,'sma200_val',r.price)+fma(mas,'sma100_val',r.price)+
+        fma(mas,'sma50_val',r.price)+fma(mas,'sma20_val',r.price)+
+        fma(mas,'ema9_val',r.price)+
+        fv(mh,r.macd_ok)+fv(rv,r.rsi_ok)+fv(km,r.konc_ok)+
+        '<span class="'+cc(cond)+'">'+cond+'/3</span>'+
+        fconf(r.confidence)+fret(r.buy_avg_return)+fret(r.sell_avg_return)+
+        '</div>';
+      html+='</summary>';
+
+      let curPeriod=_etfPeriods[idx]||'1Y';
+      html+='<div class="detail-body">';
+      if(ts.text){
+        html+='<div class="obs-row" style="margin-bottom:10px">';
+        for(let a of ts.alerts){
+          html+='<span class="obs-tag" style="background:'+a.color+'18;border-color:'+a.color+'40;color:'+a.color+'">'+a.label+'</span>';
+        }
+        html+='<span class="obs-text">'+ts.text+'</span>';
+        html+='</div>';
+      }
+      html+=
+        '<div class="cond-line"><span class="cond-label" style="color:#7dd3fc">MACD</span><span class="'+(r.macd_ok?'v-ok':'v-no')+'">'+(r.macd_detail||"")+'</span></div>'+
+        '<div class="cond-line"><span class="cond-label" style="color:#c084fc">RSI</span><span class="'+(r.rsi_ok?'v-ok':'v-no')+'">'+(r.rsi_detail||"")+'</span></div>'+
+        '<div class="cond-line"><span class="cond-label" style="color:#fbbf24">Koncorde</span><span class="'+(r.konc_ok?'v-ok':'v-no')+'">'+(r.konc_detail||"")+'</span></div>'+
+        '<div class="bt-line">'+
+        '<b>Backtest 5Y</b> &nbsp; Confianza: '+(r.confidence!=null?'<span class="'+(r.confidence>=60?'v-ok':r.confidence>=30?'v-warn':'v-no')+'">'+r.confidence.toFixed(0)+'%</span>':'N/A')+
+        ' &nbsp;&bull;&nbsp; Senales: '+(r.buy_count||0)+'B / '+(r.sell_count||0)+'S'+
+        ' &nbsp;&bull;&nbsp; Ret.Buy: '+(r.buy_avg_return!=null?'<span class="'+(r.buy_avg_return>=0?'v-ok':'v-no')+'">'+(r.buy_avg_return>=0?'+':'')+r.buy_avg_return.toFixed(1)+'%</span>':'N/A')+
+        ' &nbsp;&bull;&nbsp; Ret.Sell: '+(r.sell_avg_return!=null?'<span class="'+(r.sell_avg_return>=0?'v-ok':'v-no')+'">'+(r.sell_avg_return>=0?'+':'')+r.sell_avg_return.toFixed(1)+'%</span>':'N/A')+
+        '</div>'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin:10px 0 4px">'+
+        '<div class="ma-legend">'+
+        '<span><span class="dot" style="background:#f87171"></span>SMA200</span>'+
+        '<span><span class="dot" style="background:#fb923c"></span>SMA100</span>'+
+        '<span><span class="dot" style="background:#facc15"></span>SMA50</span>'+
+        '<span><span class="dot" style="background:#60a5fa"></span>SMA20</span>'+
+        '<span><span class="dot" style="background:#c084fc"></span>EMA9</span></div>'+
+        '<div class="period-bar" id="etf_pb_'+idx+'">'+
+        '<button class="period-btn'+(curPeriod==='ALL'?' active':'')+'" data-p="ALL" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'ALL\')">ALL</button>'+
+        '<button class="period-btn'+(curPeriod==='5Y'?' active':'')+'" data-p="5Y" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'5Y\')">5Y</button>'+
+        '<button class="period-btn'+(curPeriod==='1Y'?' active':'')+'" data-p="1Y" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'1Y\')">1Y</button>'+
+        '<button class="period-btn'+(curPeriod==='3M'?' active':'')+'" data-p="3M" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'3M\')">3M</button>'+
+        '<button class="period-btn'+(curPeriod==='1M'?' active':'')+'" data-p="1M" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'1M\')">1M</button>'+
+        '<button class="period-btn'+(curPeriod==='1W'?' active':'')+'" data-p="1W" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'1W\')">1W</button>'+
+        '<button class="period-btn'+(curPeriod==='1D'?' active':'')+'" data-p="1D" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'1D\')">1D</button>'+
+        '</div></div>'+
+        '<div class="candle-box" id="etf_candle_'+idx+'"></div>'+
+        '<div class="charts-grid">'+
+        '<div class="chart-box"><h4>MACD</h4><canvas id="etf_macd_'+idx+'"></canvas></div>'+
+        '<div class="chart-box"><h4>RSI</h4><canvas id="etf_rsi_'+idx+'"></canvas></div>'+
+        '<div class="chart-box"><h4>KONCORDE</h4><canvas id="etf_konc_'+idx+'"></canvas></div>'+
+        '</div></div></details>';
+      idx++;
+    }
+    document.getElementById("etf-list").innerHTML=html;
+
+    document.querySelectorAll('#tab-etf details[open]').forEach(d=>{
+      let i=parseInt(d.dataset.idx);
+      renderEtfDetailCharts(i,d.dataset.sym,_etfPeriods[i]||'1Y');
+    });
+    document.querySelectorAll('#tab-etf details').forEach(d=>{
+      d.addEventListener('toggle',function(){
+        let i=parseInt(this.dataset.idx),s=this.dataset.sym;
+        if(this.open)renderEtfDetailCharts(i,s,_etfPeriods[i]||'1Y');else destroyEtfDetailCharts(i);
+      });
+    });
+  }).catch(err=>console.error("ETF Error:",err));
+}
+
+function renderEtfTop3(top3){
+  let sec=document.getElementById('etf-top3-section');
+  if(!sec)return;
+  if(!top3||top3.length===0){sec.style.display='none';return;}
+  sec.style.display='';
+  let html='<div class="top3-title">Top ETF Recomendaciones</div>';
+  for(let i=0;i<top3.length;i++){
+    let r=top3[i];
+    let sc=r.signal==='BUY'?'rec-buy':(r.signal==='SELL'?'rec-sell':'rec-hold');
+    let lbl=r.signal_label||r.signal;
+    let bc=r.signal==='BUY'?'rb-buy':(r.signal==='SELL'?'rb-sell':'rb-hold');
+    if(lbl.includes('INMINENTE'))bc=lbl.includes('COMPRA')?'rb-buy-near':'rb-sell-near';
+    else if(lbl.includes('VIRANDO'))bc=lbl.includes('COMPRA')?'rb-turning-buy':'rb-turning-sell';
+    else if(lbl.includes('ZONA'))bc=lbl.includes('SOBREVENTA')?'rb-zone-buy':'rb-zone-sell';
+    else if(lbl==='NEUTRAL')bc='rb-neutral';
+    let wr=((r.win_rate||0)*100).toFixed(0);
+    html+='<details class="rec-details '+sc+'"'+(i===0?' open':'')+'>';
+    html+='<summary>';
+    html+='<span class="rec-arrow">&#9654;</span>';
+    html+='<span class="rec-rank-badge">#'+(i+1)+'</span>';
+    html+='<span class="rec-sym">'+r.symbol+'</span>';
+    html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
+    html+='<span class="rec-badge '+bc+'">'+lbl+'</span>';
+    html+='<span class="rec-sum-metrics">';
+    html+='<span class="rec-sm"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
+    html+='<span class="rec-sm"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
+    html+='<span class="rec-sm"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
+    html+='</span>';
+    html+='</summary>';
+    if(r.thesis){
+      html+='<div class="rec-body"><div class="rec-thesis">';
+      html+='<div class="rec-thesis-title">Tesis de Inversion</div>';
+      html+='<div class="rec-thesis-text">'+r.thesis+'</div>';
+      html+='</div></div>';
+    }
+    html+='</details>';
+  }
+  sec.innerHTML=html;
+}
+
+// Auto-refresh ETF scanner every 5 min if active
+setInterval(function(){if(_activeTab==='etf'&&_etfLoaded)updateEtf();},REFRESH_MS);
 
 // Auto-refresh portfolio every 5 min if active
 setInterval(function(){if(_activeTab==='portfolio'&&_portLoaded){_portLoaded=false;loadPortfolio();}},REFRESH_MS);
@@ -4440,6 +4823,61 @@ def api_data():
             "last_update": last_update_time,
             "port": config.IB_PORT,
             "top3": top3,
+        }), mimetype="application/json")
+
+
+@flask_app.route("/api/etf-data")
+def api_etf_data():
+    with etf_update_lock:
+        results = {}
+        for sym, sig in etf_analysis_cache.items():
+            if sig is None:
+                results[sym] = None
+                continue
+
+            rt_price, mkt = get_etf_rt_price(sym)
+            price = rt_price if rt_price else sig.get("price", 0)
+
+            entry = {
+                "signal": sig["signal"],
+                "signal_label": sig.get("signal_label", sig["signal"]),
+                "strength": float(sig.get("strength", 0)),
+                "conditions_met": int(sig.get("conditions_met", 0)),
+                "macd_ok": bool(sig.get("macd_ok", False)),
+                "rsi_ok": bool(sig.get("rsi_ok", False)),
+                "konc_ok": bool(sig.get("konc_ok", False)),
+                "macd_detail": sig.get("macd_detail", ""),
+                "rsi_detail": sig.get("rsi_detail", ""),
+                "konc_detail": sig.get("konc_detail", ""),
+                "price": float(price),
+                "dollar_vol": float(sig.get("dollar_vol", 0)),
+                "values": sig.get("values", {}),
+                "chart": sig.get("chart"),
+            }
+
+            bt = sig.get("backtest", {})
+            entry["confidence"] = bt.get("confidence", 0)
+            entry["buy_avg_return"] = bt.get("buy_avg_return")
+            entry["sell_avg_return"] = bt.get("sell_avg_return")
+            entry["buy_count"] = bt.get("buy_count", 0)
+            entry["sell_count"] = bt.get("sell_count", 0)
+
+            bid = mkt.get("delayed_bid") or mkt.get("bid")
+            ask = mkt.get("delayed_ask") or mkt.get("ask")
+            vol = mkt.get("delayed_volume") or mkt.get("volume")
+            if bid: entry["bid"] = float(bid)
+            if ask: entry["ask"] = float(ask)
+            if vol: entry["volume"] = float(vol)
+
+            results[sym] = entry
+
+        etf_top3 = compute_top3(etf_analysis_cache)
+
+        return Response(to_json({
+            "results": results,
+            "last_update": etf_last_update_time,
+            "port": config.IB_PORT,
+            "top3": etf_top3,
         }), mimetype="application/json")
 
 
@@ -5597,7 +6035,7 @@ def api_trade_chart(trade_id):
 # ══════════════════════════════════════════════════════════════
 
 def main():
-    global ib_app, stock_list
+    global ib_app, stock_list, etf_list
 
     print("VISTA WEB - TOP 100 VOLUMEN - MACD + RSI + KONCORDE")
     print(f"Conectando a TWS ({config.IB_HOST}:{config.IB_PORT})...\n")
@@ -5609,10 +6047,19 @@ def main():
         print("ERROR: No se obtuvieron acciones del scanner.")
 
     stock_list = [s["symbol"] for s in stocks] if stocks else []
+
+    # 1b. Get top volume ETFs
+    print(f"Escaneando top {config.SCAN_COUNT} ETFs por volumen...")
+    etfs = get_top_volume_etfs()
+    etf_list = [s["symbol"] for s in etfs] if etfs else []
+    if etf_list:
+        print(f"Obtenidos {len(etf_list)} ETFs: {', '.join(etf_list[:10])}...\n")
+
     ib_app = None
 
-    if stock_list:
-        print(f"Obtenidas {len(stock_list)} acciones: {', '.join(stock_list[:10])}...\n")
+    if stock_list or etf_list:
+        all_count = len(stock_list) + len(etf_list)
+        print(f"Obtenidas {len(stock_list)} acciones + {len(etf_list)} ETFs = {all_count} simbolos\n")
 
         # 2. Connect IB for historical data + market data
         ib_app = VistaIB()
@@ -5629,13 +6076,24 @@ def main():
             ib_app.reqMarketDataType(3)
             time.sleep(0.5)
 
-            print(f"Suscribiendo market data para {len(stock_list)} simbolos...")
+            # Subscribe stock market data (reqId 5000+)
+            print(f"Suscribiendo market data para {len(stock_list)} acciones...")
             for i, symbol in enumerate(stock_list):
                 ib_app.reqMktData(5000 + i, make_contract(symbol), "", False, False, [])
                 time.sleep(0.2)
 
+            # Subscribe ETF market data (reqId 7000+)
+            print(f"Suscribiendo market data para {len(etf_list)} ETFs...")
+            for i, symbol in enumerate(etf_list):
+                ib_app.reqMktData(7000 + i, make_contract(symbol), "", False, False, [])
+                time.sleep(0.2)
+
             analysis_thread = threading.Thread(target=analysis_loop, daemon=True)
             analysis_thread.start()
+
+            if etf_list:
+                etf_thread = threading.Thread(target=etf_analysis_loop, daemon=True)
+                etf_thread.start()
     else:
         print("Iniciando dashboard sin conexion a TWS (solo trades importados)...\n")
 
@@ -5651,6 +6109,8 @@ def main():
         if ib_app:
             for i in range(len(stock_list)):
                 ib_app.cancelMktData(5000 + i)
+            for i in range(len(etf_list)):
+                ib_app.cancelMktData(7000 + i)
             ib_app.disconnect()
         print("Desconectado.")
 
