@@ -11,3 +11,5 @@ trades_imported.json
 executions_history.json
 .DS_Store
 cloud/_tmp_trades/
+.claude/
+*.py.save
