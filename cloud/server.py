@@ -711,6 +711,9 @@ def api_debug():
         "last_update": store.get("last_update", ""),
         "bridge_sessions_total": len(bridge_sessions),
         "all_connected_bridge_users": all_connected_users,
+        "portfolio_positions_count": len(store.get("portfolio_positions", [])),
+        "portfolio_positions_sample": store.get("portfolio_positions", [])[:2],
+        "account_values_count": len(store.get("account_values", {})),
     })
 
 
