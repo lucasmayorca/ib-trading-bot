@@ -1451,20 +1451,44 @@ def _inject_cloud_setup_tab(html):
       </div>
     </details>
     <details style="text-align:left;margin-top:12px">
-      <summary style="color:var(--accent);cursor:pointer;font-size:13px">Trades Historicos completo (opcional)</summary>
-      <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px">
-        <p style="font-size:12px;color:var(--muted);margin-bottom:8px">
-          El bridge solo ve las operaciones de HOY (asi funciona la API de TWS). Para ver
-          tu historial completo en "Trades Historicos", conecta un Flex Query de IB
-          (Account Management &rarr; Reports &rarr; Flex Queries &rarr; Trade Confirmation
-          Flex Query o una Activity Flex Query con la seccion "Trades" activada).
-          Se hace una sola vez.
+      <summary style="color:var(--accent);cursor:pointer;font-size:13px">Ver historial completo de trades (opcional)</summary>
+      <div style="margin-top:12px;padding:16px;background:var(--bg);border-radius:6px">
+        <p style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6">
+          Por defecto, "Trades Historicos" solo muestra las operaciones de <b>hoy</b>
+          (asi funciona la conexion normal con TWS). Para ver tu historial completo,
+          IB pide un paso extra de configuracion que se hace <b>una sola vez</b> en tu cuenta.
+          Son 3 partes.
         </p>
-        <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Flex Token:</p>
-        <input id="flex-token-input" type="password" placeholder="Token de Flex Web Service" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
-        <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Query ID:</p>
+
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
+          <p style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">1&#65039;&#8419; Crear la consulta (Flex Query)</p>
+          <ol style="font-size:11.5px;color:var(--muted);line-height:1.9;margin:0;padding-left:18px">
+            <li>Entra a <a href="https://www.interactivebrokers.com" target="_blank" style="color:var(--accent)">Client Portal de IB</a> (login normal, no TWS)</li>
+            <li>Menu &rarr; <b>Performance &amp; Reports</b> &rarr; <b>Flex Queries</b></li>
+            <li>En "Activity Flex Query", toca el boton <b>+</b></li>
+            <li>Ponele un nombre (ej: "Historial Completo")</li>
+            <li>En "Sections" marca <b>Trades</b> y tilda todos los campos que te muestre</li>
+            <li>Guardar &rarr; Format: <b>XML</b> &rarr; Period: <b>Year to Date</b> &rarr; Continue &rarr; Create</li>
+          </ol>
+          <p style="font-size:11px;color:var(--accent);margin-top:8px">&#128161; Anota el numero que aparece al lado del nombre de tu query — ese es el <b>Query ID</b>.</p>
+        </div>
+
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px">
+          <p style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">2&#65039;&#8419; Generar el Token</p>
+          <ol style="font-size:11.5px;color:var(--muted);line-height:1.9;margin:0;padding-left:18px">
+            <li>En la misma pagina de Flex Queries, busca <b>"Flex Web Service Configuration"</b></li>
+            <li>Activa el interruptor</li>
+            <li>Te va a mostrar un <b>Token</b> (codigo largo) — copialo</li>
+          </ol>
+          <p style="font-size:11px;color:var(--accent);margin-top:8px">&#9888;&#65039; El token vence — al generarlo, elegi la duracion maxima disponible.</p>
+        </div>
+
+        <p style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">3&#65039;&#8419; Pegar aca abajo</p>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Flex Token (el codigo largo del paso 2):</p>
+        <input id="flex-token-input" type="password" placeholder="Pega el token aqui" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
+        <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Query ID (el numero del paso 1):</p>
         <input id="flex-query-input" type="text" placeholder="Ej: 123456" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
-        <button onclick="saveFlexConfig()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">Guardar y Probar</button>
+        <button onclick="saveFlexConfig()" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Guardar y Probar</button>
         <span id="flex-config-status" style="font-size:11px;margin-left:8px"></span>
       </div>
     </details>
