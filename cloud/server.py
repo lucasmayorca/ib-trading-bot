@@ -11,6 +11,7 @@ monkey.patch_all()
 import os
 import json
 import math
+import time
 import functools
 import threading
 from datetime import datetime
@@ -23,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from cloud import db, auth
+from cloud import db, auth, flex
 import config
 import options_lab
 
@@ -174,6 +175,43 @@ def get_bridge_token():
 def regenerate_bridge_token():
     new_token = db.regenerate_token(request.user_id)
     return jsonify({"bridge_token": new_token})
+
+
+@app.route("/api/flex-config", methods=["GET"])
+@login_required
+def get_flex_config_route():
+    flex_token, flex_query_id = db.get_flex_config(request.user_id)
+    return jsonify({
+        # Never echo the full token back once saved — only whether it's set.
+        "configured": bool(flex_token and flex_query_id),
+        "flex_query_id": flex_query_id or "",
+    })
+
+
+@app.route("/api/flex-config", methods=["POST"])
+@login_required
+def save_flex_config_route():
+    data = request.get_json(force=True, silent=True) or {}
+    flex_token = (data.get("flex_token") or "").strip()
+    flex_query_id = (data.get("flex_query_id") or "").strip()
+    if not flex_token or not flex_query_id:
+        return jsonify({"error": "Flex Token y Query ID son requeridos"}), 400
+    db.save_flex_config(request.user_id, flex_token, flex_query_id)
+    flex_cache.pop(request.user_id, None)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/flex-config/test", methods=["POST"])
+@login_required
+def test_flex_config_route():
+    """Fetch immediately (bypassing cache) so the setup UI can confirm the
+    token/query id actually work, instead of the user finding out only
+    when they later open Trades Historicos."""
+    flex_cache.pop(request.user_id, None)
+    trades, error = _get_flex_trades(request.user_id)
+    if error:
+        return jsonify({"ok": False, "error": error}), 400
+    return jsonify({"ok": True, "trades_found": len(trades)})
 
 
 @app.route("/logout")
@@ -879,23 +917,60 @@ def api_options_lab(symbol):
 
 SEED_TRADES_DIR = os.path.join(os.path.dirname(__file__), "seed_trades")
 
+# Flex Web Service is rate-limited by IB and each call takes several
+# seconds (send + poll), so cache per-user results instead of hitting it
+# on every dashboard load.
+flex_cache = {}
+FLEX_CACHE_TTL = 1800  # 30 min
+
+
+def _get_flex_trades(user_id):
+    """Fetch the user's full trade history via IB's Flex Web Service, if
+    they've configured a token/query id. Cached; returns (trades, error) —
+    error is a user-facing string when the fetch failed, trades is [] in
+    that case (falls back to seed+live_trades transparently)."""
+    cached = flex_cache.get(user_id)
+    now = time.time()
+    if cached and now - cached["ts"] < FLEX_CACHE_TTL:
+        return cached["trades"], cached["error"]
+
+    flex_token, flex_query_id = db.get_flex_config(user_id)
+    if not flex_token or not flex_query_id:
+        flex_cache[user_id] = {"trades": [], "error": None, "ts": now}
+        return [], None
+
+    try:
+        trades = flex.fetch_flex_trades(flex_token, flex_query_id)
+        flex_cache[user_id] = {"trades": trades, "error": None, "ts": now}
+        return trades, None
+    except flex.FlexError as e:
+        print(f"[FLEX] User {user_id}: {e}", flush=True)
+        # Keep serving the previous good result (if any) rather than a
+        # transient IB hiccup wiping the user's trade history from view.
+        prev_trades = cached["trades"] if cached else []
+        flex_cache[user_id] = {"trades": prev_trades, "error": str(e), "ts": now}
+        return prev_trades, str(e)
+
 
 def _merged_trades_file_path(user_id):
-    """Combine the one-time seed (historical fills exported from IB) with
-    fills the bridge has reported live since connecting, into a temp file
-    that build_trades_history() can read."""
+    """Combine IB Flex Web Service history (if configured), the one-time
+    seed (historical fills manually exported), and fills the bridge has
+    reported live since connecting, into a temp file build_trades_history()
+    can read."""
     seed_path = os.path.join(SEED_TRADES_DIR, f"user_{user_id}.json")
     seed_trades = []
     if os.path.exists(seed_path):
         with open(seed_path) as f:
             seed_trades = json.load(f).get("trades", [])
 
+    flex_trades, _flex_error = _get_flex_trades(user_id)
+
     store = get_user_store(user_id)
     live_trades = store.get("live_trades", [])
 
     seen_keys = set()
     combined = []
-    for t in seed_trades + live_trades:
+    for t in flex_trades + seed_trades + live_trades:
         key = t.get("order_id") or t.get("perm_id") or (t.get("symbol"), t.get("date"), t.get("action"), t.get("filled_qty"), t.get("avg_fill_price"))
         if key in seen_keys:
             continue
@@ -1375,6 +1450,24 @@ def _inject_cloud_setup_tab(html):
         <p style="font-size:11px;color:var(--muted);margin-top:12px">Puerto 7497 = paper trading &nbsp;|&nbsp; Agrega <code>--ib-port 7496</code> para live</p>
       </div>
     </details>
+    <details style="text-align:left;margin-top:12px">
+      <summary style="color:var(--accent);cursor:pointer;font-size:13px">Trades Historicos completo (opcional)</summary>
+      <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px">
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px">
+          El bridge solo ve las operaciones de HOY (asi funciona la API de TWS). Para ver
+          tu historial completo en "Trades Historicos", conecta un Flex Query de IB
+          (Account Management &rarr; Reports &rarr; Flex Queries &rarr; Trade Confirmation
+          Flex Query o una Activity Flex Query con la seccion "Trades" activada).
+          Se hace una sola vez.
+        </p>
+        <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Flex Token:</p>
+        <input id="flex-token-input" type="password" placeholder="Token de Flex Web Service" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
+        <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Query ID:</p>
+        <input id="flex-query-input" type="text" placeholder="Ej: 123456" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
+        <button onclick="saveFlexConfig()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">Guardar y Probar</button>
+        <span id="flex-config-status" style="font-size:11px;margin-left:8px"></span>
+      </div>
+    </details>
   </div>
 </div>
 </div>
@@ -1446,6 +1539,45 @@ function renderSetup(){
     }
   }
 }
+async function fetchFlexConfig(){
+  try{
+    let r=await fetch('/api/flex-config');
+    if(r.status===401)return;
+    let d=await r.json();
+    if(d.configured){
+      let statusEl=document.getElementById('flex-config-status');
+      if(statusEl)statusEl.innerHTML='<span style="color:var(--buy)">Configurado (Query ID: '+d.flex_query_id+')</span>';
+    }
+  }catch(e){}
+}
+async function saveFlexConfig(){
+  let tokenEl=document.getElementById('flex-token-input');
+  let queryEl=document.getElementById('flex-query-input');
+  let statusEl=document.getElementById('flex-config-status');
+  let token=tokenEl.value.trim();
+  let queryId=queryEl.value.trim();
+  if(!token||!queryId){
+    statusEl.innerHTML='<span style="color:var(--sell)">Completa ambos campos</span>';
+    return;
+  }
+  statusEl.textContent='Guardando...';
+  try{
+    let r=await fetch('/api/flex-config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({flex_token:token,flex_query_id:queryId})});
+    let d=await r.json();
+    if(!r.ok){statusEl.innerHTML='<span style="color:var(--sell)">'+(d.error||'Error')+'</span>';return;}
+    statusEl.textContent='Probando conexion con IB...';
+    let r2=await fetch('/api/flex-config/test',{method:'POST'});
+    let d2=await r2.json();
+    if(d2.ok){
+      statusEl.innerHTML='<span style="color:var(--buy)">Listo — '+d2.trades_found+' operaciones encontradas</span>';
+      tokenEl.value='';
+    }else{
+      statusEl.innerHTML='<span style="color:var(--sell)">'+(d2.error||'No se pudo verificar')+'</span>';
+    }
+  }catch(e){
+    statusEl.innerHTML='<span style="color:var(--sell)">Error de conexion</span>';
+  }
+}
 function copyCmd(preId,btnId){
   let text=document.getElementById(preId).textContent;
   navigator.clipboard.writeText(text);
@@ -1455,6 +1587,7 @@ function copyCmd(preId,btnId){
 }
 fetchStatus();
 fetchBridgeToken();
+fetchFlexConfig();
 setInterval(fetchStatus,10000);
 </script>
 '''

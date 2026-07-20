@@ -41,6 +41,11 @@ def init_db():
                 created_at  TIMESTAMP DEFAULT NOW()
             )
         """)
+        # IB Flex Web Service credentials — lets us pull a user's FULL trade
+        # history (reqExecutions only ever returns the current TWS session's
+        # fills, there's no way around that through the live API).
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS flex_token TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS flex_query_id TEXT")
 
 
 def create_user(email, hashed_password):
@@ -84,3 +89,20 @@ def regenerate_token(user_id):
             (token, user_id),
         )
         return cur.fetchone()["bridge_token"]
+
+
+def save_flex_config(user_id, flex_token, flex_query_id):
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET flex_token = %s, flex_query_id = %s WHERE id = %s",
+            (flex_token, flex_query_id, user_id),
+        )
+
+
+def get_flex_config(user_id):
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT flex_token, flex_query_id FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        return (row["flex_token"], row["flex_query_id"]) if row else (None, None)
