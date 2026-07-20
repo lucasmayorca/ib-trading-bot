@@ -1385,6 +1385,11 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .c-turning-sell{background:rgba(207,61,78,.06);color:#cf3d4e;border-color:rgba(207,61,78,.15)}
 .c-zone{background:rgba(14,116,144,.06);color:#0e7490;border-color:rgba(14,116,144,.15)}
 .c-neutral{background:rgba(109,116,128,.08);color:#6d7480;border-color:rgba(109,116,128,.2)}
+.c-mkt-open{background:rgba(11,122,75,.08);color:#0b7a4b;border-color:rgba(11,122,75,.25)}
+.c-mkt-closed{background:rgba(22,24,29,.04);color:#6d7480;border-color:var(--border)}
+.c-mkt-open::before,.c-mkt-closed::before{content:'\25CF';margin-right:6px;font-size:9px}
+.c-mkt-open::before{color:#0b7a4b}
+.c-mkt-closed::before{color:#9aa0ab}
 
 /* === GRID TABLE === */
 .content{padding:0 32px 20px;overflow-x:auto}
@@ -2135,6 +2140,15 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
   <span id="footer-port"></span>
 </div>
 <script>
+// Estado del mercado NYSE (9:30-16:00 ET, L-V). No contempla feriados.
+function marketStatusChip(){
+  const et=new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+  const d=et.getDay(), m=et.getHours()*60+et.getMinutes();
+  const open=d>=1&&d<=5&&m>=570&&m<960;
+  return open
+    ?'<span class="counter c-mkt-open">Mercado abierto</span>'
+    :'<span class="counter c-mkt-closed">Mercado cerrado &mdash; precios al cierre</span>';
+}
 const REFRESH_MS=300000;
 const DAILY_BARS={'ALL':9999,'5Y':9999,'1Y':252,'3M':63,'1M':22,'1W':5,'1D':1};
 let _data=null,_charts={},_periods={},_intradayCache={};
@@ -3519,7 +3533,8 @@ function update(){
         else neutral++;
       }
     }
-    let ch='<span class="counter c-total">Total '+total+'</span>';
+    let ch=marketStatusChip();
+    ch+='<span class="counter c-total">Total '+total+'</span>';
     if(buy)ch+='<span class="counter c-buy">Compra '+buy+'</span>';
     if(sell)ch+='<span class="counter c-sell">Venta '+sell+'</span>';
     if(buyNear)ch+='<span class="counter c-buy-near">Compra Inminente '+buyNear+'</span>';
@@ -3807,7 +3822,8 @@ function updateEtf(){
         else neutral++;
       }
     }
-    let ch='<span class="counter c-total">Total '+total+'</span>';
+    let ch=marketStatusChip();
+    ch+='<span class="counter c-total">Total '+total+'</span>';
     if(buy)ch+='<span class="counter c-buy">Compra '+buy+'</span>';
     if(sell)ch+='<span class="counter c-sell">Venta '+sell+'</span>';
     if(buyNear)ch+='<span class="counter c-buy-near">Compra Inminente '+buyNear+'</span>';
@@ -6390,7 +6406,9 @@ def main():
             ib_app = None
         else:
             print("Conectado a TWS!\n")
-            ib_app.reqMarketDataType(3)
+            # 4 = delayed-frozen: fuera de horario IB entrega el ultimo precio
+            # del cierre en vez de no mandar ticks (3 = delayed queda mudo off-hours)
+            ib_app.reqMarketDataType(4)
             time.sleep(0.5)
 
             # Subscribe stock market data (reqId 5000+)

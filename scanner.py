@@ -9,7 +9,39 @@ from ibapi.contract import Contract
 from ibapi.tag_value import TagValue
 import threading
 import time
+import json
+import os
+from datetime import datetime
 import config
+
+# Cache del ultimo scan exitoso: fuera de horario el scanner de IB devuelve
+# vacio (error 165), y sin esto caeriamos siempre a la lista fallback estatica.
+SCAN_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scanner_cache.json")
+
+
+def _save_scan_cache(key, symbols):
+    try:
+        cache = {}
+        if os.path.exists(SCAN_CACHE_FILE):
+            with open(SCAN_CACHE_FILE) as f:
+                cache = json.load(f)
+        cache[key] = {"saved_at": datetime.now().isoformat(timespec="seconds"), "symbols": symbols}
+        with open(SCAN_CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+    except Exception as e:
+        print(f"  No se pudo guardar cache del scanner: {e}")
+
+
+def _load_scan_cache(key):
+    try:
+        with open(SCAN_CACHE_FILE) as f:
+            entry = json.load(f).get(key)
+        if entry and entry.get("symbols"):
+            print(f"  Usando ultimo scan real cacheado ({entry['saved_at']}, {len(entry['symbols'])} simbolos).")
+            return entry["symbols"]
+    except Exception:
+        pass
+    return None
 
 
 class ScannerApp(EWrapper, EClient):
@@ -65,7 +97,7 @@ def get_top_volume_stocks(count=None):
     if not app.connected:
         print("ERROR: Scanner no pudo conectar a TWS")
         app.disconnect()
-        return []
+        return _load_scan_cache("stocks") or []
 
     sub = ScannerSubscription()
     sub.instrument = "STK"
@@ -86,9 +118,13 @@ def get_top_volume_stocks(count=None):
     time.sleep(0.5)
 
     if not app.symbols:
+        cached = _load_scan_cache("stocks")
+        if cached:
+            return cached[:count]
         print(f"  Scanner sin resultados. Usando lista fallback de {config.SCAN_COUNT} acciones.")
         return get_fallback_stocks()[:config.SCAN_COUNT]
 
+    _save_scan_cache("stocks", app.symbols)
     return app.symbols
 
 
@@ -174,7 +210,7 @@ def get_top_volume_etfs(count=None):
     if not app.connected:
         print("ERROR: ETF Scanner no pudo conectar a TWS")
         app.disconnect()
-        return get_fallback_etfs()[:count]
+        return _load_scan_cache("etfs") or get_fallback_etfs()[:count]
 
     sub = ScannerSubscription()
     sub.instrument = "STK.ETF"
@@ -193,9 +229,13 @@ def get_top_volume_etfs(count=None):
     time.sleep(0.5)
 
     if not app.symbols:
+        cached = _load_scan_cache("etfs")
+        if cached:
+            return cached[:count]
         print(f"  ETF Scanner sin resultados. Usando lista fallback de {count} ETFs.")
         return get_fallback_etfs()[:count]
 
+    _save_scan_cache("etfs", app.symbols)
     return app.symbols
 
 

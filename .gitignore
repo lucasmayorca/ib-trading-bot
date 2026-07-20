@@ -13,3 +13,4 @@ executions_history.json
 cloud/_tmp_trades/
 .claude/
 *.py.save
+scanner_cache.json

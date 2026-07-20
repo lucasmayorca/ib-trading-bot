@@ -356,7 +356,7 @@ def main():
     print("Conectado!\n")
 
     # Datos diferidos (gratis)
-    app.reqMarketDataType(3)
+    app.reqMarketDataType(4)  # delayed-frozen: sirve el cierre fuera de horario
     time.sleep(0.5)
 
     # Suscribir market data para cada simbolo
