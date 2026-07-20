@@ -60,6 +60,8 @@ def get_user_store(user_id):
                 "connected": False,
                 "stocks": [],
                 "analysis": {},
+                "etf_stocks": [],
+                "etf_analysis": {},
                 "portfolio_positions": [],
                 "account_values": {},
                 "open_orders": [],
@@ -295,6 +297,28 @@ def handle_analysis_batch(data):
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
 
 
+@socketio.on("etf_stock_list")
+def handle_etf_stock_list(data):
+    user_id = bridge_sessions.get(request.sid)
+    if not user_id:
+        return
+    store = get_user_store(user_id)
+    store["etf_stocks"] = data.get("symbols", [])
+
+
+@socketio.on("etf_analysis_batch")
+def handle_etf_analysis_batch(data):
+    user_id = bridge_sessions.get(request.sid)
+    if not user_id:
+        return
+    store = get_user_store(user_id)
+    results = data.get("results", {})
+    print(f"[ETF_BATCH] User {user_id}: Received {len(results)} ETFs", flush=True)
+    for symbol, result in results.items():
+        store["etf_analysis"][symbol] = result
+    store["last_update"] = datetime.now().strftime("%H:%M:%S")
+
+
 @socketio.on("portfolio_data")
 def handle_portfolio_data(data):
     user_id = bridge_sessions.get(request.sid)
@@ -400,6 +424,62 @@ def api_data():
         to_json({
             "results": results,
             "top3": top3,
+            "last_update": store.get("last_update", ""),
+            "bridge_connected": store.get("connected", False),
+        }),
+        mimetype="application/json",
+    )
+
+
+@app.route("/api/etf-data")
+@login_required
+def api_etf_data():
+    from vista_web import compute_top3
+
+    store = get_user_store(request.user_id)
+    etf_analysis = store.get("etf_analysis", {})
+
+    results = {}
+    for symbol in store.get("etf_stocks", []):
+        sig = etf_analysis.get(symbol)
+        if not sig:
+            results[symbol] = None
+            continue
+
+        bt = sig.get("backtest", {}) or {}
+        results[symbol] = {
+            "symbol": symbol,
+            "signal": sig.get("signal", "HOLD"),
+            "signal_label": sig.get("signal_label", sig.get("signal", "HOLD")),
+            "strength": float(sig.get("strength", 0)),
+            "conditions_met": int(sig.get("conditions_met", 0)),
+            "macd_ok": bool(sig.get("macd_ok", False)),
+            "rsi_ok": bool(sig.get("rsi_ok", False)),
+            "konc_ok": bool(sig.get("konc_ok", False)),
+            "macd_detail": sig.get("macd_detail", ""),
+            "rsi_detail": sig.get("rsi_detail", ""),
+            "konc_detail": sig.get("konc_detail", ""),
+            "price": float(sig.get("price", 0)),
+            "dollar_vol": float(sig.get("dollar_vol", 0)),
+            "values": sig.get("values", {}),
+            "chart": sig.get("chart"),
+            "confidence": bt.get("confidence", 0),
+            "buy_avg_return": bt.get("buy_avg_return"),
+            "sell_avg_return": bt.get("sell_avg_return"),
+            "buy_count": bt.get("buy_count", 0),
+            "sell_count": bt.get("sell_count", 0),
+        }
+
+    try:
+        etf_top3 = compute_top3(etf_analysis)
+    except Exception as e:
+        print(f"[ETF TOP3] Error: {e}", flush=True)
+        etf_top3 = []
+
+    return Response(
+        to_json({
+            "results": results,
+            "top3": etf_top3,
             "last_update": store.get("last_update", ""),
             "bridge_connected": store.get("connected", False),
         }),

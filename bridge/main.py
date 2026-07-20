@@ -279,8 +279,28 @@ FALLBACK_STOCKS = [
 ]
 
 
+FALLBACK_ETFS = [
+    "SPY", "QQQ", "IWM", "DIA", "VOO", "VTI", "EFA", "EEM",
+    "VWO", "VEA", "IEMG", "AGG", "BND", "TLT", "IEF", "SHY",
+    "LQD", "HYG", "TIP", "VCIT", "VNQ", "XLRE", "IYR", "VNQI",
+    "XLF", "XLK", "XLV", "XLE", "XLI", "XLY", "XLP", "XLU",
+    "XLB", "XLC", "ARKK", "ARKW", "ARKG", "ARKF",
+    "GLD", "SLV", "GDX", "IAU", "USO", "UNG",
+    "SMH", "SOXX", "XBI", "IBB", "ITB", "XHB",
+    "KRE", "XME", "XRT", "HACK", "BOTZ", "ROBO",
+    "VIG", "SCHD", "DVY", "HDV", "VYM", "DGRO",
+    "MTUM", "VLUE", "QUAL", "SIZE", "USMV",
+    "RSP", "SPHD", "SPLV", "MOAT", "COWZ",
+    "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
+]
+
+
 def get_stock_list():
     return FALLBACK_STOCKS[:50]
+
+
+def get_etf_list():
+    return FALLBACK_ETFS[:75]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -594,6 +614,33 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                     safe_emit(sio, "analysis_batch", clean({"results": results}), server_url, authenticated)
 
                 log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
+
+                # --- ETF scan ---
+                etfs = get_etf_list()
+                safe_emit(sio, "etf_stock_list", {"symbols": etfs}, server_url, authenticated)
+                log(f"Escaneando {len(etfs)} ETFs...", C)
+
+                etf_results = {}
+                etf_success = 0
+                for i, symbol in enumerate(etfs):
+                    req_id = 3000 + i
+                    result = analyze_stock(ib_app, symbol, req_id)
+                    if result:
+                        etf_results[symbol] = result
+                        etf_success += 1
+                    time.sleep(0.5)
+
+                    if (i + 1) % 10 == 0:
+                        if etf_results:
+                            log(f"  Enviando {len(etf_results)} análisis ETF al servidor...", C)
+                            safe_emit(sio, "etf_analysis_batch", clean({"results": etf_results}), server_url, authenticated)
+                        etf_results = {}
+
+                if etf_results:
+                    log(f"  Enviando {len(etf_results)} análisis ETF finales al servidor...", C)
+                    safe_emit(sio, "etf_analysis_batch", clean({"results": etf_results}), server_url, authenticated)
+
+                log(f"ETF scan completado: {etf_success}/{len(etfs)} ETFs analizados", G if etf_success > 0 else Y)
 
                 _refresh_portfolio(ib_app, log)
 
