@@ -1403,22 +1403,22 @@ def _auth_page(mode):
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-background:#0a0e17;color:#e0e0e0;display:flex;justify-content:center;align-items:center;min-height:100vh}}
-.card{{background:#141924;border:1px solid #1e2a3a;border-radius:12px;padding:40px;width:400px;max-width:90vw}}
-h1{{font-size:24px;margin-bottom:8px;color:#fff}}
-.subtitle{{color:#8899aa;margin-bottom:24px;font-size:14px}}
-label{{display:block;font-size:13px;color:#8899aa;margin-bottom:4px;margin-top:16px}}
-input{{width:100%;padding:10px 12px;background:#0d1117;border:1px solid #2a3a4a;border-radius:6px;
-color:#fff;font-size:14px;outline:none}}
-input:focus{{border-color:#58a6ff}}
-button{{width:100%;padding:12px;background:#238636;color:#fff;border:none;border-radius:6px;
+background:#f4f4f1;color:#16181d;display:flex;justify-content:center;align-items:center;min-height:100vh}}
+.card{{background:#ffffff;border:1px solid #e3e2dc;border-radius:12px;padding:40px;width:400px;max-width:90vw;box-shadow:0 4px 12px rgba(30,33,38,.07)}}
+h1{{font-size:24px;margin-bottom:8px;color:#16181d}}
+.subtitle{{color:#6d7480;margin-bottom:24px;font-size:14px}}
+label{{display:block;font-size:13px;color:#6d7480;margin-bottom:4px;margin-top:16px}}
+input{{width:100%;padding:10px 12px;background:#fbfbf9;border:1px solid #e3e2dc;border-radius:6px;
+color:#16181d;font-size:14px;outline:none}}
+input:focus{{border-color:#2456e6;box-shadow:0 0 0 3px rgba(36,86,230,.1)}}
+button{{width:100%;padding:12px;background:#2456e6;color:#fff;border:none;border-radius:6px;
 font-size:15px;font-weight:600;cursor:pointer;margin-top:24px}}
-button:hover{{background:#2ea043}}
+button:hover{{background:#1d47c4}}
 .alt{{text-align:center;margin-top:16px}}
-.alt a{{color:#58a6ff;text-decoration:none;font-size:13px}}
-.error{{background:#3d1f1f;border:1px solid #f85149;color:#f85149;padding:8px 12px;border-radius:6px;
+.alt a{{color:#2456e6;text-decoration:none;font-size:13px}}
+.error{{background:#fdf1f2;border:1px solid #f2c8cd;color:#c22436;padding:8px 12px;border-radius:6px;
 margin-top:12px;font-size:13px;display:none}}
-.success{{background:#1f3d2f;border:1px solid #3fb950;color:#3fb950;padding:12px;border-radius:6px;
+.success{{background:#effaf4;border:1px solid #bfe5d2;color:#0b7a4b;padding:12px;border-radius:6px;
 margin-top:12px;font-size:13px;display:none}}
 </style></head><body>
 <div class="card">

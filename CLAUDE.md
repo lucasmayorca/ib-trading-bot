@@ -81,6 +81,11 @@ labels can be directional while `signal` is still HOLD.
 - Counters bar breaks down by signal_label: Compra, Venta, Compra Inminente, Venta Inminente, Virando a Compra/Venta, Zona Extrema, Neutral (only shown if count > 0)
 - Thesis includes: signal label + direction, indicator status (MACD hist, RSI level, Koncorde vs media), moving averages (SMA200/50/20 + golden/death cross), institutional flow (Koncorde azul), target with consistent direction, fundamentals
 - Portfolio "Composicion por Tipo" and "Distribucion por Sector" sections removed
+- **Theme: "Cobalto Suizo" (light)** — white surfaces on warm-grey bg (#f4f4f1), cobalt accent (#2456e6),
+  buy green #0b7a4b, sell red #c22436, hold amber #b45309. Tokens live in the `:root{...}` block of
+  `DASHBOARD_HTML`; chart colors (Lightweight Charts / Chart.js / canvas payoff) are passed via JS literals,
+  NOT CSS — when changing palette, sweep both. Dark-theme colors must not be reintroduced (user explicitly
+  chose light background for readability).
 
 ## Patterns
 - IB API wrapper pattern (EWrapper + EClient inheritance)
