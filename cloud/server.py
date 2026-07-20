@@ -1609,6 +1609,48 @@ function copyCmd(preId,btnId){
   btn.textContent='Copiado!';
   setTimeout(()=>{btn.textContent='Copiar'},2000);
 }
+function goToFlexSetup(){
+  switchTab('setup');
+  // The Flex fields live inside a <details> the user hasn't necessarily
+  // opened yet -- open both so they land right on the inputs, not just
+  // somewhere on the page.
+  document.querySelectorAll('#tab-setup details').forEach(d=>d.open=true);
+  let box=document.getElementById('flex-token-input');
+  if(box)box.scrollIntoView({behavior:'smooth',block:'center'});
+}
+// Override vista_web.py's loadTradesHistory(): on the cloud version, an
+// empty trade list almost always means the user hasn't connected a Flex
+// Query yet (reqExecutions only ever returns today's fills), not that
+// they genuinely have zero trades. Point them at the fix instead of
+// leaving them looking at a bare "no trades" placeholder with no context.
+function loadTradesHistory(){
+  document.getElementById('th-loading').style.display='';
+  document.getElementById('th-content').style.display='none';
+  fetch('/api/trades-history').then(r=>r.json()).then(data=>{
+    _thData=data;
+    document.getElementById('th-loading').style.display='none';
+    if(!data.trades||data.trades.length===0){
+      document.getElementById('th-content').style.display='none';
+      document.getElementById('th-loading').style.display='';
+      document.getElementById('th-loading').innerHTML=
+        '<div style="max-width:480px;margin:0 auto;text-align:center">'+
+        '<p style="font-size:15px;color:var(--text);margin-bottom:10px">Todavia no hay operaciones para mostrar</p>'+
+        '<p style="font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:16px">'+
+        'El bridge solo ve las operaciones ejecutadas <b>hoy</b> (asi funciona la conexion con TWS). '+
+        'Para ver tu historial completo, conecta un Flex Query de IB — se hace una sola vez.'+
+        '</p>'+
+        '<button onclick="goToFlexSetup()" style="background:var(--accent);color:#fff;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">Conectar historial completo</button>'+
+        '</div>';
+      return;
+    }
+    document.getElementById('th-content').style.display='';
+    renderThSummary(data.summary);
+    renderThList(data.trades);
+  }).catch(e=>{
+    document.getElementById('th-loading').style.display='';
+    document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">Error cargando trades: '+e.message+'</span>';
+  });
+}
 fetchStatus();
 fetchBridgeToken();
 fetchFlexConfig();
