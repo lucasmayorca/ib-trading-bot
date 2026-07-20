@@ -3920,29 +3920,149 @@ function updateEtf(){
   }).catch(err=>console.error("ETF Error:",err));
 }
 
+let _etfTop3Data=[];
+let _etfRecPeriods={};
+let _etfRecDetailCharts={};
+let _etfRecFirstRender=true;
+
+function destroyEtfRecDetailCharts(idx){
+  let keys=['candle','macd','rsi','konc'];
+  for(let k of keys){
+    let id='etfrec_'+k+'_'+idx;
+    if(_etfRecDetailCharts[id]){
+      try{if(typeof _etfRecDetailCharts[id].destroy==='function')_etfRecDetailCharts[id].destroy();
+      else if(typeof _etfRecDetailCharts[id].remove==='function')_etfRecDetailCharts[id].remove();}catch(e){}
+      delete _etfRecDetailCharts[id];
+    }
+  }
+}
+function destroyAllEtfRecCharts(){for(let idx in _etfRecDetailCharts)destroyEtfRecDetailCharts(idx);}
+
+let _etfRecResizeObservers={};
+let _etfRecIntradayCache={};
+
+function renderEtfRecDetailCharts(idx,rec,period){
+  destroyEtfRecDetailCharts(idx);
+  if(!rec)return;
+  let sym=rec.symbol;
+  if(!period)period=_etfRecPeriods[idx]||'1Y';
+  _etfRecPeriods[idx]=period;
+
+  let bar=document.getElementById('etf_rec_pb_'+idx);
+  if(bar){bar.querySelectorAll('.rec-period-btn').forEach(b=>{b.classList.toggle('active',b.dataset.p===period);});}
+
+  let entry={lw:null,macd:null,rsi:null,konc:null};
+
+  // Get full chart data from ETF analysis cache
+  let fullData=(_etfData&&_etfData.results)?_etfData.results[sym]:null;
+  let ch=fullData?fullData.chart:null;
+  let indBars=DAILY_BARS[period]||252;
+
+  let candleEl=document.getElementById('etfrec_candle_'+idx);
+  if(candleEl){
+    candleEl.innerHTML='';
+    if(period==='1M'||period==='1D'){
+      let apiP=period==='1M'?'4h':'15m';
+      let cacheKey=sym+'_'+apiP;
+      if(_etfRecIntradayCache[cacheKey]){
+        let chart=_createLW(candleEl,true);chart.applyOptions({height:360});
+        let cs=chart.addCandlestickSeries({upColor:'#34d399',downColor:'#f87171',borderUpColor:'#34d399',borderDownColor:'#f87171',wickUpColor:'#34d39988',wickDownColor:'#f8717188'});
+        cs.setData(_etfRecIntradayCache[cacheKey]);
+        _recAddPriceLines(cs,rec);
+        chart.timeScale().fitContent();
+        entry.lw=chart;
+        let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_etfRecResizeObservers[idx]=ro;
+      }else{
+        candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px">Cargando barras '+apiP+'...</div>';
+        fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
+          _etfRecIntradayCache[cacheKey]=d.ohlc||[];
+          if(_etfRecPeriods[idx]===period){renderEtfRecDetailCharts(idx,rec,period);}
+        }).catch(e=>console.error('ETF rec intraday error:',e));
+      }
+    }else if(ch&&ch.ohlc&&ch.ohlc.length>=5){
+      let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
+      let cs=chart.addCandlestickSeries({upColor:'#34d399',downColor:'#f87171',borderUpColor:'#34d399',borderDownColor:'#f87171',wickUpColor:'#34d39988',wickDownColor:'#f8717188'});
+      if(period==='5Y'){
+        let weekly=toWeekly(ch.ohlc);cs.setData(weekly);
+      }else if(period==='ALL'){
+        cs.setData(ch.ohlc);_addMAs(chart,ch.ohlc,ch.mas,0);
+      }else{
+        let o=sl(ch.ohlc,indBars);cs.setData(o);
+        _addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);
+      }
+      _recAddPriceLines(cs,rec);
+      chart.timeScale().fitContent();
+      entry.lw=chart;
+      let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_etfRecResizeObservers[idx]=ro;
+    }else if(rec.chart_ohlc&&rec.chart_ohlc.length>=5){
+      let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
+      let cs=chart.addCandlestickSeries({upColor:'#34d399',downColor:'#f87171',borderUpColor:'#34d399',borderDownColor:'#f87171',wickUpColor:'#34d39988',wickDownColor:'#f8717188'});
+      cs.setData(rec.chart_ohlc);
+      let masObj=rec.chart_mas||{};
+      let maColors={"sma200":"#f87171","sma100":"#fb923c","sma50":"#facc15","sma20":"#60a5fa","ema9":"#c084fc"};
+      for(let name of["sma200","sma100","sma50","sma20","ema9"]){
+        let vals=masObj[name];if(!vals||vals.length===0)continue;
+        let line=chart.addLineSeries({color:maColors[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+        let ld=[];for(let j=0;j<rec.chart_ohlc.length;j++){if(j>=vals.length||vals[j]==null)continue;ld.push({time:rec.chart_ohlc[j].time,value:vals[j]});}
+        if(ld.length>0)line.setData(ld);
+      }
+      _recAddPriceLines(cs,rec);
+      chart.timeScale().fitContent();
+      entry.lw=chart;
+      let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_etfRecResizeObservers[idx]=ro;
+    }
+  }
+
+  let dates=ch?ch.dates:rec.chart_dates;
+  let macdData=ch?ch.macd:rec.chart_macd;
+  let rsiData=ch?ch.rsi:rec.chart_rsi;
+  let koncData=ch?ch.koncorde:rec.chart_koncorde;
+  if(dates&&dates.length>0){
+    if(macdData)entry.macd=createMACDChart('etfrec_macd_'+idx,dates,macdData,indBars);
+    if(rsiData&&rsiData.length>0)entry.rsi=createRSIChart('etfrec_rsi_'+idx,dates,rsiData,indBars);
+    if(koncData)entry.konc=createKoncordeChart('etfrec_konc_'+idx,dates,koncData,indBars);
+  }
+
+  _etfRecDetailCharts[idx]=entry;
+}
+
+function setEtfRecPeriod(idx,period){
+  _etfRecPeriods[idx]=period;
+  let rec=_etfTop3Data[idx];
+  document.querySelectorAll('#etf_rec_pb_'+idx+' .rec-period-btn').forEach(b=>{b.classList.toggle('active',b.dataset.p===period);});
+  renderEtfRecDetailCharts(idx,rec,period);
+}
+
 function renderEtfTop3(top3){
+  let recOpenSet=new Set();
+  document.querySelectorAll('#etf-top3-section .rec-details[open]').forEach(d=>{let idx=d.dataset.idx;if(idx!=null)recOpenSet.add(parseInt(idx));});
+  destroyAllEtfRecCharts();
+  _etfTop3Data=top3||[];
   let sec=document.getElementById('etf-top3-section');
   if(!sec)return;
   if(!top3||top3.length===0){sec.style.display='none';return;}
   sec.style.display='';
+
+  let periods=['ALL','5Y','1Y','3M','1M','1W','1D'];
   let html='<div class="top3-title">Top ETF Recomendaciones</div>';
   for(let i=0;i<top3.length;i++){
     let r=top3[i];
     let sc=r.signal==='BUY'?'rec-buy':(r.signal==='SELL'?'rec-sell':'rec-hold');
-    let lbl=r.signal_label||r.signal;
-    let bc=r.signal==='BUY'?'rb-buy':(r.signal==='SELL'?'rb-sell':'rb-hold');
-    if(lbl.includes('INMINENTE'))bc=lbl.includes('COMPRA')?'rb-buy-near':'rb-sell-near';
-    else if(lbl.includes('VIRANDO'))bc=lbl.includes('COMPRA')?'rb-turning-buy':'rb-turning-sell';
-    else if(lbl.includes('ZONA'))bc=lbl.includes('SOBREVENTA')?'rb-zone-buy':'rb-zone-sell';
-    else if(lbl==='NEUTRAL')bc='rb-neutral';
+    let sl=r.signal_label||r.signal;
+    let bc=r.signal==='BUY'?'rb-buy':(r.signal==='SELL'?'rb-sell':(sl.includes('INMINENTE')&&sl.includes('COMPRA')?'rb-buy-near':(sl.includes('INMINENTE')&&sl.includes('VENTA')?'rb-sell-near':'rb-hold')));
     let wr=((r.win_rate||0)*100).toFixed(0);
-    html+='<details class="rec-details '+sc+'"'+(i===0?' open':'')+'>';
+    let ar=r.avg_return!=null?(r.avg_return>=0?'+':'')+r.avg_return.toFixed(1)+'%':'N/A';
+    let arCol=r.avg_return!=null&&r.avg_return>=0?'var(--buy)':'var(--sell)';
+    let curP=_etfRecPeriods[i]||'1Y';
+
+    let shouldOpen=_etfRecFirstRender?(i===0):recOpenSet.has(i);
+    html+='<details class="rec-details '+sc+'"'+(shouldOpen?' open':'')+' data-idx="'+i+'">';
     html+='<summary>';
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge">#'+(i+1)+'</span>';
     html+='<span class="rec-sym">'+r.symbol+'</span>';
     html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
-    html+='<span class="rec-badge '+bc+'">'+lbl+'</span>';
+    html+='<span class="rec-badge '+bc+'">'+sl+'</span>';
     html+='<span class="rec-sum-metrics">';
     html+='<span class="rec-sm"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
     html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
@@ -3950,15 +4070,88 @@ function renderEtfTop3(top3){
     html+='<span class="rec-sm"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
     html+='</span>';
     html+='</summary>';
+
+    html+='<div class="rec-body">';
     if(r.thesis){
-      html+='<div class="rec-body"><div class="rec-thesis">';
+      html+='<div class="rec-thesis">';
       html+='<div class="rec-thesis-title">Tesis de Inversion</div>';
       html+='<div class="rec-thesis-text">'+r.thesis+'</div>';
+      html+='<div class="rec-thesis-meta">';
+      if(r.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+r.horizon+'</span>';
+      if(r.target_pct){let sign=(sl.includes('VENTA')||sl.includes('SOBRECOMPRA'))?'-':'+';html+='<span class="rec-thesis-target">Objetivo: '+sign+Math.abs(r.target_pct).toFixed(0)+'%</span>';}
       html+='</div></div>';
     }
+
+    html+='<div class="rec-period-bar" id="etf_rec_pb_'+i+'">';
+    for(let p of periods){html+='<button class="rec-period-btn'+(p===curP?' active':'')+'" data-p="'+p+'" onclick="setEtfRecPeriod('+i+',\''+p+'\')">'+p+'</button>';}
+    html+='</div>';
+
+    html+='<div class="rec-top-row">';
+    html+='<div class="rec-candle-wrap"><div class="rec-candle-box" id="etfrec_candle_'+i+'"></div>';
+    html+='<div class="rec-candle-legend">';
+    html+='<span><i style="background:#93c5fd"></i>Entrada</span>';
+    html+='<span><i style="background:#34d399"></i>Target</span>';
+    html+='<span><i style="background:#f87171"></i>Stop</span>';
+    html+='<span><i style="background:#f87171"></i>SMA200</span>';
+    html+='<span><i style="background:#f97316"></i>SMA100</span>';
+    html+='<span><i style="background:#eab308"></i>SMA50</span>';
+    html+='<span><i style="background:#3b82f6"></i>SMA20</span>';
+    html+='<span><i style="background:#a855f7"></i>EMA9</span>';
+    html+='</div></div>';
+
+    html+='<div class="rec-right-panel">';
+    html+='<div class="rec-metrics">';
+    html+='<div class="rec-m"><span class="rec-ml">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
+    html+='</div>';
+    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
+    html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
+    let tSign=(sl.includes('VENTA')||sl.includes('SOBRECOMPRA'))?'-':'+';
+    let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
+    html+='<div class="rec-lr"><span class="rec-ll">Objetivo</span><span class="rec-lv lv-target">$'+r.target.toFixed(2)+tPct+'</span></div>';
+    html+='<div class="rec-lr"><span class="rec-ll">Stop Loss</span><span class="rec-lv lv-stop">$'+r.stop_loss.toFixed(2)+'</span></div>';
+    html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
+    if(r.horizon)html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
+    html+='</div>';
+    html+='</div>';
+    html+='</div>';
+
+    html+='<div class="rec-research-row">';
+    html+='<div class="rec-research-panel">';
+    html+=renderRecAnalystTargets(r.fundamentals||{},r.price);
+    html+=renderRecEarnings(r.fundamentals||{});
+    html+='</div>';
+    html+='<div class="rec-research-panel">';
+    html+=renderRecInsiderTrades(r.fundamentals||{});
+    html+='</div>';
+    html+=renderRecFundamentals(r.fundamentals||{});
+    html+='</div>';
+
+    html+='<div class="rec-ind-grid">';
+    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">MACD (12,26,9)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="etfrec_macd_'+i+'"></canvas></div></div>';
+    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">RSI (14)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="etfrec_rsi_'+i+'"></canvas></div></div>';
+    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">Koncorde</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="etfrec_konc_'+i+'"></canvas></div></div>';
+    html+='</div>';
+
+    if(r.rationale&&r.rationale.length>0){html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';html+='</div>';}
+    html+='<div class="rec-sb"><div class="rec-sf" style="width:'+r.score+'%"></div></div>';
+
+    html+='</div>';
     html+='</details>';
   }
   sec.innerHTML=html;
+
+  sec.querySelectorAll('.rec-details').forEach(det=>{
+    let idx=parseInt(det.dataset.idx);
+    det.addEventListener('toggle',function(){
+      if(det.open)setTimeout(()=>renderEtfRecDetailCharts(idx,_etfTop3Data[idx]),50);
+      else destroyEtfRecDetailCharts(idx);
+    });
+    if(det.open)setTimeout(()=>renderEtfRecDetailCharts(idx,_etfTop3Data[idx]),80);
+  });
+  _etfRecFirstRender=false;
 }
 
 // Auto-refresh ETF scanner every 5 min if active
