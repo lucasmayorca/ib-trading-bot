@@ -553,7 +553,10 @@ def _build_cloud_position_analysis(sym, position, data, n_bars=90):
 @app.route("/api/portfolio")
 @login_required
 def api_portfolio():
-    from portfolio import extract_sl_tp_by_symbol, _classify_position, _generate_portfolio_alerts
+    from portfolio import (
+        extract_sl_tp_by_symbol, _classify_position,
+        _generate_portfolio_alerts, _compute_portfolio_metrics,
+    )
 
     store = get_user_store(request.user_id)
     raw_positions = store.get("portfolio_positions", [])
@@ -666,6 +669,12 @@ def api_portfolio():
         print(f"[PORTFOLIO_ALERTS] Error: {e}", flush=True)
         alerts = []
 
+    try:
+        metrics = _compute_portfolio_metrics(positions_enriched, total_value)
+    except Exception as e:
+        print(f"[PORTFOLIO_METRICS] Error: {e}", flush=True)
+        metrics = {}
+
     acct = {}
     for key, val in acct_vals.items():
         try:
@@ -686,6 +695,7 @@ def api_portfolio():
             "account": acct,
             "indicators": indicators_data,
             "alerts": alerts,
+            "metrics": metrics,
             "bridge_connected": store.get("connected", False),
             "warnings": [],
         }),

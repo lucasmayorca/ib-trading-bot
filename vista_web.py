@@ -1605,6 +1605,22 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .port-alert-jump:hover{background:var(--accent);border-color:var(--accent);color:#fff}
 .port-alerts-empty{color:var(--muted);font-size:13px;padding:14px 18px;background:var(--card);border:1px dashed var(--border);border-radius:var(--radius);text-align:center}
 
+/* Metricas agregadas de cartera (fila informativa) */
+.port-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:24px}
+.port-metrics:empty{display:none}
+.port-metric{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;display:flex;flex-direction:column;gap:2px}
+.port-metric-lab{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+.port-metric-val{font-size:17px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+.port-metric-sub{font-size:10px;color:var(--muted);margin-top:1px}
+.port-metric-val.pos{color:#34d399}
+.port-metric-val.neg{color:#f87171}
+.port-metric-val.warn{color:#fbbf24}
+.port-metric-signals{display:flex;gap:6px;margin-top:3px}
+.port-metric-sig{font-size:11px;font-weight:800;padding:2px 8px;border-radius:5px;letter-spacing:.4px}
+.port-metric-sig.buy{background:#34d39920;color:#34d399}
+.port-metric-sig.sell{background:#f8717120;color:#f87171}
+.port-metric-sig.hold{background:#fbbf2420;color:#fbbf24}
+
 /* Verdict dashboard grid */
 .port-verdicts{margin-bottom:28px}
 .port-verdicts-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;letter-spacing:-.2px}
@@ -2225,6 +2241,9 @@ function renderPortfolio(d){
   }
   document.getElementById('port-alerts').innerHTML=alertsHtml;
 
+  // Metricas agregadas de la cartera
+  renderPortMetrics(d.metrics||{},d.positions||[]);
+
   // Tablero de veredictos por posicion
   let vHtml='';
   let positions=d.positions||[];
@@ -2269,6 +2288,103 @@ function renderPortfolio(d){
 
   // Analisis profundo por posicion (accordions estilo Top 3 Pick)
   renderPortAnalysisList(positions);
+}
+
+function _betaClass(b){
+  // Beta > 1.3 = alto, < 0.7 = defensivo, medio = neutro
+  if(b==null)return '';
+  if(b>=1.3)return 'warn';
+  if(b<=0.7)return 'pos';
+  return '';
+}
+function _betaLabel(b){
+  if(b==null)return '';
+  if(b>=1.3)return 'Alta volatilidad vs SPX';
+  if(b<=0.7)return 'Defensiva';
+  return 'Similar al mercado';
+}
+function _peLabel(pe){
+  if(pe==null)return '';
+  if(pe<15)return 'Barata';
+  if(pe>25)return 'Cara';
+  return 'Neutro';
+}
+
+function renderPortMetrics(m,positions){
+  let el=document.getElementById('port-metrics');
+  if(!el)return;
+  if(!m||Object.keys(m).length===0){el.innerHTML='';return;}
+  let cov=m.coverage||{};
+  let sc=m.signal_counts||{buy:0,sell:0,hold:0,actionable:0};
+  let ne=m.next_earnings;
+  let n=positions.length;
+
+  let html='';
+
+  // Beta ponderado
+  if(m.beta!=null){
+    html+='<div class="port-metric">';
+    html+='<span class="port-metric-lab">Beta cartera</span>';
+    html+='<span class="port-metric-val '+_betaClass(m.beta)+'">'+m.beta.toFixed(2)+'</span>';
+    html+='<span class="port-metric-sub">'+_betaLabel(m.beta)+(cov.beta_pct<95?' &middot; '+cov.beta_pct+'% cobertura':'')+'</span>';
+    html+='</div>';
+  }
+  // Dividend yield
+  if(m.dividend_yield_pct!=null){
+    let cls=m.dividend_yield_pct>=2?'pos':'';
+    html+='<div class="port-metric">';
+    html+='<span class="port-metric-lab">Div Yield</span>';
+    html+='<span class="port-metric-val '+cls+'">'+m.dividend_yield_pct.toFixed(2)+'%</span>';
+    html+='<span class="port-metric-sub">Promedio ponderado</span>';
+    html+='</div>';
+  }
+  // P/E
+  if(m.pe!=null){
+    let cls=m.pe>30?'warn':(m.pe<15?'pos':'');
+    html+='<div class="port-metric">';
+    html+='<span class="port-metric-lab">P/E promedio</span>';
+    html+='<span class="port-metric-val '+cls+'">'+m.pe.toFixed(1)+'</span>';
+    html+='<span class="port-metric-sub">'+_peLabel(m.pe)+(cov.pe_pct<95?' &middot; '+cov.pe_pct+'% cob.':'')+'</span>';
+    html+='</div>';
+  }
+  // Fuerza tecnica
+  if(m.strength!=null){
+    let cls=m.strength>=3?'pos':(m.strength<1?'neg':'');
+    html+='<div class="port-metric">';
+    html+='<span class="port-metric-lab">Fuerza tecnica</span>';
+    html+='<span class="port-metric-val '+cls+'">'+m.strength.toFixed(1)+' / 5.1</span>';
+    html+='<span class="port-metric-sub">Promedio ponderado</span>';
+    html+='</div>';
+  }
+  // R/R promedio (solo si hay senales activas)
+  if(m.risk_reward!=null){
+    html+='<div class="port-metric">';
+    html+='<span class="port-metric-lab">R/R senales</span>';
+    html+='<span class="port-metric-val">'+m.risk_reward.toFixed(1)+':1</span>';
+    html+='<span class="port-metric-sub">Solo posiciones con BUY/SELL</span>';
+    html+='</div>';
+  }
+  // Distribucion de senales
+  html+='<div class="port-metric">';
+  html+='<span class="port-metric-lab">Senales activas</span>';
+  html+='<div class="port-metric-signals">';
+  if(sc.buy>0)html+='<span class="port-metric-sig buy">'+sc.buy+' BUY</span>';
+  if(sc.sell>0)html+='<span class="port-metric-sig sell">'+sc.sell+' SELL</span>';
+  if(sc.hold>0)html+='<span class="port-metric-sig hold">'+sc.hold+' HOLD</span>';
+  html+='</div>';
+  html+='<span class="port-metric-sub">'+n+' posicion'+(n===1?'':'es')+' total'+(n===1?'':'es')+'</span>';
+  html+='</div>';
+  // Proximo earnings
+  if(ne){
+    let cls=ne.days_until<=7?'warn':(ne.days_until<=21?'':'pos');
+    html+='<div class="port-metric">';
+    html+='<span class="port-metric-lab">Prox. earnings</span>';
+    html+='<span class="port-metric-val '+cls+'">'+ne.symbol+' en '+ne.days_until+'d</span>';
+    html+='<span class="port-metric-sub">'+(ne.date||'')+'</span>';
+    html+='</div>';
+  }
+
+  el.innerHTML=html;
 }
 
 function scrollToPortPosition(sym){
