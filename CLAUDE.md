@@ -93,7 +93,10 @@ labels can be directional while `signal` is still HOLD.
 - Threading with daemon threads + events for sync
 - Spanish variable names (marron, verde, azul for Koncorde)
 - ANSI color codes for terminal output
-- Fallback stock list (100 liquid stocks) if scanner fails
+- Fallback stock list (100 liquid stocks) if scanner fails; last successful scan cached in `scanner_cache.json`
+- Historical data fallback: `fetch_historical()` falls back to yfinance (circuit breaker: 3 consecutive empty
+  IB responses → yfinance for the rest of the cycle). Dashboard boots and analyzes even with TWS down/wedged;
+  `EClient.connect()` blocks forever against a wedged TWS, so all connects run in daemon threads with timeouts
 - Rate limiting: 0.5s between API calls
 
 ## Options Lab (`options_lab.py`)
