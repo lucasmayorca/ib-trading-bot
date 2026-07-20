@@ -130,5 +130,75 @@ labels can be directional while `signal` is still HOLD.
 3. **Options Lab** — options strategy engine
 4. **Trades Históricos** — closed trade analysis with charts
 
+## Cloud / Multi-Tenant Deployment (Railway)
+A second, separate deployment lets any user run the dashboard without installing Python locally:
+their TWS stays on their machine, a small **bridge** process reads it and streams data over
+WebSocket to a shared **cloud server**, which serves the *same* dashboard UI to their browser.
+
+### Architecture
+```
+User's machine                          Railway (shared)
+┌─────────────────┐                     ┌──────────────────────────┐
+│ TWS/IB Gateway   │◄── ibapi (local)──►│                          │
+│                  │                     │  cloud/server.py         │
+│ bridge/main.py   │── WebSocket ───────►│  (Flask + Flask-SocketIO │
+│ (pip package)    │   (analysis_batch,  │   + gevent)              │
+│                  │    portfolio_data,  │                          │
+│                  │    trades_data)     │  Browser ◄── HTTP ───────┤
+└──────────────────┘                     └──────────────────────────┘
+```
+- **`cloud/server.py`** — Flask + Flask-SocketIO server (`async_mode="gevent"`). Per-user in-memory
+  store (`user_data[user_id]`) holds live scan results, portfolio, and trades — reset on every
+  process restart/redeploy. `bridge_sessions` maps a WebSocket `sid` to a `user_id`.
+- **`cloud/db.py`** — Postgres: `users` table (email, password, `bridge_token`, `flex_token`,
+  `flex_query_id`). The bridge token is what `bridge/main.py --token` authenticates with.
+- **`bridge/`** — a **standalone pip package** (`pip install git+https://github.com/.../ib-trading-bot.git`,
+  entry point `ib-bridge = bridge.main:main`). Installed into `~/.ib-bridge/venv` on the user's machine
+  via `install-bridge.sh` / `/install.sh` (server-generated, so the URL/token are pre-filled).
+  **Critical gotcha**: `setup.py` only packages the `bridge/` directory — root-level `indicators.py`,
+  `signals.py`, `backtester.py`, `config.py` are NOT included. `bridge/indicators.py`,
+  `bridge/signals.py`, `bridge/backtester.py` are therefore deliberate self-contained duplicates
+  (same math, no `config.py` import, hardcoded defaults) — not doubled-up dead code.
+- The dashboard HTML is `vista_web.py`'s real `DASHBOARD_HTML` (imported as-is for exact parity),
+  then `cloud/server.py`'s `_inject_cloud_setup_tab()` splices in a 5th "Conectar TWS" tab + bridge
+  status header via targeted string `.replace()` — the local template has no concept of "connect a
+  bridge" since the local bot already IS the TWS connection. Never edit `vista_web.py` to add
+  cloud-only UI; add it via that injection function instead so local stays untouched.
+
+### Known gotchas (each cost real debugging time — don't reintroduce)
+- **`max_http_buffer_size`**: default is 1MB. A single `analysis_batch` of 10 stocks × 5 years of
+  daily OHLC+MACD+RSI+Koncorde series is several MB — without raising this
+  (`SocketIO(..., max_http_buffer_size=25*1024*1024)`), the connection dies with "packet is too
+  large" the instant the first real batch goes out, and every reconnect repeats the same failure.
+- **Reconnection**: rely solely on `socketio.Client(reconnection=True)`'s own background reconnect.
+  A manual `sio.connect()`/`sio.disconnect()` fallback on top of it races with the library's own
+  thread and produces duplicate connections that fight each other (symptom: auth succeeds then the
+  socket closes within milliseconds, repeating every ~20s = `pingTimeout`). The `connect` event
+  handler must re-run `bridge_auth` on every (re)connect — the library restores the transport but
+  has no idea about that app-level handshake.
+- **`safe_emit()`** (`bridge/main.py`) wraps every `sio.emit()` during the scan loop: waits for
+  `sio.connected` + the `authenticated` `threading.Event`, retries a few times, and — critically —
+  never lets an emit failure crash the whole process (the per-cycle `while True` body also has a
+  broad `except Exception` that logs and retries next cycle rather than exiting).
+- **Repo must be public** (or the pip-install/curl-install URLs need auth) — `install-bridge.sh` /
+  `raw.githubusercontent.com` 404 silently on a private repo.
+- **Portfolio holdings vs. scan watchlist**: the bridge's stock list is a fixed ~49 large-cap
+  fallback list, not a live top-volume scan like local's `get_top_volume_stocks()`. Mi Cartera's
+  position chart reuses the Scanner's cached analysis per symbol — so on every cycle the bridge
+  merges current STK holdings (`ib_app.portfolio_positions`) into the scan list, or any held symbol
+  outside that list (e.g. IBIT) shows "Sin datos históricos" forever. `_refresh_portfolio()` also
+  seeds positions once before the very first cycle so holdings are present from cycle 1.
+- **Trades Históricos in the cloud**: `reqExecutions` only ever returns the *current TWS session's*
+  fills, not historical trades — there is no live IB API call that backfills months of history.
+  Full history requires the user's own **IB Flex Web Service** (`cloud/flex.py`): a one-time Flex
+  Query (Account Management → Performance & Reports → Flex Queries, "Trades" section, XML format)
+  + a Flex token, both stored per-user (`users.flex_token`/`flex_query_id`) and pasted into
+  Conectar TWS → "Ver historial completo de trades". When the trade list is empty, the dashboard
+  shows a CTA pointing here instead of a bare "no trades" message (empty ≠ no history — it usually
+  just means Flex isn't connected yet).
+- **Bridge reinstall**: `run-bridge.sh` only *launches* the already-installed `ib-bridge` CLI — it
+  does not pull new code. After any `bridge/` change, the fix requires `rm -rf ~/.ib-bridge &&
+  curl -sL .../install-bridge.sh | bash` (a fresh `pip install --upgrade`), not just relaunching.
+
 ## Reference
 - Original Pine Script: `MACD+RSI+KONCORDE YAMIL.txt`
