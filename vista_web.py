@@ -450,9 +450,23 @@ def _recent_swing(ohlc, lookback=20):
             min(b["low"] for b in recent))
 
 
+def _label_is_bearish(label):
+    """True if a signal_label represents bearish/sell-side positioning.
+
+    Used instead of the raw BUY/SELL/HOLD `signal` field so that partial
+    signals (INMINENTE, VIRANDO, ZONA DE...) keep the same directional
+    bias as the label shown to the user — a HOLD with signal_label
+    "VENTA INMINENTE" must still be treated as bearish for entry/target/
+    stop and backtest stat selection, or the numbers contradict the label.
+    """
+    return "VENTA" in label or "SOBRECOMPRA" in label
+
+
 def _score_stock(sym, data):
     """Score a stock 0-100 for top-3 ranking. Returns None if ineligible."""
     sig = data.get("signal", "HOLD")
+    label = data.get("signal_label", sig)
+    is_bearish = _label_is_bearish(label)
     strength = data.get("strength", 0) or 0
     conditions = data.get("conditions_met", 0) or 0
     bt = data.get("backtest", {}) or {}
@@ -472,7 +486,7 @@ def _score_stock(sym, data):
     s2 = min(confidence / 100, 1.0) * 25
 
     # Component 3: win rate (0-25)
-    if sig == "SELL":
+    if is_bearish:
         wr = bt.get("sell_win_rate", 0) or 0
         avg_ret = bt.get("sell_avg_return") or 0
     else:
@@ -494,6 +508,8 @@ def _compute_price_levels(data):
     """Compute entry zone, target, stop loss from MAs + ATR."""
     price = data.get("price", 0)
     sig = data.get("signal", "HOLD")
+    label = data.get("signal_label", sig)
+    is_bearish = _label_is_bearish(label)
     mas = (data.get("chart") or {}).get("mas", {})
     ohlc = (data.get("chart") or {}).get("ohlc", [])
 
@@ -514,7 +530,7 @@ def _compute_price_levels(data):
                 "sma20_val": "SMA20", "ema9_val": "EMA9"}
     min_target_pct = 0.10  # 10% minimum target
 
-    if sig == "SELL":
+    if is_bearish:
         # Resistances above for entry ceiling
         res_above = sorted([v for v in ma_vals.values() if v > price])
         entry_high = min(res_above[0], price + 1.5 * atr) if res_above else price + atr
@@ -624,7 +640,7 @@ def _generate_rationale(sym, data, levels=None):
         parts.append(f"{label} — {conds}/3 indicadores activos")
 
     # 2. Target justification (from levels)
-    is_bearish = ("VENTA" in label or "SOBRECOMPRA" in label)
+    is_bearish = _label_is_bearish(label)
     if levels:
         tp = levels.get("target_pct", 0)
         tb = levels.get("target_basis", "")
@@ -794,10 +810,7 @@ def _generate_thesis(sym, data, levels, fund):
     lines = []
 
     # --- Line 1: Signal label + direction (consistent with label) ---
-    is_bearish = ("VENTA" in label or "SOBRECOMPRA" in label
-                  or (label.startswith("VIRANDO") and "VENTA" in label))
-    is_bullish = ("COMPRA" in label or "SOBREVENTA" in label
-                  or (label.startswith("VIRANDO") and "COMPRA" in label))
+    is_bearish = _label_is_bearish(label)
 
     if sig == "BUY":
         lines.append(f"{sym} presenta senal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados al alza.")
@@ -1150,9 +1163,9 @@ def compute_top3(cache):
             "target_basis": levels.get("target_basis", ""),
             "horizon": levels.get("horizon_weeks", ""),
             "thesis": thesis,
-            "win_rate": (bt.get("sell_win_rate", 0) if sig == "SELL"
+            "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
                          else bt.get("buy_win_rate", 0)) or 0,
-            "avg_return": (bt.get("sell_avg_return") if sig == "SELL"
+            "avg_return": (bt.get("sell_avg_return") if _label_is_bearish(data.get("signal_label", sig))
                            else bt.get("buy_avg_return")),
             "rationale": rationale,
             "chart_ohlc": ohlc_slice,
@@ -4745,9 +4758,9 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "target_basis": levels.get("target_basis", ""),
         "horizon": levels.get("horizon_weeks", ""),
         "thesis": thesis,
-        "win_rate": (bt.get("sell_win_rate", 0) if sig == "SELL"
+        "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
                      else bt.get("buy_win_rate", 0)) or 0,
-        "avg_return": (bt.get("sell_avg_return") if sig == "SELL"
+        "avg_return": (bt.get("sell_avg_return") if _label_is_bearish(data.get("signal_label", sig))
                        else bt.get("buy_avg_return")),
         "rationale": rationale,
         "chart_ohlc": ohlc_slice,
