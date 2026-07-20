@@ -561,7 +561,17 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 ib_app.reqAccountUpdates(True, "")
                 ib_app.reqAllOpenOrders()
 
-                time.sleep(3)
+                # A fixed sleep here is fragile — right after a 49-stock scan
+                # TWS can be slow to flush the account download, and a fixed
+                # 3s wait would ship an empty portfolio. Poll accountDownloadEnd
+                # instead, up to 15s.
+                wait_start = time.time()
+                while not ib_app.account_done and time.time() - wait_start < 15:
+                    time.sleep(0.2)
+                if not ib_app.account_done:
+                    log("  Timeout esperando datos de cartera de TWS (15s), enviando lo que haya", Y)
+
+                log(f"  Enviando cartera: {len(ib_app.portfolio_positions)} posiciones, {len(ib_app.open_orders)} ordenes abiertas...", C)
                 safe_emit(sio, "portfolio_data", clean({
                     "positions": ib_app.portfolio_positions,
                     "account_values": ib_app.account_values,
