@@ -186,24 +186,58 @@ etf_last_update_time = ""
 etf_update_lock = threading.Lock()
 
 
-def fetch_historical(app, symbol, req_id, duration=None):
-    contract = make_contract(symbol)
-    app.historical_data[req_id] = []
-    app.hist_done[req_id] = False
-    dur = duration or config.HIST_DURATION
-    app.reqHistoricalData(
-        req_id, contract, "",
-        dur, config.HIST_BAR_SIZE,
-        config.HIST_WHAT_TO_SHOW, 1, 1, False, []
-    )
-    timeout = 60 if "5" in dur else 30
-    start = time.time()
-    while not app.hist_done.get(req_id, False) and time.time() - start < timeout:
-        time.sleep(0.2)
-    data = app.historical_data.get(req_id, [])
-    if not data:
+# Circuit breaker: si IB no responde N historicos seguidos (TWS caida/colgada),
+# saltear IB por el resto del ciclo y usar yfinance directo. Se resetea por ciclo.
+_IB_HIST_FAILS = {"n": 0}
+_IB_HIST_FAILS_MAX = 3
+
+
+def _fetch_historical_yf(symbol, duration):
+    """Fallback de historicos via yfinance (mismo shape que el path de IB)."""
+    try:
+        import yfinance as yf
+        period = {"5 Y": "5y", "2 Y": "2y", "1 Y": "1y", "6 M": "6mo"}.get(duration, "5y")
+        h = yf.Ticker(symbol.replace(" ", "-")).history(period=period, interval="1d", auto_adjust=False)
+        if h is None or h.empty:
+            return None
+        return pd.DataFrame({
+            "date": [d.strftime("%Y%m%d") for d in h.index],
+            "open": h["Open"].values, "high": h["High"].values,
+            "low": h["Low"].values, "close": h["Close"].values,
+            "volume": h["Volume"].astype(float).values,
+        })
+    except Exception as e:
+        print(f"  yfinance fallback fallo para {symbol}: {e}")
         return None
-    return pd.DataFrame(data)
+
+
+def fetch_historical(app, symbol, req_id, duration=None):
+    dur = duration or config.HIST_DURATION
+    if app is not None and app.isConnected() and _IB_HIST_FAILS["n"] < _IB_HIST_FAILS_MAX:
+        contract = make_contract(symbol)
+        app.historical_data[req_id] = []
+        app.hist_done[req_id] = False
+        app.reqHistoricalData(
+            req_id, contract, "",
+            dur, config.HIST_BAR_SIZE,
+            config.HIST_WHAT_TO_SHOW, 1, 1, False, []
+        )
+        timeout = 60 if "5" in dur else 30
+        start = time.time()
+        while not app.hist_done.get(req_id, False) and time.time() - start < timeout:
+            time.sleep(0.2)
+        data = app.historical_data.get(req_id, [])
+        if data:
+            _IB_HIST_FAILS["n"] = 0
+            return pd.DataFrame(data)
+        _IB_HIST_FAILS["n"] += 1
+        if _IB_HIST_FAILS["n"] == _IB_HIST_FAILS_MAX:
+            print(f"  IB sin responder historicos ({_IB_HIST_FAILS_MAX} seguidos) — "
+                  "usando yfinance para el resto del ciclo")
+    df = _fetch_historical_yf(symbol, dur)
+    if df is not None and _IB_HIST_FAILS["n"] < _IB_HIST_FAILS_MAX:
+        print(f"  {symbol}: IB sin datos — usando yfinance")
+    return df
 
 
 def analyze_symbol(df):
@@ -295,7 +329,7 @@ def get_rt_price(symbol):
         if s == symbol:
             idx = i
             break
-    if idx is None:
+    if idx is None or ib_app is None:
         return None, {}
     mkt = ib_app.market_data.get(5000 + idx, {})
     rt = mkt.get("delayed_last") or mkt.get("last")
@@ -304,6 +338,7 @@ def get_rt_price(symbol):
 
 def run_analysis():
     global analysis_cache, last_update_time
+    _IB_HIST_FAILS["n"] = 0  # reintentar IB al inicio de cada ciclo
     total = len(stock_list)
     for i, symbol in enumerate(stock_list):
         req_id = 2000 + i
@@ -339,7 +374,7 @@ def get_etf_rt_price(symbol):
         if s == symbol:
             idx = i
             break
-    if idx is None:
+    if idx is None or ib_app is None:
         return None, {}
     mkt = ib_app.market_data.get(7000 + idx, {})
     rt = mkt.get("delayed_last") or mkt.get("last")
@@ -6377,7 +6412,9 @@ def main():
     print(f"Escaneando top {config.SCAN_COUNT} acciones por volumen...")
     stocks = get_top_volume_stocks()
     if not stocks:
-        print("ERROR: No se obtuvieron acciones del scanner.")
+        from scanner import get_fallback_stocks
+        stocks = get_fallback_stocks()[:config.SCAN_COUNT]
+        print("  Scanner vacio y sin cache — usando lista fallback.")
 
     stock_list = [s["symbol"] for s in stocks] if stocks else []
 
@@ -6394,15 +6431,24 @@ def main():
         all_count = len(stock_list) + len(etf_list)
         print(f"Obtenidas {len(stock_list)} acciones + {len(etf_list)} ETFs = {all_count} simbolos\n")
 
-        # 2. Connect IB for historical data + market data
+        # 2. Connect IB for historical data + market data.
+        # connect() es bloqueante (lee el handshake de forma sincrona): si TWS esta
+        # colgada se cuelga para siempre, asi que va DENTRO del thread y aca solo
+        # esperamos el connected_event con timeout.
         ib_app = VistaIB()
-        ib_app.connect(config.IB_HOST, config.IB_PORT, config.VISTA_CLIENT_ID)
 
-        ib_thread = threading.Thread(target=ib_app.run, daemon=True)
+        def _ib_connect_and_run(app=ib_app):
+            try:
+                app.connect(config.IB_HOST, config.IB_PORT, config.VISTA_CLIENT_ID)
+                app.run()
+            except Exception as e:
+                print(f"  Conexion IB termino: {e}")
+
+        ib_thread = threading.Thread(target=_ib_connect_and_run, daemon=True)
         ib_thread.start()
 
         if not ib_app.connected_event.wait(timeout=10):
-            print("ERROR: No se pudo conectar a TWS. Dashboard arranca sin datos en vivo.")
+            print("ERROR: No se pudo conectar a TWS. Dashboard arranca con datos de yfinance.")
             ib_app = None
         else:
             print("Conectado a TWS!\n")
@@ -6423,14 +6469,17 @@ def main():
                 ib_app.reqMktData(7000 + i, make_contract(symbol), "", False, False, [])
                 time.sleep(0.2)
 
-            analysis_thread = threading.Thread(target=analysis_loop, daemon=True)
-            analysis_thread.start()
-
-            if etf_list:
-                etf_thread = threading.Thread(target=etf_analysis_loop, daemon=True)
-                etf_thread.start()
     else:
         print("Iniciando dashboard sin conexion a TWS (solo trades importados)...\n")
+
+    # Los loops de analisis corren siempre: con TWS usan sus historicos,
+    # sin TWS (o con TWS colgada) caen a yfinance via fetch_historical().
+    if stock_list:
+        analysis_thread = threading.Thread(target=analysis_loop, daemon=True)
+        analysis_thread.start()
+    if etf_list:
+        etf_thread = threading.Thread(target=etf_analysis_loop, daemon=True)
+        etf_thread.start()
 
     print(f"\nDashboard en: http://localhost:5050")
     print("Ctrl+C para detener\n")

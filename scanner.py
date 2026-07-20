@@ -88,11 +88,21 @@ def get_top_volume_stocks(count=None):
         count = config.SCAN_COUNT
 
     app = ScannerApp()
-    app.connect(config.IB_HOST, config.IB_PORT, config.IB_CLIENT_ID + 10)
 
-    thread = threading.Thread(target=app.run, daemon=True)
+    # connect() bloqueante dentro del thread: con TWS colgada no responde nunca
+    # y colgaria todo el arranque — aca esperamos app.connected con timeout.
+    def _connect_and_run():
+        try:
+            app.connect(config.IB_HOST, config.IB_PORT, config.IB_CLIENT_ID + 10)
+            app.run()
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_connect_and_run, daemon=True)
     thread.start()
-    time.sleep(2)
+    t0 = time.time()
+    while not app.connected and time.time() - t0 < 8:
+        time.sleep(0.25)
 
     if not app.connected:
         print("ERROR: Scanner no pudo conectar a TWS")
@@ -201,11 +211,21 @@ def get_top_volume_etfs(count=None):
         count = config.SCAN_COUNT
 
     app = ScannerApp()
-    app.connect(config.IB_HOST, config.IB_PORT, config.IB_CLIENT_ID + 11)
 
-    thread = threading.Thread(target=app.run, daemon=True)
+    # connect() bloqueante dentro del thread: con TWS colgada no responde nunca
+    # y colgaria todo el arranque — aca esperamos app.connected con timeout.
+    def _connect_and_run():
+        try:
+            app.connect(config.IB_HOST, config.IB_PORT, config.IB_CLIENT_ID + 11)
+            app.run()
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_connect_and_run, daemon=True)
     thread.start()
-    time.sleep(2)
+    t0 = time.time()
+    while not app.connected and time.time() - t0 < 8:
+        time.sleep(0.25)
 
     if not app.connected:
         print("ERROR: ETF Scanner no pudo conectar a TWS")
