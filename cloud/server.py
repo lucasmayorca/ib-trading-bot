@@ -1485,64 +1485,65 @@ def _inject_cloud_setup_tab(html):
     setup_tab_html = '''
 <!-- TAB: CONECTAR TWS -->
 <div id="tab-setup" class="tab-content">
-<div class="setup-section" style="max-width:640px;margin:32px auto;padding:0 16px">
-  <div class="setup-card" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:28px">
-    <h2 style="margin:0 0 4px">Conectar tu TWS</h2>
-    <p class="sub" style="margin:0 0 20px;color:var(--muted)">Solo necesitas TWS abierta y seguir estos 3 pasos.</p>
-    <div class="setup-steps" style="display:flex;flex-direction:column;gap:18px">
-      <div style="display:flex;gap:12px">
-        <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">1</span>
+<div class="setup-section" style="max-width:760px;margin:28px auto 48px;padding:0 20px">
+  <div class="port-title" style="margin-bottom:2px">CONECTAR <em>TWS</em></div>
+  <p style="margin:0 0 18px;color:var(--muted);font-size:13px">Tu TWS corre en tu maquina; el bridge le manda los datos a este dashboard. Solo 3 pasos.</p>
+  <div class="setup-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:26px 28px;box-shadow:var(--shadow-sm)">
+    <div class="setup-steps" style="display:flex;flex-direction:column;gap:22px">
+      <div style="display:flex;gap:14px">
+        <span style="background:var(--accent);color:#fff;border-radius:50%;width:26px;height:26px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px">1</span>
         <div>
-          <h3 style="margin:0 0 4px;font-size:14px">Abri TWS</h3>
-          <p style="margin:0;font-size:13px;color:var(--muted)">Abre Trader Workstation y habilita la API:<br>
-          <code>Edit &rarr; Global Configuration &rarr; API &rarr; Settings</code><br>
-          &check; Enable ActiveX and Socket Clients &nbsp; &check; Puerto: <code>7497</code></p>
+          <h3 style="margin:0 0 4px;font-size:14px;font-weight:700">Abri TWS</h3>
+          <p style="margin:0;font-size:13px;color:var(--muted);line-height:1.7">Abre Trader Workstation y habilita la API:<br>
+          <code style="background:var(--bg);border:1px solid var(--border-subtle);border-radius:5px;padding:1px 7px;font-size:12px">Edit &rarr; Global Configuration &rarr; API &rarr; Settings</code><br>
+          <span style="color:var(--buy)">&check;</span> Enable ActiveX and Socket Clients &nbsp; <span style="color:var(--buy)">&check;</span> Puerto: <code style="background:var(--bg);border:1px solid var(--border-subtle);border-radius:5px;padding:1px 7px;font-size:12px">7497</code></p>
         </div>
       </div>
-      <div style="display:flex;gap:12px">
-        <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">2</span>
-        <div style="flex:1">
-          <h3 style="margin:0 0 4px;font-size:14px">Instalar el Bridge <span style="font-size:11px;color:var(--muted);font-weight:400">(solo la primera vez)</span></h3>
+      <div style="display:flex;gap:14px">
+        <span style="background:var(--accent);color:#fff;border-radius:50%;width:26px;height:26px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px">2</span>
+        <div style="flex:1;min-width:0">
+          <h3 style="margin:0 0 4px;font-size:14px;font-weight:700">Instalar el Bridge <span style="font-size:11px;color:var(--muted);font-weight:500">(solo la primera vez)</span></h3>
           <p style="margin:0 0 8px;font-size:13px;color:var(--muted)">Abri la Terminal y pega este comando:</p>
-          <div style="position:relative">
-            <div id="install-cmd" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 90px 10px 12px;font-family:monospace;font-size:12px;overflow-x:auto;white-space:nowrap"></div>
-            <button id="install-btn" onclick="copyCmd('install-cmd','install-btn')" style="position:absolute;right:6px;top:6px;background:var(--accent);color:#fff;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px">Copiar</button>
+          <div style="display:flex;gap:8px;align-items:stretch">
+            <div id="install-cmd" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:12px;overflow-x:auto;white-space:nowrap;color:var(--text)"></div>
+            <button id="install-btn" onclick="copyCmd('install-cmd','install-btn')" style="flex:none;background:var(--accent);color:#fff;border:none;padding:0 18px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.3px">Copiar</button>
           </div>
-          <p style="font-size:11px;color:var(--muted);margin-top:6px">Requiere Python 3.10+ &nbsp;|&nbsp; Se instala en <code>~/.ib-bridge/</code></p>
+          <p style="font-size:11px;color:var(--dim);margin-top:6px">Requiere Python 3.10+ &nbsp;&middot;&nbsp; Se instala en <code>~/.ib-bridge/</code></p>
         </div>
       </div>
-      <div style="display:flex;gap:12px">
-        <span style="background:var(--accent);color:#fff;border-radius:50%;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px">3</span>
-        <div style="flex:1">
-          <h3 style="margin:0 0 4px;font-size:14px">Conectar</h3>
+      <div style="display:flex;gap:14px">
+        <span style="background:var(--accent);color:#fff;border-radius:50%;width:26px;height:26px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px">3</span>
+        <div style="flex:1;min-width:0">
+          <h3 style="margin:0 0 4px;font-size:14px;font-weight:700">Conectar</h3>
           <p style="margin:0 0 8px;font-size:13px;color:var(--muted)">Cada vez que quieras conectar, pega esto en la Terminal:</p>
-          <div style="position:relative">
-            <div id="run-cmd" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 90px 10px 12px;font-family:monospace;font-size:12px;overflow-x:auto;white-space:nowrap"></div>
-            <button id="run-btn" onclick="copyCmd('run-cmd','run-btn')" style="position:absolute;right:6px;top:6px;background:var(--accent);color:#fff;border:none;padding:5px 12px;border-radius:5px;cursor:pointer;font-size:11px">Copiar</button>
+          <div style="display:flex;gap:8px;align-items:stretch">
+            <div id="run-cmd" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-family:'JetBrains Mono',monospace;font-size:12px;overflow-x:auto;white-space:nowrap;color:var(--text)"></div>
+            <button id="run-btn" onclick="copyCmd('run-cmd','run-btn')" style="flex:none;background:var(--accent);color:#fff;border:none;padding:0 18px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.3px">Copiar</button>
           </div>
-          <p style="font-size:11px;color:var(--muted);margin-top:6px">El indicador de arriba cambiara a <span style="color:var(--buy)">&#9679; Conectado</span></p>
+          <p style="font-size:11px;color:var(--dim);margin-top:6px">El indicador de arriba cambiara a <span style="color:var(--buy);font-weight:600">&#9679; Conectado</span></p>
         </div>
       </div>
     </div>
-    <div style="margin-top:20px;padding:14px;background:var(--bg);border-radius:8px;display:flex;justify-content:space-between;align-items:center">
+    <div style="margin-top:24px;padding:14px 18px;background:var(--bg);border:1px solid var(--border-subtle);border-radius:10px;display:flex;justify-content:space-between;align-items:center">
       <div>
-        <p style="font-size:12px;color:var(--muted);margin:0">Estado de conexion</p>
-        <p id="setup-live-status" style="font-size:14px;margin:4px 0 0">Verificando...</p>
+        <p style="font-size:10px;color:var(--muted);margin:0;text-transform:uppercase;letter-spacing:.7px;font-weight:600">Estado de conexion</p>
+        <p id="setup-live-status" style="font-size:14px;margin:4px 0 0;font-weight:600">Verificando...</p>
       </div>
       <div id="setup-status-dot" style="width:12px;height:12px;border-radius:50%;background:var(--dim)"></div>
     </div>
-    <details style="text-align:left;margin-top:16px">
-      <summary style="color:var(--accent);cursor:pointer;font-size:13px">Opciones avanzadas</summary>
-      <div style="margin-top:12px;padding:12px;background:var(--bg);border-radius:6px">
-        <p style="font-size:12px;color:var(--muted);margin-bottom:4px">Tu bridge token (no lo compartas):</p>
-        <div id="token-display" style="font-family:monospace;font-size:12px;background:var(--surface);border:1px solid var(--border);padding:8px;border-radius:6px;word-break:break-all">Cargando...</div>
-        <button onclick="regenerateToken()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;margin-top:8px">Regenerar Token</button>
-        <p style="font-size:11px;color:var(--muted);margin-top:12px">Puerto 7497 = paper trading &nbsp;|&nbsp; Agrega <code>--ib-port 7496</code> para live</p>
+  </div>
+    <details style="text-align:left;margin-top:14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <summary style="color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;padding:13px 18px">Opciones avanzadas</summary>
+      <div style="padding:4px 18px 16px">
+        <p style="font-size:12px;color:var(--muted);margin-bottom:6px">Tu bridge token (no lo compartas):</p>
+        <div id="token-display" style="font-family:'JetBrains Mono',monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);padding:9px 12px;border-radius:8px;word-break:break-all">Cargando...</div>
+        <button onclick="regenerateToken()" style="background:var(--accent);color:#fff;border:none;padding:7px 16px;border-radius:8px;cursor:pointer;font-size:11px;font-weight:700;margin-top:10px">Regenerar Token</button>
+        <p style="font-size:11px;color:var(--dim);margin-top:12px">Puerto 7497 = paper trading &nbsp;&middot;&nbsp; Agrega <code>--ib-port 7496</code> para live</p>
       </div>
     </details>
-    <details style="text-align:left;margin-top:12px">
-      <summary style="color:var(--accent);cursor:pointer;font-size:13px">Ver historial completo de trades (opcional)</summary>
-      <div style="margin-top:12px;padding:16px;background:var(--bg);border-radius:6px">
+    <details style="text-align:left;margin-top:12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <summary style="color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;padding:13px 18px">Ver historial completo de trades (opcional)</summary>
+      <div style="padding:4px 18px 18px">
         <p style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6">
           Por defecto, "Trades Historicos" solo muestra las operaciones de <b>hoy</b>
           (asi funciona la conexion normal con TWS). Para ver tu historial completo,
@@ -1550,7 +1551,7 @@ def _inject_cloud_setup_tab(html):
           Son 3 partes.
         </p>
 
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
+        <div style="background:var(--bg);border:1px solid var(--border-subtle);border-radius:8px;padding:12px 14px;margin-bottom:10px">
           <p style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">1&#65039;&#8419; Crear la consulta (Flex Query)</p>
           <ol style="font-size:11.5px;color:var(--muted);line-height:1.9;margin:0;padding-left:18px">
             <li>Entra a <a href="https://www.interactivebrokers.com" target="_blank" style="color:var(--accent)">Client Portal de IB</a> (login normal, no TWS)</li>
@@ -1563,7 +1564,7 @@ def _inject_cloud_setup_tab(html):
           <p style="font-size:11px;color:var(--accent);margin-top:8px">&#128161; Anota el numero que aparece al lado del nombre de tu query — ese es el <b>Query ID</b>.</p>
         </div>
 
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:14px">
+        <div style="background:var(--bg);border:1px solid var(--border-subtle);border-radius:8px;padding:12px 14px;margin-bottom:14px">
           <p style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">2&#65039;&#8419; Generar el Token</p>
           <ol style="font-size:11.5px;color:var(--muted);line-height:1.9;margin:0;padding-left:18px">
             <li>En la misma pagina de Flex Queries, busca <b>"Flex Web Service Configuration"</b></li>
@@ -1575,14 +1576,13 @@ def _inject_cloud_setup_tab(html):
 
         <p style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">3&#65039;&#8419; Pegar aca abajo</p>
         <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Flex Token (el codigo largo del paso 2):</p>
-        <input id="flex-token-input" type="password" placeholder="Pega el token aqui" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
+        <input id="flex-token-input" type="password" placeholder="Pega el token aqui" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
         <p style="font-size:11px;color:var(--muted);margin-bottom:4px">Query ID (el numero del paso 1):</p>
-        <input id="flex-query-input" type="text" placeholder="Ej: 123456" style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
+        <input id="flex-query-input" type="text" placeholder="Ej: 123456" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;margin-bottom:8px">
         <button onclick="saveFlexConfig()" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Guardar y Probar</button>
         <span id="flex-config-status" style="font-size:11px;margin-left:8px"></span>
       </div>
     </details>
-  </div>
 </div>
 </div>
 
