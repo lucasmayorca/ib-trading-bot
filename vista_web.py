@@ -3052,11 +3052,15 @@ function fcond(n,r){
   return'<span class="cond-dots" title="'+t+'">'+dots+'</span>';
 }
 function cc(n){return"cond cond-"+n;}
-function fconf(val){
-  if(val==null||val===0)return'<span class="iv v-na" title="Sin confianza de backtest: pocas senales historicas o edge no significativo">---</span>';
+function fconf(val,nSignals){
+  // "---" SOLO cuando no hubo senales historicas que backtestear.
+  // Confianza 0 es un resultado real (edge no significativo) y se muestra como 0.
+  if(nSignals!=null&&nSignals<=0)return'<span class="iv v-na" title="Sin senales historicas de este setup en 5A — nada que backtestear">---</span>';
+  if(val==null)return'<span class="iv v-na" title="Backtest no disponible">---</span>';
   let col=val>=60?'var(--buy)':(val>=30?'var(--hold)':'var(--sell)');
   let t='Confianza calibrada del backtest 5A: '+val.toFixed(0)+'/100\n(significancia estadistica del edge x tamano de muestra)';
-  return'<span class="conf-cell" title="'+t+'"><b style="color:'+col+'">'+val.toFixed(0)+'</b><i class="conf-bar"><u style="width:'+Math.min(100,val)+'%;background:'+col+'"></u></i></span>';
+  if(val<=0)t='Confianza 0/100 — hubo senales historicas'+(nSignals?' ('+nSignals+')':'')+' pero su edge no es estadisticamente significativo (o es negativo)';
+  return'<span class="conf-cell" title="'+t+'"><b style="color:'+col+'">'+val.toFixed(0)+'</b><i class="conf-bar"><u style="width:'+Math.max(2,Math.min(100,val))+'%;background:'+col+'"></u></i></span>';
 }
 function fret(val,tip){
   if(val==null)return'<span class="iv v-na">---</span>';
@@ -3698,10 +3702,13 @@ function renderTop3(top3){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
-    html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
-    html+='<span class="rec-sm"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
-    html+='<span class="rec-sm"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la senal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + senal activa (5), menos penalizacion contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Fuerza de la senal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
+    let cf=r.confidence!=null?r.confidence:null;
+    let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
+    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadistica del edge x tamano de muestra. 0 = hubo senales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
+    html+='<span class="rec-sm" title="Win rate historico de este setup (backtest 5A, neto de costes)"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
+    html+='<span class="rec-sm" title="Riesgo/beneficio: ganancia esperada al objetivo vs perdida al stop"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
     html+='</span>';
     html+='</summary>';
 
@@ -3998,7 +4005,7 @@ function update(){
         frsi(rv,r.rsi_ok,r.rsi_detail)+
         fv(km,r.konc_ok,'Koncorde marron (manos fuertes) vs su media\n'+(r.konc_detail||''))+
         fcond(cond,r)+
-        fconf(r.confidence)+
+        fconf(r.confidence,(r.buy_count||0)+(r.sell_count||0))+
         fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
         fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
         trendSparkCell(r)+
@@ -4116,30 +4123,45 @@ function breadthSvg(pct){
     +'<rect x="3" y="4" width="54" height="5" rx="2.5" fill="#c22436" opacity=".55"/>'
     +'<rect x="3" y="4" width="'+w+'" height="5" rx="2.5" fill="#0b7a4b"/></svg>';
 }
+// Tooltips explicativos de cada chip del pulso de mercado (\n = salto de linea en el tooltip)
+const PULSE_TIPS={
+  SPY:'S&P 500 (ETF SPY)\nLas 500 mayores empresas de EE.UU. — el termometro general del mercado.\nEl % es la variacion contra el cierre anterior.',
+  QQQ:'Nasdaq-100 (ETF QQQ)\nLas 100 mayores tecnologicas. Mide el apetito por growth/tech.\nSi sube mas que SPY, el mercado esta en modo riesgo.',
+  IWM:'Russell 2000 (ETF IWM)\nEmpresas de baja capitalizacion, mas sensibles al ciclo economico\ny a las tasas. Suele liderar los rallies de apetito por riesgo.',
+  BTC:'Bitcoin (USD)\nProxy de apetito por riesgo fuera del mercado accionario.\nSuele moverse junto al Nasdaq en episodios de risk-on/risk-off.'
+};
 async function loadPulse(){
   try{
     const r=await fetch('/api/market-pulse'); if(!r.ok)return;
     const d=await r.json();
     const el=document.getElementById('pulse-bar'); if(!el)return;
     const open=marketStatusText().startsWith('Mercado abierto');
-    let h='<span class="pulse-chip" title="'+marketStatusText()+'"><span class="pulse-dot" style="background:'+(open?'var(--buy)':'var(--dim)')+'"></span>'+(open?'Mercado abierto':'Mercado cerrado')+'</span>';
+    let h='<span class="pulse-chip" title="'+marketStatusText()+'\nHorario NYSE/NASDAQ: 9:30–16:00 ET (lun–vie).\nCon mercado cerrado se muestran los precios del ultimo cierre."><span class="pulse-dot" style="background:'+(open?'var(--buy)':'var(--dim)')+'"></span>'+(open?'Mercado abierto':'Mercado cerrado')+'</span>';
     for(const q of (d.quotes||[])){
       const cls=q.pct>=0?'pulse-up':'pulse-down', sign=q.pct>=0?'+':'';
       if(q.name==='VIX'){
-        h+='<span class="pulse-chip" title="VIX '+q.last.toFixed(1)+' — zona '+q.label+' (volatilidad implicita del SPX)"><b>VIX</b> '+q.last.toFixed(1)
+        h+='<span class="pulse-chip" title="VIX '+q.last.toFixed(1)+' — zona '+q.label
+          +'\nVolatilidad implicita a 30 dias del S&P 500 («indice del miedo»):\nmide cuanta turbulencia espera el mercado de opciones.'
+          +'\n<15 calma · 15–20 normal · 20–30 nervioso · >30 panico.'
+          +'\nVIX alto suele coincidir con caidas y primas de opciones caras."><b>VIX</b> '+q.last.toFixed(1)
           +vixSvg(q.last)+'</span>';
       }else{
-        h+='<span class="pulse-chip"><b>'+q.name+'</b> '+(q.name==='BTC'?Math.round(q.last).toLocaleString():q.last.toFixed(1))
+        h+='<span class="pulse-chip"'+(PULSE_TIPS[q.name]?' title="'+PULSE_TIPS[q.name]+'"':'')+'><b>'+q.name+'</b> '+(q.name==='BTC'?Math.round(q.last).toLocaleString():q.last.toFixed(1))
           +' <span class="pulse-pct '+cls+'">'+sign+q.pct.toFixed(2)+'%</span></span>';
       }
     }
     if(d.breadth!=null){
-      h+='<span class="pulse-chip" title="Amplitud: '+d.breadth+'% de los simbolos del scanner con sesgo alcista">Amplitud'
+      h+='<span class="pulse-chip" title="Amplitud de mercado: '+d.breadth+'% alcista'
+        +'\nDe los simbolos analizados por el scanner (acciones + ETFs),\nel '+d.breadth+'% tiene senal o sesgo de compra y el '+(100-d.breadth)+'% de venta.'
+        +'\n>50% = mas oportunidades alcistas que bajistas. Los extremos\n(>80% o <20%) suelen marcar euforia o capitulacion.">Amplitud'
         +breadthSvg(d.breadth)+'<b>'+d.breadth+'%</b></span>';
     }
     if(d.sentiment!=null){
       const s=d.sentiment, col=s>=55?'var(--buy)':(s>=45?'var(--hold)':'var(--sell)');
-      h+='<span class="pulse-chip" title="Sentimiento compuesto: VIX + dia SPY + tendencia SPY + amplitud">'
+      h+='<span class="pulse-chip" title="Indice miedo/codicia: '+s+' ('+d.sentiment_label+')'
+        +'\nPromedio de 4 componentes: nivel del VIX, variacion del dia del SPY,\ntendencia del SPY (precio vs SMA50/SMA200) y amplitud del scanner.'
+        +'\n0 = miedo extremo · 50 = neutral · 100 = codicia extrema.'
+        +'\nContrarian: miedo extremo suele ser oportunidad de compra;\ncodicia extrema invita a la cautela.">'
         +gaugeSvg(s,col)
         +'<b style="color:'+col+'">'+s+'</b><span class="pulse-note">'+d.sentiment_label.toLowerCase()+'</span></span>';
     }
@@ -4350,7 +4372,7 @@ function updateEtf(){
         frsi(rv,r.rsi_ok,r.rsi_detail)+
         fv(km,r.konc_ok,'Koncorde marron (manos fuertes) vs su media\n'+(r.konc_detail||''))+
         fcond(cond,r)+
-        fconf(r.confidence)+
+        fconf(r.confidence,(r.buy_count||0)+(r.sell_count||0))+
         fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
         fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
         trendSparkCell(r)+
@@ -4571,10 +4593,13 @@ function renderEtfTop3(top3){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
-    html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
-    html+='<span class="rec-sm"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
-    html+='<span class="rec-sm"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la senal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + senal activa (5), menos penalizacion contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Fuerza de la senal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
+    let cf=r.confidence!=null?r.confidence:null;
+    let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
+    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadistica del edge x tamano de muestra. 0 = hubo senales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
+    html+='<span class="rec-sm" title="Win rate historico de este setup (backtest 5A, neto de costes)"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
+    html+='<span class="rec-sm" title="Riesgo/beneficio: ganancia esperada al objetivo vs perdida al stop"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
     html+='</span>';
     html+='</summary>';
 
