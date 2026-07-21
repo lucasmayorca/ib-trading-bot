@@ -3955,16 +3955,15 @@ function update(){
 // Velocimetro semicircular 0-100 con aguja (rojo -> ambar -> verde)
 function gaugeSvg(score,col){
   const a=(180-score*1.8)*Math.PI/180;
-  const nx=(30+19*Math.cos(a)).toFixed(1), ny=(30-19*Math.sin(a)).toFixed(1);
-  return '<svg width="60" height="34" viewBox="0 0 60 34">'
+  const nx=(21+13*Math.cos(a)).toFixed(1), ny=(21-13*Math.sin(a)).toFixed(1);
+  return '<svg width="42" height="24" viewBox="0 0 42 24">'
     +'<defs><linearGradient id="pg" x1="0" y1="0" x2="1" y2="0">'
     +'<stop offset="0" stop-color="#c22436"/><stop offset=".5" stop-color="#d97706"/><stop offset="1" stop-color="#0b7a4b"/>'
     +'</linearGradient></defs>'
-    +'<path d="M 6 30 A 24 24 0 0 1 54 30" fill="none" stroke="url(#pg)" stroke-width="6" stroke-linecap="round" opacity=".9"/>'
-    +'<line x1="30" y1="30" x2="'+nx+'" y2="'+ny+'" stroke="var(--text)" stroke-width="2.2" stroke-linecap="round"/>'
-    +'<circle cx="30" cy="30" r="3" fill="var(--text)"/></svg>';
+    +'<path d="M 4 21 A 17 17 0 0 1 38 21" fill="none" stroke="url(#pg)" stroke-width="5" stroke-linecap="round" opacity=".9"/>'
+    +'<line x1="21" y1="21" x2="'+nx+'" y2="'+ny+'" stroke="var(--text)" stroke-width="2" stroke-linecap="round"/>'
+    +'<circle cx="21" cy="21" r="2.5" fill="var(--text)"/></svg>';
 }
-// Escala del VIX 10-45 con zonas (calma/normal/nervioso/panico) y marcador
 function vixSvg(v){
   const x=4+Math.max(0,Math.min(1,(v-10)/35))*64;
   return '<svg width="72" height="14" viewBox="0 0 72 14">'
@@ -4004,10 +4003,9 @@ async function loadPulse(){
     }
     if(d.sentiment!=null){
       const s=d.sentiment, col=s>=55?'var(--buy)':(s>=45?'var(--hold)':'var(--sell)');
-      h+='<span class="pulse-chip" style="margin-left:auto;padding:4px 14px 4px 10px" title="Compuesto: VIX + dia SPY + tendencia SPY + amplitud">'
+      h+='<span class="pulse-chip" title="Compuesto: VIX + dia SPY + tendencia SPY + amplitud">Sentimiento'
         +gaugeSvg(s,col)
-        +'<span><span class="pulse-gval" style="color:'+col+'">'+s+'</span>'
-        +'<span class="pulse-glab">'+d.sentiment_label+'</span></span></span>';
+        +'<b style="color:'+col+'">'+s+'</b><span class="pulse-note">'+d.sentiment_label.toLowerCase()+'</span></span>';
     }
     el.innerHTML=h; el.style.display='flex';
   }catch(e){}
