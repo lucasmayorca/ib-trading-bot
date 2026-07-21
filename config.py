@@ -44,6 +44,12 @@ KONCORDE_MEDIA_PERIOD = 21
 SIGNAL_MIN_SCORE_BUY = 2.0
 SIGNAL_MIN_SCORE_SELL = 2.0
 
+# Objetivo minimo (% de movimiento al target) para MOSTRAR una oportunidad en las
+# recomendaciones. No fuerza el objetivo (eso lo estima _compute_price_levels por
+# volatilidad+historico); solo filtra: si el movimiento esperado al target es menor,
+# la oportunidad no se lista.
+MIN_OPPORTUNITY_TARGET_PCT = 8.0
+
 # === RISK MANAGEMENT ===
 MAX_PER_TRADE = 5000     # USD maximo por operacion
 STOP_LOSS_PCT = 3.0      # Stop loss %

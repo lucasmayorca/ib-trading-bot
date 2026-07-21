@@ -113,6 +113,10 @@ labels can be directional while `signal` is still HOLD.
   elige el primer nivel técnico (MA/swing) dentro de `[0.6, 1.8]·movimiento_esperado`; si no
   hay, usa el movimiento esperado directo. El horizonte usa la relación difusiva `(dist/ATR)²`
   días (antes lineal → daba ~1-2 semanas para todo). Se expone `expected_move_pct`.
+- **Filtro de objetivo mínimo**: `config.MIN_OPPORTUNITY_TARGET_PCT` (8.0). `_meets_min_target`
+  descarta (no recorta) oportunidades cuyo `target_pct` < umbral, en la elegibilidad de
+  `_score_stock` y en el fallback relajado de `compute_top3` (aplica a acciones y ETFs, local y
+  cloud). Configurable, no hardcodeado.
 - **Calibración (`calibration.py` + `/api/calibration`)**: cierra el lazo predicho-vs-real.
   Corre `backtester.run_calibration_trades` sobre 5Y (yfinance) del universo (WATCHLIST +
   escaneados, cap 20, cache 1h) y agrupa por **fuerza de señal** → win-rate/retorno reales,

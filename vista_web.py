@@ -567,6 +567,9 @@ def _score_stock(sym, data):
     ohlc = (data.get("chart") or {}).get("ohlc", [])
     if len(ohlc) < 20:
         return None
+    # No listar oportunidades cuyo objetivo esperado es menor al minimo configurado.
+    if not _meets_min_target(data):
+        return None
 
     # Side-specific backtest stats (the direction the label points to)
     if is_bearish:
@@ -785,6 +788,23 @@ def _compute_price_levels(data):
         "horizon_weeks": horizon_weeks,
         "expected_move_pct": round(expected_pct * 100, 1),
     }
+
+
+def _meets_min_target(data):
+    """True si la oportunidad tiene un objetivo >= MIN_OPPORTUNITY_TARGET_PCT.
+
+    No fuerza ni recorta el objetivo (eso lo estima _compute_price_levels por
+    volatilidad + histórico): solo decide si la oportunidad se lista. Umbral
+    configurable en config.py. Ante error de cálculo, NO filtra (no ocultar por
+    un bug)."""
+    min_pct = getattr(config, "MIN_OPPORTUNITY_TARGET_PCT", 0.0) or 0.0
+    if min_pct <= 0:
+        return True
+    try:
+        levels = _compute_price_levels(data)
+    except Exception:
+        return True
+    return (levels.get("target_pct", 0) or 0) >= min_pct
 
 
 def _generate_rationale(sym, data, levels=None):
@@ -1250,6 +1270,9 @@ def compute_top3(cache):
                 continue  # already scored
             ohlc = (data.get("chart") or {}).get("ohlc", [])
             if len(ohlc) < 20:
+                continue
+            # El fallback relajado tambien respeta el objetivo minimo.
+            if not _meets_min_target(data):
                 continue
             strength = data.get("strength", 0) or 0
             bt = data.get("backtest", {}) or {}
