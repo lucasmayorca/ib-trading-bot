@@ -1250,7 +1250,9 @@ def _extract_chart_data(data, n_bars=90):
 
 
 def compute_top3(cache):
-    """Compute top 3 stock recommendations from analysis_cache."""
+    """Compute top N stock recommendations from analysis_cache (N configurable
+    via config.TOP_RECOMMENDATIONS; el nombre historico 'top3' se conserva)."""
+    top_n = getattr(config, "TOP_RECOMMENDATIONS", 3)
     scored = []
     for sym, data in cache.items():
         if data is None:
@@ -1261,8 +1263,8 @@ def compute_top3(cache):
 
     scored.sort(key=lambda x: x[2], reverse=True)
 
-    # If fewer than 3 eligible, relax filter: include best HOLDs with score > 0
-    if len(scored) < 3:
+    # If fewer than N eligible, relax filter: include best HOLDs with score > 0
+    if len(scored) < top_n:
         for sym, data in cache.items():
             if data is None:
                 continue
@@ -1285,7 +1287,7 @@ def compute_top3(cache):
         scored.sort(key=lambda x: x[2], reverse=True)
 
     # Fetch fundamentals only for top candidates (not all 100)
-    top_syms = [sym for sym, _, _ in scored[:8]]
+    top_syms = [sym for sym, _, _ in scored[:top_n + 3]]
     try:
         _fetch_fundamentals(top_syms)
     except Exception as e:
@@ -1293,7 +1295,7 @@ def compute_top3(cache):
 
     n_bars = 90
     top3 = []
-    for sym, data, score in scored[:3]:
+    for sym, data, score in scored[:top_n]:
         levels = _compute_price_levels(data)
         rationale = _generate_rationale(sym, data, levels)
         bt = data.get("backtest", {}) or {}

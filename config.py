@@ -50,6 +50,9 @@ SIGNAL_MIN_SCORE_SELL = 2.0
 # la oportunidad no se lista.
 MIN_OPPORTUNITY_TARGET_PCT = 8.0
 
+# Cuantas recomendaciones "Top" mostrar en cada scanner (acciones y ETFs).
+TOP_RECOMMENDATIONS = 5
+
 # === RISK MANAGEMENT ===
 MAX_PER_TRADE = 5000     # USD maximo por operacion
 STOP_LOSS_PCT = 3.0      # Stop loss %

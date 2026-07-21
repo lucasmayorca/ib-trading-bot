@@ -84,6 +84,9 @@ labels can be directional while `signal` is still HOLD.
 
 ## Web Dashboard (vista_web.py)
 - Default chart period: 1Y (scanner, top recommendations, portfolio)
+- `compute_top3()` muestra `config.TOP_RECOMMENDATIONS` (5) recomendaciones en cada scanner
+  (acciones y ETFs, local y cloud). El nombre `top3`/`renderTop3` se conserva por historia;
+  el render itera sobre la longitud del array, no asume 3.
 - Counters bar breaks down by signal_label: Compra, Venta, Compra Inminente, Venta Inminente, Virando a Compra/Venta, Zona Extrema, Neutral (only shown if count > 0)
 - Thesis includes: signal label + direction, indicator status (MACD hist, RSI level, Koncorde vs media), moving averages (SMA200/50/20 + golden/death cross), institutional flow (Koncorde azul), target with consistent direction, fundamentals
 - Portfolio "Composicion por Tipo" and "Distribucion por Sector" sections removed
