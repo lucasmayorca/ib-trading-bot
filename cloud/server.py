@@ -1011,6 +1011,11 @@ def api_options_lab_top():
                 option_market=option_market,
             )
             lab["stock_score"] = round(opt_score, 1)
+            try:
+                from vista_web import _compute_price_levels
+                lab["price_levels"] = _compute_price_levels(data)
+            except Exception:
+                pass
             results.append(lab)
         except Exception as e:
             print(f"[OPTIONS_LAB] Error for {sym}: {e}", flush=True)
@@ -1137,6 +1142,12 @@ def api_options_lab(symbol):
             mimetype="application/json",
             status=500,
         )
+
+    try:
+        from vista_web import _compute_price_levels
+        result["price_levels"] = _compute_price_levels(data)
+    except Exception:
+        pass
 
     return Response(to_json(result), mimetype="application/json")
 
@@ -1727,8 +1738,8 @@ def _inject_cloud_setup_tab(html):
 
     # 4. switchTab(): load the setup tab's dynamic content when opened
     html = html.replace(
-        "if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}\n}",
-        "if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}\n"
+        "if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}\n}",
+        "if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}\n"
         "  if(tab==='setup')renderSetup();\n}",
     )
 
