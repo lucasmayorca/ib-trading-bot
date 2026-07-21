@@ -2044,25 +2044,6 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .olab-strat-card.open .olab-strat-body{display:block}
 
 /* Calibracion del modelo */
-.calib-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:14px;overflow:hidden}
-.calib-head{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
-.calib-head:hover{background:rgba(36,86,230,.03)}
-.calib-title{font-size:13px;font-weight:800;color:var(--text)}
-.calib-sub{font-size:11px;font-weight:500;color:var(--muted)}
-.calib-caret{color:var(--muted);transition:transform .2s}
-.calib-caret.open{transform:rotate(180deg)}
-.calib-body{padding:0 16px 16px;border-top:1px solid var(--border)}
-.calib-verdict{padding:10px 12px;border-radius:8px;font-size:12px;font-weight:600;margin:12px 0}
-.calib-verdict.good{background:rgba(11,122,75,.08);color:#0b7a4b}
-.calib-verdict.bad{background:rgba(194,36,54,.08);color:#c22436}
-.calib-verdict.warn{background:rgba(180,83,9,.08);color:#b45309}
-.calib-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:6px}
-.calib-card{border:1px solid var(--border);border-radius:8px;padding:10px 12px}
-.calib-card .ct{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:6px}
-.calib-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;font-variant-numeric:tabular-nums}
-.calib-row .rl{color:var(--muted)}
-.calib-bar{height:6px;border-radius:3px;background:var(--border);margin-top:3px;overflow:hidden}
-.calib-bar>span{display:block;height:100%;border-radius:3px}
 
 /* Strategy detail grid */
 .olab-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px}
@@ -2199,15 +2180,6 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <!-- TAB: SCANNER -->
 <div id="tab-scanner" class="tab-content active">
 <div id="top3-section" class="top3-section" style="display:none"></div>
-<div class="calib-panel">
-  <div class="calib-head" onclick="toggleCalib()">
-    <span class="calib-title">&#x1F3AF; Calibracion del modelo <span class="calib-sub">&mdash; senal predicha vs resultado real (5A)</span></span>
-    <span id="calib-caret" class="calib-caret">&#x25BC;</span>
-  </div>
-  <div id="calib-body" class="calib-body" style="display:none">
-    <div id="calib-content"><div class="tab-loading-text">Cargando calibracion...</div></div>
-  </div>
-</div>
 <div class="content">
   <div class="list-header" id="list-header">
     <span></span><span data-col="sym" onclick="sortListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" onclick="sortListBy('price')">Precio</span>
@@ -2366,62 +2338,6 @@ function switchTab(tab){
   if(tab==='trades'&&!_thLoaded){_thLoaded=true;loadTradesHistory();}
   if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}
   if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}
-}
-
-var _calibLoaded=false;
-function toggleCalib(){
-  var body=document.getElementById('calib-body'), caret=document.getElementById('calib-caret');
-  var open=body.style.display==='none';
-  body.style.display=open?'block':'none';
-  caret.classList.toggle('open',open);
-  if(open&&!_calibLoaded){_calibLoaded=true;loadCalibration();}
-}
-function loadCalibration(){
-  fetch('/api/calibration').then(r=>r.json()).then(renderCalibration)
-    .catch(e=>{document.getElementById('calib-content').innerHTML='<div class="calib-verdict bad">Error: '+e.message+'</div>';});
-}
-function _calibAgg(a){
-  if(!a||a.n===0)return '<span class="rl">sin datos</span>';
-  var wr=a.win_rate!=null?a.win_rate.toFixed(0)+'%':'N/A';
-  var ar=a.avg_return!=null?(a.avg_return>=0?'+':'')+a.avg_return.toFixed(2)+'%':'N/A';
-  var arc=a.avg_return!=null&&a.avg_return>=0?'#0b7a4b':'#c22436';
-  return 'WR '+wr+' &middot; <span style="color:'+arc+'">'+ar+'</span> &middot; n='+a.n;
-}
-function renderCalibration(d){
-  var el=document.getElementById('calib-content');
-  if(d.error){el.innerHTML='<div class="calib-verdict warn">'+d.error+'</div>';return;}
-  var ov=d.overall||{};
-  var h='';
-  // Veredicto general
-  if(ov.n>0){
-    var pos=ov.avg_return>0;
-    var cls=pos?'good':'bad';
-    h+='<div class="calib-verdict '+cls+'">Sobre '+(d.symbols_used||0)+' simbolos y '+ov.n+' senales historicas (5A, neto de costes): '+
-       'win-rate <b>'+ov.win_rate.toFixed(0)+'%</b>, retorno medio <b>'+(ov.avg_return>=0?'+':'')+ov.avg_return.toFixed(2)+'%</b> por operacion. '+
-       (pos?'El sistema muestra edge positivo historico.':'Ojo: edge historico negativo — las senales tal cual no baten el break-even tras costes.')+'</div>';
-  }
-  // Reliability: win-rate por fuerza de senal
-  h+='<div class="calib-grid">';
-  h+='<div class="calib-card"><div class="ct">Win-rate por fuerza de senal</div>';
-  (d.by_strength||[]).forEach(function(b){
-    var wr=b.win_rate!=null?b.win_rate:0;
-    var col=wr>=55?'#0b7a4b':(wr>=45?'#b45309':'#c22436');
-    h+='<div class="calib-row"><span class="rl">'+b.label+'</span><span>'+(b.win_rate!=null?wr.toFixed(0)+'%':'—')+' <span style="color:var(--muted)">(n='+b.n+')</span></span></div>';
-    h+='<div class="calib-bar"><span style="width:'+Math.min(100,wr)+'%;background:'+col+'"></span></div>';
-  });
-  var mono=d.monotonic;
-  h+='<div class="calib-row" style="margin-top:6px"><span class="rl">Monotonica?</span><span style="color:'+(mono===true?'#0b7a4b':(mono===false?'#c22436':'var(--muted)'))+'">'+(mono===true?'Si — mas fuerza, mas aciertos':(mono===false?'No — la fuerza no predice mejor':'insuficiente'))+'</span></div>';
-  h+='</div>';
-  // Regimen
-  h+='<div class="calib-card"><div class="ct">Regimen de tendencia</div>'+
-     '<div class="calib-row"><span class="rl">A favor (SMA200)</span><span>'+_calibAgg(d.by_trend&&d.by_trend.with_trend)+'</span></div>'+
-     '<div class="calib-row"><span class="rl">Contra-tendencia</span><span>'+_calibAgg(d.by_trend&&d.by_trend.counter_trend)+'</span></div></div>';
-  // Direccion
-  h+='<div class="calib-card"><div class="ct">Por direccion</div>'+
-     '<div class="calib-row"><span class="rl">Compras</span><span>'+_calibAgg(d.by_side&&d.by_side.buy)+'</span></div>'+
-     '<div class="calib-row"><span class="rl">Ventas</span><span>'+_calibAgg(d.by_side&&d.by_side.sell)+'</span></div></div>';
-  h+='</div>';
-  el.innerHTML=h;
 }
 
 function loadPortfolio(){
