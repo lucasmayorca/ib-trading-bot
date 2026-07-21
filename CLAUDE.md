@@ -124,8 +124,8 @@ labels can be directional while `signal` is still HOLD.
 - **Calibración (`calibration.py` + `/api/calibration`)**: cierra el lazo predicho-vs-real.
   Corre `backtester.run_calibration_trades` sobre 5Y (yfinance) del universo (WATCHLIST +
   escaneados, cap 20, cache 1h) y agrupa por **fuerza de señal** → win-rate/retorno reales,
-  más monotonicidad y splits por régimen/dirección. UI: panel colapsable arriba del tab
-  Escáner (`.calib-*`, `renderCalibration`). El cloud tiene su propio endpoint espejo.
+  más monotonicidad y splits por régimen/dirección. **Solo API** — el panel de UI se quitó
+  a pedido del usuario (2026-07); el endpoint local y su espejo cloud siguen vivos.
 
 ## Patterns
 - IB API wrapper pattern (EWrapper + EClient inheritance)
