@@ -2383,10 +2383,10 @@ function marketStatusText(){
 }
 const REFRESH_MS=300000;
 const DAILY_BARS={'ALL':9999,'5Y':9999,'1Y':252,'3M':63,'1M':22,'1W':5,'1D':1};
-// Frecuencia de barras por ventana: ALL/5Y/3M -> velas semanales (agregadas de
-// los diarios), 1Y -> diario, 1M -> 4h, 1W -> 1h, 1D -> 15min (via /api/bars).
+// Frecuencia de barras por ventana: ALL/5Y -> velas semanales (agregadas de
+// los diarios), 1Y/3M -> diario, 1M -> 4h, 1W -> 1h, 1D -> 15min (via /api/bars).
 const INTRADAY_P={'1M':'4h','1W':'1h','1D':'15m'};
-const WEEKLY_P={'ALL':9999,'5Y':9999,'3M':66};   // periodo -> dias diarios a agregar en semanal
+const WEEKLY_P={'ALL':9999,'5Y':9999};   // periodo -> dias diarios a agregar en semanal
 let _data=null,_charts={},_periods={},_intradayCache={};
 let _activeTab='scanner';
 let _portData=null;

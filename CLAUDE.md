@@ -85,8 +85,7 @@ labels can be directional while `signal` is still HOLD.
 ## Web Dashboard (vista_web.py)
 - Default chart period: 1Y (scanner, top recommendations, portfolio)
 - **Frecuencia de velas por ventana** (`INTRADAY_P`/`WEEKLY_P` en el JS): ALL/5Y → semanal
-  (agregado de diarios via `toWeekly`), 3M → semanal (últimos ~66 diarios), 1Y → diario,
-  1M → 4h, 1W → 1h, 1D → 15min. Intradía vía `/api/bars/<sym>/<4h|1h|15m>`: IB si está
+  (agregado de diarios via `toWeekly`), 1Y y 3M → diario, 1M → 4h, 1W → 1h, 1D → 15min. Intradía vía `/api/bars/<sym>/<4h|1h|15m>`: IB si está
   conectado, **fallback yfinance** (`_fetch_bars_yf`: 4h resampleado de 1h; 15m = últimos 2
   días de trading) — sin esto 1M/1W/1D quedaban vacíos con TWS caída. El cloud tiene su
   propio `/api/bars` (yfinance directo, mismo contrato `{"ohlc":[...]}` — antes hacía
