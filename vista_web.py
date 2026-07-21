@@ -3564,8 +3564,9 @@ function renderTop3(top3){
     let arCol=r.avg_return!=null&&r.avg_return>=0?'var(--buy)':'var(--sell)';
     let curP=_recPeriods[i]||'1Y';
 
-    // On first render open #1; on subsequent renders preserve user state
-    let shouldOpen=_recFirstRender?(i===0):recOpenSet.has(i);
+    // Arrancar todas contraidas; el usuario elige cual desplegar. En re-renders
+    // se preserva lo que el usuario tenia abierto.
+    let shouldOpen=recOpenSet.has(i);
     html+='<details class="rec-details '+sc+'"'+(shouldOpen?' open':'')+' data-idx="'+i+'">';
     // ── Summary row ──
     html+='<summary>';
@@ -4376,7 +4377,8 @@ function renderEtfTop3(top3){
     let arCol=r.avg_return!=null&&r.avg_return>=0?'var(--buy)':'var(--sell)';
     let curP=_etfRecPeriods[i]||'1Y';
 
-    let shouldOpen=_etfRecFirstRender?(i===0):recOpenSet.has(i);
+    // Arrancar todas contraidas; el usuario elige cual desplegar.
+    let shouldOpen=recOpenSet.has(i);
     html+='<details class="rec-details '+sc+'"'+(shouldOpen?' open':'')+' data-idx="'+i+'">';
     html+='<summary>';
     html+='<span class="rec-arrow">&#9654;</span>';
