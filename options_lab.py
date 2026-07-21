@@ -548,7 +548,7 @@ def _derive_metrics(legs, S, T, r, sigma):
     prob_profit = round(profitable / n_sims * 100, 1)
     expected_value = (pnl_sum / n_sims) * 100   # EV en $ por posicion (1 contrato)
 
-    risk_reward = round(abs(max_profit / max_loss), 2) if max_loss != 0 else float("inf")
+    risk_reward = round(abs(max_profit / max_loss), 2) if max_loss != 0 else 99.0
     capital = abs(max_loss) if max_loss < 0 else abs(net * 100)
 
     return {

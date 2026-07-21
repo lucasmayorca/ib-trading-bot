@@ -585,24 +585,29 @@ def api_market_pulse():
     })
 
 
+_bars_cache = {}   # (symbol, period) -> {"data": ..., "ts": float}
+
+
 @app.route("/api/bars/<symbol>/<period>")
 @login_required
 def api_bars(symbol, period):
-    store = get_user_store(request.user_id)
-    key = f"bars_{symbol}_{period}"
-    bars = store.get(key)
-    if bars:
-        return Response(to_json({"bars": bars, "cached": True}), mimetype="application/json")
-    user_id = request.user_id
-    bridge_sid = None
-    for sid, uid in bridge_sessions.items():
-        if uid == user_id:
-            bridge_sid = sid
-            break
-    if not bridge_sid:
-        return jsonify({"error": "Bridge not connected"}), 503
-    socketio.emit("request_bars", {"symbol": symbol, "period": period}, to=bridge_sid)
-    return jsonify({"status": "requested", "message": "Data is being fetched, retry in a few seconds"}), 202
+    """Barras intradiarias (4h/1h/15m) via yfinance, mismo contrato {"ohlc": [...]}
+    que el dashboard local espera. (Antes hacia un round-trip al bridge y devolvia
+    202/otro shape -> los graficos 1M/1W/1D nunca cargaban en el cloud.)"""
+    if period not in ("4h", "1h", "15m"):
+        return Response('{"error":"invalid"}', status=400, mimetype="application/json")
+    cache_key = (symbol, period)
+    cached = _bars_cache.get(cache_key)
+    if cached and time.time() - cached["ts"] < 300:
+        return Response(to_json(cached["data"]), mimetype="application/json")
+    result = {"ohlc": []}
+    try:
+        from vista_web import _fetch_bars_yf
+        result["ohlc"] = _fetch_bars_yf(symbol, period)
+    except Exception as e:
+        print(f"[BARS] Error {period} {symbol}: {e}", flush=True)
+    _bars_cache[cache_key] = {"data": result, "ts": time.time()}
+    return Response(to_json(result), mimetype="application/json")
 
 
 def _build_cloud_position_analysis(sym, position, data, n_bars=90):

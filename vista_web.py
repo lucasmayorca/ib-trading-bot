@@ -2383,6 +2383,10 @@ function marketStatusText(){
 }
 const REFRESH_MS=300000;
 const DAILY_BARS={'ALL':9999,'5Y':9999,'1Y':252,'3M':63,'1M':22,'1W':5,'1D':1};
+// Frecuencia de barras por ventana: ALL/5Y/3M -> velas semanales (agregadas de
+// los diarios), 1Y -> diario, 1M -> 4h, 1W -> 1h, 1D -> 15min (via /api/bars).
+const INTRADAY_P={'1M':'4h','1W':'1h','1D':'15m'};
+const WEEKLY_P={'ALL':9999,'5Y':9999,'3M':66};   // periodo -> dias diarios a agregar en semanal
 let _data=null,_charts={},_periods={},_intradayCache={};
 let _activeTab='scanner';
 let _portData=null;
@@ -2753,8 +2757,8 @@ function renderPortAnalCharts(sym,rec,pos,period){
   let candleEl=document.getElementById('portanal_candle_'+sym);
   if(candleEl){
     candleEl.innerHTML='';
-    if(period==='1M'||period==='1D'){
-      let apiP=period==='1M'?'4h':'15m';
+    if(INTRADAY_P[period]){
+      let apiP=INTRADAY_P[period];
       let cacheKey=sym+'_'+apiP;
       if(_recIntradayCache[cacheKey]){
         let chart=_createLW(candleEl,true);chart.applyOptions({height:340});
@@ -2772,8 +2776,7 @@ function renderPortAnalCharts(sym,rec,pos,period){
     }else if(ch&&ch.ohlc&&ch.ohlc.length>=5){
       let chart=_createLW(candleEl,false);chart.applyOptions({height:340});
       let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      if(period==='5Y'){cs.setData(toWeekly(ch.ohlc));}
-      else if(period==='ALL'){cs.setData(ch.ohlc);_addMAs(chart,ch.ohlc,ch.mas,0);}
+      if(WEEKLY_P[period]){let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);cs.setData(toWeekly(src));}
       else{let o=sl(ch.ohlc,indBars);cs.setData(o);_addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);}
       _portAnalPriceLines(cs,rec,pos.costo_promedio);
       chart.timeScale().fitContent();e.lw=chart;
@@ -3220,7 +3223,7 @@ function destroyDetailCharts(idx){
 }
 
 function _createLW(el,timeVis){
-  return LightweightCharts.createChart(el,{
+  let chart=LightweightCharts.createChart(el,{
     width:el.clientWidth,height:310,
     layout:{background:{color:'#ffffff'},textColor:'#6d7480',fontSize:10,fontFamily:"'Inter',system-ui,sans-serif"},
     grid:{vertLines:{color:'#ecebe6'},horzLines:{color:'#ecebe6'}},
@@ -3228,6 +3231,17 @@ function _createLW(el,timeVis){
     timeScale:{borderColor:'#dcdad3',timeVisible:!!timeVis},
     rightPriceScale:{borderColor:'#dcdad3'},
   });
+  // Si el contenedor midio mal al crear (detalle recien abierto, scroll en curso),
+  // re-medir y re-encajar en el proximo layout.
+  setTimeout(function(){
+    try{
+      if(el.clientWidth>0&&Math.abs(el.clientWidth-chart.options().width)>4){
+        chart.applyOptions({width:el.clientWidth});
+        chart.timeScale().fitContent();
+      }
+    }catch(e){}
+  },120);
+  return chart;
 }
 function _addMAs(chart,ohlc,mas,startIdx){
   if(!mas)return;
@@ -3338,14 +3352,14 @@ function renderDetailCharts(idx,sym,period){
   let ch=r.chart;
   let indBars=DAILY_BARS[period]||252;
 
-  // Candlestick: depends on period
-  if(period==='5Y'){
-    _charts[idx]={lw:renderCandleWeekly('candle_'+idx,ch.ohlc,ch.mas)};
-  }else if(period==='ALL'){
-    _charts[idx]={lw:renderCandleDaily('candle_'+idx,ch.ohlc,ch.mas,ch.ohlc.length)};
-  }else if(period==='1M'||period==='1D'){
-    // Intraday: fetch on demand
-    let apiP=period==='1M'?'4h':'15m';
+  // Candlestick: frecuencia segun ventana (semanal / diario / intradiario)
+  if(WEEKLY_P[period]){
+    // ALL y 5Y: semanal de todo el historico; 3M: semanal de los ultimos ~3 meses
+    let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);
+    _charts[idx]={lw:renderCandleWeekly('candle_'+idx,src,ch.mas)};
+  }else if(INTRADAY_P[period]){
+    // Intraday: fetch on demand (1M->4h, 1W->1h, 1D->15m)
+    let apiP=INTRADAY_P[period];
     let cacheKey=sym+'_'+apiP;
     if(_intradayCache[cacheKey]){
       _charts[idx]={lw:renderCandleIntraday('candle_'+idx,_intradayCache[cacheKey])};
@@ -3365,7 +3379,7 @@ function renderDetailCharts(idx,sym,period){
       _charts[idx]={};
     }
   }else{
-    // Daily (1Y, 3M, 1W)
+    // Diario (1Y)
     let bars=DAILY_BARS[period]||252;
     _charts[idx]={lw:renderCandleDaily('candle_'+idx,ch.ohlc,ch.mas,bars)};
   }
@@ -3546,9 +3560,9 @@ function renderRecDetailCharts(idx,rec,period){
   let candleEl=document.getElementById('rec_candle_'+idx);
   if(candleEl){
     candleEl.innerHTML='';
-    if(period==='1M'||period==='1D'){
-      // Intraday
-      let apiP=period==='1M'?'4h':'15m';
+    if(INTRADAY_P[period]){
+      // Intraday (1M->4h, 1W->1h, 1D->15m)
+      let apiP=INTRADAY_P[period];
       let cacheKey=sym+'_'+apiP;
       if(_recIntradayCache[cacheKey]){
         let chart=_createLW(candleEl,true);chart.applyOptions({height:360});
@@ -3566,13 +3580,12 @@ function renderRecDetailCharts(idx,rec,period){
         }).catch(e=>console.error('Rec intraday error:',e));
       }
     }else if(ch&&ch.ohlc&&ch.ohlc.length>=5){
-      // Daily / weekly
+      // Semanal (ALL/5Y/3M) o diario (1Y)
       let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
       let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      if(period==='5Y'){
-        let weekly=toWeekly(ch.ohlc);cs.setData(weekly);
-      }else if(period==='ALL'){
-        cs.setData(ch.ohlc);_addMAs(chart,ch.ohlc,ch.mas,0);
+      if(WEEKLY_P[period]){
+        let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);
+        cs.setData(toWeekly(src));
       }else{
         let o=sl(ch.ohlc,indBars);cs.setData(o);
         _addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);
@@ -4218,11 +4231,15 @@ function renderEtfDetailCharts(idx,sym,period){
   destroyEtfDetailCharts(idx);
   if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
   let bars=DAILY_BARS[period]||252;
-  if(period==='1D'||period==='1W'){
-    let apiP=period==='1D'?'15m':'4h';
+  if(INTRADAY_P[period]){
+    // 1M->4h, 1W->1h, 1D->15m
+    let apiP=INTRADAY_P[period];
     fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
       if(d.ohlc)renderCandleIntraday('etf_candle_'+idx,d.ohlc);
     });
+  } else if(WEEKLY_P[period]){
+    let src=WEEKLY_P[period]>=9999?r.chart.ohlc:r.chart.ohlc.slice(-WEEKLY_P[period]);
+    renderCandleWeekly('etf_candle_'+idx,src,r.chart.mas);
   } else {
     renderCandleDaily('etf_candle_'+idx,r.chart.ohlc,r.chart.mas,bars);
   }
@@ -4445,8 +4462,8 @@ function renderEtfRecDetailCharts(idx,rec,period){
   let candleEl=document.getElementById('etfrec_candle_'+idx);
   if(candleEl){
     candleEl.innerHTML='';
-    if(period==='1M'||period==='1D'){
-      let apiP=period==='1M'?'4h':'15m';
+    if(INTRADAY_P[period]){
+      let apiP=INTRADAY_P[period];
       let cacheKey=sym+'_'+apiP;
       if(_etfRecIntradayCache[cacheKey]){
         let chart=_createLW(candleEl,true);chart.applyOptions({height:360});
@@ -4466,10 +4483,9 @@ function renderEtfRecDetailCharts(idx,rec,period){
     }else if(ch&&ch.ohlc&&ch.ohlc.length>=5){
       let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
       let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      if(period==='5Y'){
-        let weekly=toWeekly(ch.ohlc);cs.setData(weekly);
-      }else if(period==='ALL'){
-        cs.setData(ch.ohlc);_addMAs(chart,ch.ohlc,ch.mas,0);
+      if(WEEKLY_P[period]){
+        let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);
+        cs.setData(toWeekly(src));
       }else{
         let o=sl(ch.ohlc,indBars);cs.setData(o);
         _addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);
@@ -4655,6 +4671,7 @@ setInterval(function(){if(_activeTab==='portfolio'&&_portLoaded){_portLoaded=fal
 // ══════════════════════════════════════════════════════════════
 
 let _olabData=null;
+function _n(v,d){return(v!=null&&isFinite(v))?v.toFixed(d):'--';}
 
 function loadOptionsLab(sym){
   sym=sym||(document.getElementById('olab-symbol-input').value||'').trim().toUpperCase();
@@ -4765,23 +4782,23 @@ function renderStockForecast(d){
   // Price target card
   html+='<div class="olab-forecast-card target">'+
     '<div class="olab-fc-label">Precio Objetivo</div>'+
-    '<div class="olab-fc-value" style="color:'+dirColor+'">$'+pl.target.toFixed(2)+'</div>'+
-    '<div class="olab-fc-sub">'+(isBear?'-':'+')+targetPct.toFixed(1)+'% desde actual</div>'+
-    '<div class="olab-fc-basis">'+pl.target_basis+'</div>'+
+    '<div class="olab-fc-value" style="color:'+dirColor+'">$'+_n(pl.target,2)+'</div>'+
+    '<div class="olab-fc-sub">'+(isBear?'-':'+')+_n(targetPct,1)+'% desde actual</div>'+
+    '<div class="olab-fc-basis">'+(pl.target_basis||'')+'</div>'+
   '</div>';
 
   // Entry zone card
   html+='<div class="olab-forecast-card">'+
     '<div class="olab-fc-label">Zona de Entrada</div>'+
-    '<div class="olab-fc-value">$'+pl.entry_low.toFixed(2)+' &ndash; $'+pl.entry_high.toFixed(2)+'</div>'+
-    '<div class="olab-fc-sub">Precio actual: $'+price.toFixed(2)+'</div>'+
+    '<div class="olab-fc-value">$'+_n(pl.entry_low,2)+' &ndash; $'+_n(pl.entry_high,2)+'</div>'+
+    '<div class="olab-fc-sub">Precio actual: $'+_n(price,2)+'</div>'+
   '</div>';
 
   // Stop loss card
   html+='<div class="olab-forecast-card">'+
     '<div class="olab-fc-label">Stop Loss</div>'+
-    '<div class="olab-fc-value" style="color:#c22436">$'+pl.stop_loss.toFixed(2)+'</div>'+
-    '<div class="olab-fc-sub">-'+stopDist.toFixed(1)+'% | R/R: '+rr.toFixed(1)+'x</div>'+
+    '<div class="olab-fc-value" style="color:#c22436">$'+_n(pl.stop_loss,2)+'</div>'+
+    '<div class="olab-fc-sub">-'+_n(stopDist,1)+'% | R/R: '+_n(rr,1)+'x</div>'+
   '</div>';
 
   // Backtest expected card
@@ -4789,8 +4806,8 @@ function renderStockForecast(d){
     let btColor=btAvg>=0?'#0b7a4b':'#c22436';
     html+='<div class="olab-forecast-card">'+
       '<div class="olab-fc-label">Movimiento Esperado (hist.)</div>'+
-      '<div class="olab-fc-value" style="color:'+btColor+'">'+(btAvg>=0?'+':'')+btAvg.toFixed(1)+'%</div>'+
-      '<div class="olab-fc-sub">Win rate: '+(btWr||0).toFixed(0)+'%'+
+      '<div class="olab-fc-value" style="color:'+btColor+'">'+(btAvg>=0?'+':'')+_n(btAvg,1)+'%</div>'+
+      '<div class="olab-fc-sub">Win rate: '+_n(btWr||0,0)+'%'+
         (btP10!=null?' | P10: '+btP10+'% P90: '+btP90+'%':'')+
       '</div>'+
     '</div>';
@@ -4819,16 +4836,16 @@ function renderForecastBar(price,pl,isBear){
   html+='<div class="olab-forecast-bar">';
 
   // Entry zone band
-  html+='<div class="olab-fb-zone entry" style="left:'+pct(pl.entry_low)+'%;width:'+((pl.entry_high-pl.entry_low)/range*100).toFixed(1)+'%"></div>';
+  html+='<div class="olab-fb-zone entry" style="left:'+pct(pl.entry_low)+'%;width:'+_n((pl.entry_high-pl.entry_low)/range*100,1)+'%"></div>';
 
   // Stop marker
-  html+='<div class="olab-fb-marker stop" style="left:'+pct(pl.stop_loss)+'%"><div class="dot"></div><div class="lbl">Stop $'+pl.stop_loss.toFixed(0)+'</div></div>';
+  html+='<div class="olab-fb-marker stop" style="left:'+pct(pl.stop_loss)+'%"><div class="dot"></div><div class="lbl">Stop $'+_n(pl.stop_loss,0)+'</div></div>';
 
   // Current price marker
-  html+='<div class="olab-fb-marker current" style="left:'+pct(price)+'%"><div class="dot"></div><div class="lbl">Actual $'+price.toFixed(0)+'</div></div>';
+  html+='<div class="olab-fb-marker current" style="left:'+pct(price)+'%"><div class="dot"></div><div class="lbl">Actual $'+_n(price,0)+'</div></div>';
 
   // Target marker
-  html+='<div class="olab-fb-marker target" style="left:'+pct(pl.target)+'%"><div class="dot"></div><div class="lbl">Obj $'+pl.target.toFixed(0)+'</div></div>';
+  html+='<div class="olab-fb-marker target" style="left:'+pct(pl.target)+'%"><div class="dot"></div><div class="lbl">Obj $'+_n(pl.target,0)+'</div></div>';
 
   html+='</div></div>';
   return html;
@@ -4937,7 +4954,8 @@ function renderStrategies(d){
     let rank=s.rank||i+1;
     let rankCls=rank===1?'gold':(rank===2?'silver':(rank===3?'bronze':'normal'));
 
-    let scoreColor=s.score>=70?'#0b7a4b':(s.score>=50?'#b45309':(s.score>=30?'#4262d9':'#c22436'));
+    let sc=s.score||0;
+    let scoreColor=sc>=70?'#0b7a4b':(sc>=50?'#b45309':(sc>=30?'#4262d9':'#c22436'));
     let biasCls=s.bias==='bullish'?'bullish':(s.bias==='bearish'?'bearish':'neutral');
     let biasLabel=s.bias==='bullish'?'ALCISTA':(s.bias==='bearish'?'BAJISTA':'NEUTRAL');
 
@@ -4959,13 +4977,13 @@ function renderStrategies(d){
           '<div class="olab-strat-desc">'+s.description+'</div>'+
         '</div>'+
         '<div class="olab-strat-metrics">'+
-          '<div class="olab-strat-metric"><div class="val" style="color:'+mpColor+'">$'+(s.max_profit>=0?'+':'')+s.max_profit.toFixed(0)+'</div><div class="lbl">Max Profit</div></div>'+
-          '<div class="olab-strat-metric"><div class="val" style="color:'+mlColor+'">$'+s.max_loss.toFixed(0)+'</div><div class="lbl">Max Loss</div></div>'+
-          '<div class="olab-strat-metric"><div class="val">'+s.prob_profit.toFixed(0)+'%</div><div class="lbl">Prob. Profit</div></div>'+
-          (ev!=null?'<div class="olab-strat-metric"><div class="val" style="color:'+evColor+'">$'+(ev>=0?'+':'')+ev.toFixed(0)+'</div><div class="lbl">Valor Esp.</div></div>':'')+
-          '<div class="olab-strat-metric"><div class="val">'+s.risk_reward.toFixed(1)+'x</div><div class="lbl">R/R</div></div>'+
+          '<div class="olab-strat-metric"><div class="val" style="color:'+mpColor+'">$'+((s.max_profit||0)>=0?'+':'')+_n(s.max_profit,0)+'</div><div class="lbl">Max Profit</div></div>'+
+          '<div class="olab-strat-metric"><div class="val" style="color:'+mlColor+'">$'+_n(s.max_loss,0)+'</div><div class="lbl">Max Loss</div></div>'+
+          '<div class="olab-strat-metric"><div class="val">'+_n(s.prob_profit,0)+'%</div><div class="lbl">Prob. Profit</div></div>'+
+          (ev!=null?'<div class="olab-strat-metric"><div class="val" style="color:'+evColor+'">$'+(ev>=0?'+':'')+_n(ev,0)+'</div><div class="lbl">Valor Esp.</div></div>':'')+
+          '<div class="olab-strat-metric"><div class="val">'+_n(s.risk_reward,1)+'x</div><div class="lbl">R/R</div></div>'+
         '</div>'+
-        '<div class="olab-strat-score" style="background:'+scoreColor+'22;color:'+scoreColor+';border:2px solid '+scoreColor+'">'+s.score.toFixed(0)+'</div>'+
+        '<div class="olab-strat-score" style="background:'+scoreColor+'22;color:'+scoreColor+';border:2px solid '+scoreColor+'">'+_n(s.score,0)+'</div>'+
         '<div class="olab-strat-expand">&#x25BC;</div>'+
       '</div>'+
       '<div class="olab-strat-body">'+renderStrategyDetail(s,i)+'</div>'+
@@ -4984,10 +5002,10 @@ function renderStrategyDetail(s,idx){
     '<div class="olab-payoff-chart"><canvas id="payoff-canvas-'+idx+'" class="olab-payoff-canvas"></canvas></div>'+
     '<div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap">';
   if(s.breakevens&&s.breakevens.length){
-    html+='<div style="font-size:10px;color:var(--muted)">Breakeven: '+s.breakevens.map(b=>'$'+b.toFixed(2)).join(', ')+'</div>';
+    html+='<div style="font-size:10px;color:var(--muted)">Breakeven: '+s.breakevens.map(b=>'$'+_n(b,2)).join(', ')+'</div>';
   }
-  html+='<div style="font-size:10px;color:var(--muted)">Capital: $'+s.capital_required.toFixed(0)+'</div>';
-  html+='<div style="font-size:10px;color:var(--muted)">Prima neta: $'+(s.net_premium>=0?'+':'')+s.net_premium.toFixed(0)+'</div>';
+  html+='<div style="font-size:10px;color:var(--muted)">Capital: $'+_n(s.capital_required,0)+'</div>';
+  html+='<div style="font-size:10px;color:var(--muted)">Prima neta: $'+((s.net_premium||0)>=0?'+':'')+_n(s.net_premium,0)+'</div>';
   html+='</div>';
 
   if(s.iv_edge){
@@ -5006,9 +5024,9 @@ function renderStrategyDetail(s,idx){
     let capReq=s.capital_required||1;
     let retPct=capReq>0?(closest.pnl/capReq*100):0;
     html+='<div style="margin-top:8px;padding:6px 10px;border-radius:6px;background:'+(closest.pnl>=0?'rgba(11,122,75,.08)':'rgba(194,36,54,.08)')+';font-size:11px">'+
-      '<strong style="color:'+pnlColor+'">Si el activo llega al objetivo ($'+tgt.toFixed(0)+'):</strong> '+
-      '<span style="color:'+pnlColor+';font-weight:800">'+(closest.pnl>=0?'+':'')+closest.pnl.toFixed(0)+' USD</span>'+
-      ' <span style="color:var(--muted)">('+(retPct>=0?'+':'')+retPct.toFixed(1)+'% sobre capital)</span>'+
+      '<strong style="color:'+pnlColor+'">Si el activo llega al objetivo ($'+_n(tgt,0)+'):</strong> '+
+      '<span style="color:'+pnlColor+';font-weight:800">'+(closest.pnl>=0?'+':'')+_n(closest.pnl,0)+' USD</span>'+
+      ' <span style="color:var(--muted)">('+(retPct>=0?'+':'')+_n(retPct,1)+'% sobre capital)</span>'+
     '</div>';
   }
 
@@ -5019,11 +5037,11 @@ function renderStrategyDetail(s,idx){
   html+='<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:8px">Griegas Agregadas</div>';
   let g=s.greeks_agg||{};
   html+='<table class="olab-greeks-table"><thead><tr><th>Griega</th><th>Valor</th><th>Significado</th></tr></thead><tbody>';
-  html+='<tr><td style="font-weight:700">Delta</td><td>'+(g.delta||0).toFixed(3)+'</td><td style="color:var(--muted)">'+deltaExplain(g.delta)+'</td></tr>';
-  html+='<tr><td style="font-weight:700">Gamma</td><td>'+(g.gamma||0).toFixed(4)+'</td><td style="color:var(--muted)">Aceleracion del delta</td></tr>';
-  html+='<tr><td style="font-weight:700">Theta</td><td style="color:'+(g.theta>=0?'#0b7a4b':'#c22436')+'">'+(g.theta||0).toFixed(3)+'</td><td style="color:var(--muted)">'+(g.theta>=0?'Gana':'Pierde')+' $'+Math.abs((g.theta||0)*100).toFixed(0)+'/dia</td></tr>';
-  html+='<tr><td style="font-weight:700">Vega</td><td>'+(g.vega||0).toFixed(3)+'</td><td style="color:var(--muted)">'+(g.vega>=0?'Beneficia':'Perjudica')+' si IV sube</td></tr>';
-  html+='<tr><td style="font-weight:700">Rho</td><td>'+(g.rho||0).toFixed(3)+'</td><td style="color:var(--muted)">Sensibilidad a tasa</td></tr>';
+  html+='<tr><td style="font-weight:700">Delta</td><td>'+_n(g.delta||0,3)+'</td><td style="color:var(--muted)">'+deltaExplain(g.delta)+'</td></tr>';
+  html+='<tr><td style="font-weight:700">Gamma</td><td>'+_n(g.gamma||0,4)+'</td><td style="color:var(--muted)">Aceleracion del delta</td></tr>';
+  html+='<tr><td style="font-weight:700">Theta</td><td style="color:'+((g.theta||0)>=0?'#0b7a4b':'#c22436')+'">'+_n(g.theta||0,3)+'</td><td style="color:var(--muted)">'+((g.theta||0)>=0?'Gana':'Pierde')+' $'+Math.abs((g.theta||0)*100).toFixed(0)+'/dia</td></tr>';
+  html+='<tr><td style="font-weight:700">Vega</td><td>'+_n(g.vega||0,3)+'</td><td style="color:var(--muted)">'+((g.vega||0)>=0?'Beneficia':'Perjudica')+' si IV sube</td></tr>';
+  html+='<tr><td style="font-weight:700">Rho</td><td>'+_n(g.rho||0,3)+'</td><td style="color:var(--muted)">Sensibilidad a tasa</td></tr>';
   html+='</tbody></table>';
 
   // Legs table
@@ -5033,7 +5051,7 @@ function renderStrategyDetail(s,idx){
     for(let leg of s.legs){
       let ac=leg.action==='BUY'?'<span style="color:#0b7a4b">COMPRA</span>':'<span style="color:#c22436">VENTA</span>';
       let tipo=leg.right==='C'?'Call':'Put';
-      html+='<tr><td>'+ac+'</td><td>'+tipo+'</td><td>$'+leg.strike.toFixed(0)+'</td><td>$'+leg.premium.toFixed(2)+'</td><td>'+(leg.greeks_data.delta||0).toFixed(3)+'</td><td>'+leg.qty+'</td></tr>';
+      html+='<tr><td>'+ac+'</td><td>'+tipo+'</td><td>$'+_n(leg.strike,0)+'</td><td>$'+_n(leg.premium,2)+'</td><td>'+_n((leg.greeks_data||{}).delta||0,3)+'</td><td>'+leg.qty+'</td></tr>';
     }
     html+='</tbody></table>';
   }
@@ -5239,9 +5257,9 @@ function drawPayoffChart(idx){
 
   // Max profit label
   ctx.fillStyle='#0b7a4b';
-  ctx.fillText('Max +$'+strat.max_profit.toFixed(0),4,y(maxP)+12);
+  ctx.fillText('Max +$'+_n(strat.max_profit,0),4,y(maxP)+12);
   ctx.fillStyle='#c22436';
-  ctx.fillText('Max $'+strat.max_loss.toFixed(0),4,y(minP)-4);
+  ctx.fillText('Max $'+_n(strat.max_loss,0),4,y(minP)-4);
 }
 
 // Multi-symbol rendering
@@ -5305,10 +5323,10 @@ function toggleOlabMulti(idx,sym){
       let dirC=isBear?'#c22436':'#0b7a4b';
       let stopDist=(d.price||1)>0?Math.abs(plm.stop_loss-(d.price||0))/(d.price||1)*100:0;
       html+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">';
-      html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Objetivo</div><div style="font-size:16px;font-weight:800;color:'+dirC+'">$'+plm.target.toFixed(2)+' <span style="font-size:11px">'+(isBear?'-':'+')+plm.target_pct.toFixed(1)+'%</span></div></div>';
-      html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Entrada</div><div style="font-size:14px;font-weight:700;color:var(--text)">$'+plm.entry_low.toFixed(2)+' &ndash; $'+plm.entry_high.toFixed(2)+'</div></div>';
-      html+='<div style="flex:1;min-width:100px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Stop Loss</div><div style="font-size:14px;font-weight:700;color:#c22436">$'+plm.stop_loss.toFixed(2)+' <span style="font-size:10px">(-'+stopDist.toFixed(1)+'%)</span></div></div>';
-      html+='<div style="flex:1;min-width:80px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">R/R</div><div style="font-size:14px;font-weight:700;color:var(--text)">'+(plm.risk_reward||0).toFixed(1)+'x</div></div>';
+      html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Objetivo</div><div style="font-size:16px;font-weight:800;color:'+dirC+'">$'+_n(plm.target,2)+' <span style="font-size:11px">'+(isBear?'-':'+')+_n(plm.target_pct,1)+'%</span></div></div>';
+      html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Entrada</div><div style="font-size:14px;font-weight:700;color:var(--text)">$'+_n(plm.entry_low,2)+' &ndash; $'+_n(plm.entry_high,2)+'</div></div>';
+      html+='<div style="flex:1;min-width:100px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Stop Loss</div><div style="font-size:14px;font-weight:700;color:#c22436">$'+_n(plm.stop_loss,2)+' <span style="font-size:10px">(-'+_n(stopDist,1)+'%)</span></div></div>';
+      html+='<div style="flex:1;min-width:80px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">R/R</div><div style="font-size:14px;font-weight:700;color:var(--text)">'+_n(plm.risk_reward||0,1)+'x</div></div>';
       if(plm.horizon_weeks) html+='<div style="flex:1;min-width:80px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Horizonte</div><div style="font-size:14px;font-weight:700;color:#4262d9">'+plm.horizon_weeks+'</div></div>';
       html+='</div>';
     }
@@ -5355,11 +5373,11 @@ function toggleOlabMulti(idx,sym){
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);font-weight:700">'+(s.rank||'')+'</td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle)">'+s.name+' <span style="color:var(--muted)">'+s.dte+'d</span></td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:center"><span class="olab-bias '+biasCls+'">'+biasLbl+'</span></td>'+
-        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#0b7a4b">$'+s.max_profit.toFixed(0)+'</td>'+
-        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#c22436">$'+s.max_loss.toFixed(0)+'</td>'+
-        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right">'+s.prob_profit.toFixed(0)+'%</td>'+
-        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right">'+s.risk_reward.toFixed(1)+'x</td>'+
-        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;font-weight:700">'+s.score.toFixed(0)+'</td>'+
+        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#0b7a4b">$'+_n(s.max_profit,0)+'</td>'+
+        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#c22436">$'+_n(s.max_loss,0)+'</td>'+
+        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right">'+_n(s.prob_profit,0)+'%</td>'+
+        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right">'+_n(s.risk_reward,1)+'x</td>'+
+        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;font-weight:700">'+_n(s.score,0)+'</td>'+
       '</tr>';
     }
     html+='</tbody></table>';
@@ -5939,11 +5957,54 @@ def _build_ohlc(df):
     return ohlc
 
 
+def _fetch_bars_yf(symbol, period):
+    """Barras intraday/1h via yfinance (fallback cuando TWS no responde).
+
+    period: '4h' (1 mes, resampleado de 1h), '1h' (1 semana), '15m' (2 dias).
+    Devuelve lista OHLC con timestamps unix para Lightweight Charts."""
+    import yfinance as yf
+    cfg = {
+        "4h": ("1mo", "1h"),
+        "1h": ("5d", "1h"),
+        "15m": ("5d", "15m"),
+    }
+    if period not in cfg:
+        return []
+    yf_period, interval = cfg[period]
+    h = yf.Ticker(symbol.replace(" ", "-")).history(
+        period=yf_period, interval=interval, auto_adjust=False)
+    if h is None or h.empty:
+        return []
+    if period == "4h":
+        # yfinance no tiene 4h nativo: resamplear desde 1h
+        h = h.resample("4h").agg({"Open": "first", "High": "max",
+                                  "Low": "min", "Close": "last"}).dropna()
+    if period == "15m":
+        # Mantener solo los ultimos 2 dias de trading
+        days = sorted(set(h.index.date))[-2:]
+        h = h[[d in days for d in h.index.date]]
+    ohlc = []
+    for ts, row in h.iterrows():
+        try:
+            ohlc.append({
+                "time": int(ts.timestamp()),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+            })
+        except (ValueError, TypeError):
+            continue
+    return ohlc
+
+
 @flask_app.route("/api/bars/<symbol>/<period>")
 def api_bars(symbol, period):
-    """Endpoint on-demand para barras intraday (4h, 15min)."""
+    """Endpoint on-demand para barras intraday (4h, 1h, 15min).
+    IB primero si esta conectado; fallback a yfinance (TWS caida/ausente)."""
     configs = {
         "4h": ("1 M", "4 hours"),
+        "1h": ("1 W", "1 hour"),
         "15m": ("2 D", "15 mins"),
     }
     if period not in configs:
@@ -5957,26 +6018,35 @@ def api_bars(symbol, period):
     dur, bar_size = configs[period]
     result = {"ohlc": []}
 
-    try:
-        with intraday_lock:
-            req_id = 8000 + abs(hash(symbol + period)) % 999
-            contract = make_contract(symbol)
-            ib_app.historical_data[req_id] = []
-            ib_app.hist_done[req_id] = False
-            ib_app.reqHistoricalData(
-                req_id, contract, "", dur, bar_size,
-                config.HIST_WHAT_TO_SHOW, 1, 1, False, []
-            )
-            start = time.time()
-            while not ib_app.hist_done.get(req_id, False) and time.time() - start < 30:
-                time.sleep(0.2)
+    # 1. IB (solo si hay conexion viva)
+    if ib_app is not None and ib_app.isConnected():
+        try:
+            with intraday_lock:
+                req_id = 8000 + abs(hash(symbol + period)) % 999
+                contract = make_contract(symbol)
+                ib_app.historical_data[req_id] = []
+                ib_app.hist_done[req_id] = False
+                ib_app.reqHistoricalData(
+                    req_id, contract, "", dur, bar_size,
+                    config.HIST_WHAT_TO_SHOW, 1, 1, False, []
+                )
+                start = time.time()
+                while not ib_app.hist_done.get(req_id, False) and time.time() - start < 30:
+                    time.sleep(0.2)
 
-        data = ib_app.historical_data.get(req_id, [])
-        if data:
-            df = pd.DataFrame(data)
-            result["ohlc"] = _build_ohlc(df)
-    except Exception as e:
-        print(f"  Error fetching {period} bars for {symbol}: {e}")
+            data = ib_app.historical_data.get(req_id, [])
+            if data:
+                df = pd.DataFrame(data)
+                result["ohlc"] = _build_ohlc(df)
+        except Exception as e:
+            print(f"  Error fetching {period} bars for {symbol} via IB: {e}")
+
+    # 2. Fallback yfinance: TWS caida, desconectada o respuesta vacia
+    if not result["ohlc"]:
+        try:
+            result["ohlc"] = _fetch_bars_yf(symbol, period)
+        except Exception as e:
+            print(f"  Error fetching {period} bars for {symbol} via yfinance: {e}")
 
     intraday_cache[cache_key] = {"data": result, "ts": time.time()}
     return Response(to_json(result), mimetype="application/json")
