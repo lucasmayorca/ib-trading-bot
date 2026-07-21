@@ -541,7 +541,8 @@ def api_etf_data():
         }
 
     try:
-        etf_top3 = compute_top3(etf_analysis)
+        etf_top3 = compute_top3(etf_analysis,
+                                min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None))
     except Exception as e:
         print(f"[ETF TOP3] Error: {e}", flush=True)
         etf_top3 = []

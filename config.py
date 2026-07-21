@@ -47,8 +47,10 @@ SIGNAL_MIN_SCORE_SELL = 2.0
 # Objetivo minimo (% de movimiento al target) para MOSTRAR una oportunidad en las
 # recomendaciones. No fuerza el objetivo (eso lo estima _compute_price_levels por
 # volatilidad+historico); solo filtra: si el movimiento esperado al target es menor,
-# la oportunidad no se lista.
-MIN_OPPORTUNITY_TARGET_PCT = 8.0
+# la oportunidad no se lista. Umbral distinto para acciones y ETFs (los ETFs se
+# mueven menos, asi que su piso es mas bajo).
+MIN_OPPORTUNITY_TARGET_PCT = 8.0        # acciones
+MIN_OPPORTUNITY_TARGET_PCT_ETF = 7.0    # ETFs
 
 # Cuantas recomendaciones "Top" mostrar en cada scanner (acciones y ETFs).
 TOP_RECOMMENDATIONS = 5

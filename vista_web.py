@@ -545,8 +545,8 @@ def _label_is_bearish(label):
     return "VENTA" in label or "SOBRECOMPRA" in label
 
 
-def _score_stock(sym, data):
-    """Score a stock 0-100 for top-3 ranking. Returns None if ineligible.
+def _score_stock(sym, data, min_target_pct=None):
+    """Score a stock 0-100 for top-N ranking. Returns None if ineligible.
 
     Ranks by the *expected quality* of the current signal, leaning on the
     backtest's per-trade expectancy (already net of costs) and profit factor
@@ -568,7 +568,7 @@ def _score_stock(sym, data):
     if len(ohlc) < 20:
         return None
     # No listar oportunidades cuyo objetivo esperado es menor al minimo configurado.
-    if not _meets_min_target(data):
+    if not _meets_min_target(data, min_target_pct):
         return None
 
     # Side-specific backtest stats (the direction the label points to)
@@ -790,14 +790,16 @@ def _compute_price_levels(data):
     }
 
 
-def _meets_min_target(data):
-    """True si la oportunidad tiene un objetivo >= MIN_OPPORTUNITY_TARGET_PCT.
+def _meets_min_target(data, min_pct=None):
+    """True si la oportunidad tiene un objetivo >= umbral mínimo.
 
     No fuerza ni recorta el objetivo (eso lo estima _compute_price_levels por
-    volatilidad + histórico): solo decide si la oportunidad se lista. Umbral
-    configurable en config.py. Ante error de cálculo, NO filtra (no ocultar por
-    un bug)."""
-    min_pct = getattr(config, "MIN_OPPORTUNITY_TARGET_PCT", 0.0) or 0.0
+    volatilidad + histórico): solo decide si la oportunidad se lista. `min_pct`
+    permite un umbral distinto para acciones vs ETFs; si es None usa el de
+    acciones. Ante error de cálculo, NO filtra (no ocultar por un bug)."""
+    if min_pct is None:
+        min_pct = getattr(config, "MIN_OPPORTUNITY_TARGET_PCT", 0.0)
+    min_pct = min_pct or 0.0
     if min_pct <= 0:
         return True
     try:
@@ -1249,15 +1251,16 @@ def _extract_chart_data(data, n_bars=90):
     return ohlc_slice, mas_sliced, start_idx
 
 
-def compute_top3(cache):
+def compute_top3(cache, min_target_pct=None):
     """Compute top N stock recommendations from analysis_cache (N configurable
-    via config.TOP_RECOMMENDATIONS; el nombre historico 'top3' se conserva)."""
+    via config.TOP_RECOMMENDATIONS; el nombre historico 'top3' se conserva).
+    `min_target_pct` permite un piso de objetivo distinto (p.ej. ETFs usan 7%)."""
     top_n = getattr(config, "TOP_RECOMMENDATIONS", 3)
     scored = []
     for sym, data in cache.items():
         if data is None:
             continue
-        score = _score_stock(sym, data)
+        score = _score_stock(sym, data, min_target_pct)
         if score is not None:
             scored.append((sym, data, score))
 
@@ -1274,7 +1277,7 @@ def compute_top3(cache):
             if len(ohlc) < 20:
                 continue
             # El fallback relajado tambien respeta el objetivo minimo.
-            if not _meets_min_target(data):
+            if not _meets_min_target(data, min_target_pct):
                 continue
             strength = data.get("strength", 0) or 0
             bt = data.get("backtest", {}) or {}
@@ -5718,7 +5721,8 @@ def api_etf_data():
 
             results[sym] = entry
 
-        etf_top3 = compute_top3(etf_analysis_cache)
+        etf_top3 = compute_top3(etf_analysis_cache,
+                                min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None))
 
         return Response(to_json({
             "results": results,
