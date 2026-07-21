@@ -2467,6 +2467,17 @@ function _isBridgeDisconnected(d){
   return d.bridge_connected===false;
 }
 
+let _portWaitingTimer=null;
+function _clearPortWaitingRetry(){
+  if(_portWaitingTimer){clearTimeout(_portWaitingTimer);_portWaitingTimer=null;}
+}
+function _schedulePortWaitingRetry(delayMs){
+  _clearPortWaitingRetry();
+  _portWaitingTimer=setTimeout(function(){
+    if(_activeTab==='portfolio')loadPortfolio();
+  },delayMs);
+}
+
 function _renderPortWaitingState(d){
   // Limpia todos los slots que mostrarian ceros o vacio
   document.getElementById('port-summary').innerHTML='';
@@ -2474,7 +2485,14 @@ function _renderPortWaitingState(d){
   document.getElementById('port-metrics').innerHTML='';
   document.getElementById('port-verdicts').innerHTML='';
   let html='';
-  if(_isBridgeDisconnected(d)){
+  // Si el header ya reporta bridge conectado (fetchStatus set _bridgeConnected)
+  // pero /api/portfolio devolvio bridge_connected=false por race de reconexion,
+  // preferimos el spinner de "recibiendo datos" al CTA de "sin bridge".
+  let disconnected=_isBridgeDisconnected(d);
+  if(disconnected && (typeof _bridgeConnected!=='undefined' && _bridgeConnected)){
+    disconnected=false;
+  }
+  if(disconnected){
     html='<div class="tab-loading" style="padding:60px 20px">'+
       '<div class="tab-loading-text" style="color:var(--text);max-width:520px;line-height:1.5">'+
         '<div style="font-size:16px;font-weight:700;margin-bottom:8px">Tu bridge no esta conectado</div>'+
@@ -2482,12 +2500,14 @@ function _renderPortWaitingState(d){
         '<button onclick="switchTab(\'setup\')" style="background:var(--accent);color:#fff;border:none;padding:8px 18px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer">Ir a Conectar TWS</button>'+
       '</div>'+
       '</div>';
+    _schedulePortWaitingRetry(15000);
   }else{
     html='<div class="tab-loading" style="padding:60px 20px">'+
       '<div class="tab-loading-spinner"></div>'+
       '<div class="tab-loading-text" style="max-width:480px">Recibiendo datos de tu cuenta desde TWS...<br>'+
       '<span style="color:var(--muted);font-size:11px">Puede tardar hasta 3 minutos si el bridge esta arrancando</span></div>'+
       '</div>';
+    _schedulePortWaitingRetry(10000);
   }
   document.getElementById('port-analysis-list').innerHTML=html;
 }
@@ -2498,6 +2518,7 @@ function renderPortfolio(d){
     _renderPortWaitingState(d);
     return;
   }
+  _clearPortWaitingRetry();
 
   // Summary cards
   let pnlCol=d.total_pnl>=0?'var(--buy)':'var(--sell)';
