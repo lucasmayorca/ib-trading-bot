@@ -530,19 +530,19 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
         http_session=http_session,
     )
     authenticated = threading.Event()
+    # Se setea True tras el primer envio exitoso del snapshot completo. En
+    # reconexiones subsiguientes solo reenviamos la cartera (chica); el
+    # scanner+ETFs quedan cacheados en el store persistido del server, y
+    # reenviarlos en cada mini-disconnect causaba un TCP write-storm de
+    # varios MB que saturaba el socket TLS y disparaba otra desconexion,
+    # cascadeando en un loop de reconexion cada 30-60s.
+    full_snapshot_sent = {"done": False}
 
     @sio.on("auth_result")
     def on_auth(data):
         if data.get("ok"):
             log("Autenticado con el servidor cloud", G)
             authenticated.set()
-            # Cuando el server se redespliega (Railway push, restart), pierde
-            # el store en memoria pero el bridge sigue con datos vigentes. Aca
-            # el bridge se acaba de re-autenticar, asi que reemitimos el
-            # ultimo snapshot COMPLETO (cartera + stocks + ETFs) para que todos
-            # los tabs aparezcan al instante en lugar de esperar 2-3 min al
-            # proximo scan cycle (el server persiste esto en Postgres, pero si
-            # el bridge sigue vivo esta es la ruta de recuperacion mas rapida).
             try:
                 if ib_app.portfolio_positions:
                     sio.emit("portfolio_data", clean({
@@ -552,14 +552,20 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                         "executions": [],
                     }))
                     log(f"  Cartera reenviada tras auth ({len(ib_app.portfolio_positions)} posiciones)", C)
-                if ib_app.last_stock_list and ib_app.last_analysis:
-                    sio.emit("stock_list", {"symbols": ib_app.last_stock_list})
-                    sio.emit("analysis_batch", clean({"results": ib_app.last_analysis}))
-                    log(f"  Scanner reenviado tras auth ({len(ib_app.last_analysis)} acciones)", C)
-                if ib_app.last_etf_list and ib_app.last_etf_analysis:
-                    sio.emit("etf_stock_list", {"symbols": ib_app.last_etf_list})
-                    sio.emit("etf_analysis_batch", clean({"results": ib_app.last_etf_analysis}))
-                    log(f"  ETFs reenviados tras auth ({len(ib_app.last_etf_analysis)} ETFs)", C)
+
+                # Scanner + ETFs solo en el PRIMER auth (server restart). En
+                # reconexiones por ping timeout o link flap el server ya los
+                # tiene persistidos y no hace falta pagar el costo del re-emit.
+                if not full_snapshot_sent["done"]:
+                    if ib_app.last_stock_list and ib_app.last_analysis:
+                        sio.emit("stock_list", {"symbols": ib_app.last_stock_list})
+                        sio.emit("analysis_batch", clean({"results": ib_app.last_analysis}))
+                        log(f"  Scanner reenviado tras auth ({len(ib_app.last_analysis)} acciones)", C)
+                    if ib_app.last_etf_list and ib_app.last_etf_analysis:
+                        sio.emit("etf_stock_list", {"symbols": ib_app.last_etf_list})
+                        sio.emit("etf_analysis_batch", clean({"results": ib_app.last_etf_analysis}))
+                        log(f"  ETFs reenviados tras auth ({len(ib_app.last_etf_analysis)} ETFs)", C)
+                    full_snapshot_sent["done"] = True
             except Exception as e:
                 log(f"  No se pudo reenviar snapshot post-auth: {e}", Y)
         else:
