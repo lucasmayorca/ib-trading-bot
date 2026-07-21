@@ -1537,17 +1537,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .content{padding:0 32px 20px;overflow-x:auto}
 .lh-groups,.lh-cols,.stock-row{
   display:grid;
-  grid-template-columns:20px 76px 86px 104px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 92px;
+  grid-template-columns:20px 76px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 92px;
   gap:4px;align-items:center;
 }
-.stock-row{padding:9px 14px;min-width:1020px}
+.stock-row{padding:9px 14px;min-width:1036px}
 .trend-spark{width:100%;height:20px;display:block}
 .tspark-na{color:var(--dim);font-size:10px;text-align:center}
 .list-header{
   background:var(--surface);
   border-bottom:1px solid var(--accent);color:var(--muted);
   position:sticky;top:0;z-index:10;border-radius:8px 8px 0 0;
-  padding:0 14px;min-width:1020px;
+  padding:0 14px;min-width:1036px;
 }
 .lh-groups{padding-top:7px;font-size:8.5px;text-transform:uppercase;letter-spacing:1px;font-weight:800;color:var(--dim)}
 .lh-groups .lh-g{white-space:nowrap;overflow:hidden}
@@ -2980,7 +2980,10 @@ function badge(s,label){
   else if(label.includes('VIRANDO')&&label.includes('VENTA'))cls='b-turning-sell';
   else if(label.includes('SOBREVENTA'))cls='b-oversold';
   else if(label.includes('SOBRECOMPRA'))cls='b-overbought';
-  return'<span class="badge '+cls+'" title="'+text+'">'+text+'</span>';
+  // "ZONA DE SOBRECOMPRA/SOBREVENTA" no entra en la columna: version compacta
+  // en el badge, label completo en el tooltip.
+  let disp=text.replace('ZONA DE ','');
+  return'<span class="badge '+cls+'" title="'+text+'">'+disp+'</span>';
 }
 function fp(p){return p!=null?"$"+p.toFixed(2):"---";}
 function fdv(v){
