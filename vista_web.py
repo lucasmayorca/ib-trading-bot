@@ -1713,7 +1713,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-thesis-target{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(11,122,75,.12);color:var(--buy)}
 .rec-sell .rec-thesis-target{background:rgba(194,36,54,.12);color:var(--sell)}
 /* Research row (below chart) */
-.rec-research-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:16px}
+.rec-research-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:16px}
 .rec-research-panel{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:16px;min-height:80px}
 /* Fundamentals in research row */
 .rec-fund{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:16px}
@@ -2934,17 +2934,8 @@ function renderPortAnalysisList(positions){
     html+='</div>';
     html+='</div></div>';
 
-    // Research row (idem top3)
-    html+='<div class="rec-research-row">';
-    html+='<div class="rec-research-panel">';
-    html+=renderRecAnalystTargets(rec.fundamentals||{},curPrice);
-    html+=renderRecEarnings(rec.fundamentals||{});
-    html+='</div>';
-    html+='<div class="rec-research-panel">';
-    html+=renderRecInsiderTrades(rec.fundamentals||{});
-    html+='</div>';
-    html+=renderRecFundamentals(rec.fundamentals||{});
-    html+='</div>';
+    // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
+    html+=researchRow(rec.fundamentals||{},curPrice);
 
     // Indicator row
     html+='<div class="rec-ind-grid">';
@@ -3432,6 +3423,21 @@ function destroyAllRecCharts(){
 
 function fmtMktCap(v){if(v==null)return'N/A';if(v>=1e12)return'$'+(v/1e12).toFixed(1)+'T';if(v>=1e9)return'$'+(v/1e9).toFixed(1)+'B';return'$'+(v/1e6).toFixed(0)+'M';}
 
+// Arma la fila de research (analistas+earnings | insiders | fundamentales)
+// omitiendo los paneles vacios. Los ETFs no traen analistas/insiders, asi que
+// esos recuadros ya no quedan grises y vacios; la grilla auto-fit se reacomoda.
+function researchRow(fund,price){
+  let c1=renderRecAnalystTargets(fund,price)+renderRecEarnings(fund);
+  let c2=renderRecInsiderTrades(fund);
+  let c3=renderRecFundamentals(fund);
+  if(!c1&&!c2&&!c3)return'';
+  let h='<div class="rec-research-row">';
+  if(c1)h+='<div class="rec-research-panel">'+c1+'</div>';
+  if(c2)h+='<div class="rec-research-panel">'+c2+'</div>';
+  if(c3)h+=c3;   // rec-fund es su propia caja
+  h+='</div>';
+  return h;
+}
 function renderRecFundamentals(fund){
   if(!fund||Object.keys(fund).length===0)return'';
   let h='<div class="rec-fund"><div class="rec-lt">Datos Fundamentales</div><div class="rec-fund-grid">';
@@ -3775,20 +3781,8 @@ function renderTop3(top3){
     html+='</div>'; // end right panel
     html+='</div>'; // end top-row
 
-    // Research row: Analyst+Earnings | Insiders | Fundamentals
-    html+='<div class="rec-research-row">';
-    // Col 1: Analyst targets + Earnings
-    html+='<div class="rec-research-panel">';
-    html+=renderRecAnalystTargets(r.fundamentals||{},r.price);
-    html+=renderRecEarnings(r.fundamentals||{});
-    html+='</div>';
-    // Col 2: Insider trades
-    html+='<div class="rec-research-panel">';
-    html+=renderRecInsiderTrades(r.fundamentals||{});
-    html+='</div>';
-    // Col 3: Fundamentals
-    html+=renderRecFundamentals(r.fundamentals||{});
-    html+='</div>'; // end research row
+    // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
+    html+=researchRow(r.fundamentals||{},r.price);
 
     // Indicator row: MACD / RSI / Koncorde
     html+='<div class="rec-ind-grid">';
@@ -4650,16 +4644,8 @@ function renderEtfTop3(top3){
     html+='</div>';
     html+='</div>';
 
-    html+='<div class="rec-research-row">';
-    html+='<div class="rec-research-panel">';
-    html+=renderRecAnalystTargets(r.fundamentals||{},r.price);
-    html+=renderRecEarnings(r.fundamentals||{});
-    html+='</div>';
-    html+='<div class="rec-research-panel">';
-    html+=renderRecInsiderTrades(r.fundamentals||{});
-    html+='</div>';
-    html+=renderRecFundamentals(r.fundamentals||{});
-    html+='</div>';
+    // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
+    html+=researchRow(r.fundamentals||{},r.price);
 
     html+='<div class="rec-ind-grid">';
     html+='<div class="rec-ind-wrap"><div class="rec-ind-title">MACD (12,26,9)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="etfrec_macd_'+i+'"></canvas></div></div>';
