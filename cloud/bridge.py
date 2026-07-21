@@ -196,7 +196,7 @@ def get_stock_list(ib_app):
     """Try IB scanner first, fall back to hardcoded list."""
     try:
         from scanner import get_top_volume_stocks
-        stocks = get_top_volume_stocks(count=75)
+        stocks = get_top_volume_stocks(count=100)
         if stocks and len(stocks) > 10:
             return stocks
     except Exception as e:

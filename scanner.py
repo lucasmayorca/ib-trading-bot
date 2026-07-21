@@ -79,10 +79,33 @@ class ScannerApp(EWrapper, EClient):
         self.cancelScannerSubscription(reqId)
 
 
+def _merge_to_count(live, fallback_dicts, count):
+    """Combina resultados en vivo (top-volumen, hasta ~50 por el limite del scanner
+    de IB) con la lista curada de respaldo hasta alcanzar `count` simbolos unicos.
+
+    El scanner de IB devuelve como maximo ~50 filas por suscripcion, asi que para
+    universos mas amplios (100) rellenamos con nombres liquidos del fallback. Los
+    resultados en vivo van primero (mas activos hoy); se re-numera el rank."""
+    seen = set()
+    merged = []
+    for d in list(live) + list(fallback_dicts):
+        sym = d.get("symbol")
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        item = dict(d)
+        item["rank"] = len(merged) + 1
+        merged.append(item)
+        if len(merged) >= count:
+            break
+    return merged
+
+
 def get_top_volume_stocks(count=None):
     """
     Obtiene las top N acciones por volumen del dia en NYSE/NASDAQ via IB Scanner.
-    Retorna lista de dicts con info de cada accion.
+    Retorna lista de dicts con info de cada accion (fusionando en vivo + fallback
+    hasta `count`, por el limite de ~50 filas del scanner de IB).
     """
     if count is None:
         count = config.SCAN_COUNT
@@ -107,7 +130,7 @@ def get_top_volume_stocks(count=None):
     if not app.connected:
         print("ERROR: Scanner no pudo conectar a TWS")
         app.disconnect()
-        return _load_scan_cache("stocks") or []
+        return _merge_to_count(_load_scan_cache("stocks") or [], get_fallback_stocks(), count)
 
     sub = ScannerSubscription()
     sub.instrument = "STK"
@@ -130,12 +153,13 @@ def get_top_volume_stocks(count=None):
     if not app.symbols:
         cached = _load_scan_cache("stocks")
         if cached:
-            return cached[:count]
-        print(f"  Scanner sin resultados. Usando lista fallback de {config.SCAN_COUNT} acciones.")
-        return get_fallback_stocks()[:config.SCAN_COUNT]
+            return _merge_to_count(cached, get_fallback_stocks(), count)
+        print(f"  Scanner sin resultados. Usando lista fallback de {count} acciones.")
+        return _merge_to_count([], get_fallback_stocks(), count)
 
     _save_scan_cache("stocks", app.symbols)
-    return app.symbols
+    # Fusiona el top-volumen en vivo (<=50) con el fallback curado hasta `count`
+    return _merge_to_count(app.symbols, get_fallback_stocks(), count)
 
 
 # Fallback: top 100 acciones mas liquidas de USA (por si el scanner no funciona)
@@ -191,6 +215,13 @@ FALLBACK_ETFS = [
     "MTUM", "VLUE", "QUAL", "SIZE", "USMV",
     "RSP", "SPHD", "SPLV", "MOAT", "COWZ",
     "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
+    # 78-110: broad/estilo, internacionales, bonos, sectoriales/tematicos
+    "IVV", "QQQM", "VT", "ACWI", "IWF", "IWD", "IWB", "VUG", "VTV",
+    "IJH", "IJR", "MDY", "VXUS",
+    "BNDX", "EMB", "MUB", "JNK", "BKLN",
+    "EWJ", "EWZ", "FXI", "INDA", "KWEB", "EWT", "EWY",
+    "JETS", "XOP", "OIH", "IGV", "VGT", "GDXJ", "ICLN", "TAN", "LIT",
+    "DBC", "DBA",
 ]
 
 
@@ -230,7 +261,7 @@ def get_top_volume_etfs(count=None):
     if not app.connected:
         print("ERROR: ETF Scanner no pudo conectar a TWS")
         app.disconnect()
-        return _load_scan_cache("etfs") or get_fallback_etfs()[:count]
+        return _merge_to_count(_load_scan_cache("etfs") or [], get_fallback_etfs(), count)
 
     sub = ScannerSubscription()
     sub.instrument = "STK.ETF"
@@ -251,12 +282,13 @@ def get_top_volume_etfs(count=None):
     if not app.symbols:
         cached = _load_scan_cache("etfs")
         if cached:
-            return cached[:count]
+            return _merge_to_count(cached, get_fallback_etfs(), count)
         print(f"  ETF Scanner sin resultados. Usando lista fallback de {count} ETFs.")
-        return get_fallback_etfs()[:count]
+        return _merge_to_count([], get_fallback_etfs(), count)
 
     _save_scan_cache("etfs", app.symbols)
-    return app.symbols
+    # Fusiona el top-volumen en vivo (<=50) con el fallback curado hasta `count`
+    return _merge_to_count(app.symbols, get_fallback_etfs(), count)
 
 
 if __name__ == "__main__":

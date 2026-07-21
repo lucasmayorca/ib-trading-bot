@@ -270,12 +270,19 @@ def fetch_new_fills(app, req_id):
 # ══════════════════════════════════════════════════════════════
 
 FALLBACK_STOCKS = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
-    "JPM", "V", "UNH", "XOM", "MA", "JNJ", "PG", "HD", "AVGO", "CVX",
-    "MRK", "ABBV", "LLY", "COST", "PEP", "KO", "ADBE", "CRM", "WMT",
-    "MCD", "CSCO", "ACN", "TMO", "ABT", "DHR", "NFLX", "AMD", "INTC",
-    "QCOM", "TXN", "NEE", "PM", "ORCL", "IBM", "GE", "CAT", "RTX",
-    "BA", "DIS", "AMGN", "PYPL", "SBUX",
+    "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK B",
+    "JPM", "V", "UNH", "XOM", "JNJ", "MA", "PG", "AVGO", "HD", "CVX",
+    "MRK", "ABBV", "LLY", "KO", "PEP", "BAC", "COST", "TMO", "MCD",
+    "WMT", "CSCO", "CRM", "ACN", "ABT", "ADBE", "AMD", "NFLX", "DHR",
+    "ORCL", "TXN", "INTC", "QCOM", "UBER", "MS", "GS", "SCHW", "MELI",
+    "DIS", "NKE", "PYPL", "SQ", "COIN",
+    # 51-100
+    "NOW", "ISRG", "BKNG", "AMGN", "AMAT", "AXP", "IBM", "GE", "CAT",
+    "LRCX", "MDLZ", "ADI", "GILD", "REGN", "VRTX", "PANW", "SYK", "SNPS",
+    "CDNS", "KLAC", "BSX", "MMC", "CME", "CB", "PGR", "ABNB", "SHOP",
+    "ICE", "MCO", "APH", "CRWD", "WDAY", "MAR", "HLT", "FTNT", "MRVL",
+    "DASH", "ROP", "MNST", "MSCI", "DXCM", "CPRT", "IDXX", "TTD", "ON",
+    "MCHP", "TEAM", "GEN", "FSLR", "ENPH",
 ]
 
 
@@ -292,15 +299,22 @@ FALLBACK_ETFS = [
     "MTUM", "VLUE", "QUAL", "SIZE", "USMV",
     "RSP", "SPHD", "SPLV", "MOAT", "COWZ",
     "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY",
+    # 78-110: broad/estilo, internacionales, bonos, sectoriales/tematicos
+    "IVV", "QQQM", "VT", "ACWI", "IWF", "IWD", "IWB", "VUG", "VTV",
+    "IJH", "IJR", "MDY", "VXUS",
+    "BNDX", "EMB", "MUB", "JNK", "BKLN",
+    "EWJ", "EWZ", "FXI", "INDA", "KWEB", "EWT", "EWY",
+    "JETS", "XOP", "OIH", "IGV", "VGT", "GDXJ", "ICLN", "TAN", "LIT",
+    "DBC", "DBA",
 ]
 
 
 def get_stock_list():
-    return FALLBACK_STOCKS[:50]
+    return FALLBACK_STOCKS[:100]
 
 
 def get_etf_list():
-    return FALLBACK_ETFS[:75]
+    return FALLBACK_ETFS[:100]
 
 
 # ══════════════════════════════════════════════════════════════

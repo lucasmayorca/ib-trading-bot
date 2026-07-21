@@ -69,7 +69,11 @@ win_rate/avg_return fields — always branch on `signal_label` here, not raw `si
 labels can be directional while `signal` is still HOLD.
 
 ## Configuration (config.py)
-- `SCAN_COUNT = 75` stocks
+- `SCAN_COUNT = 100` acciones y ETFs. El scanner de IB devuelve máx ~50 filas por
+  suscripción, así que `scanner._merge_to_count()` fusiona el top-volumen en vivo (≤50)
+  con la lista curada de respaldo hasta completar 100 únicos (con/sin TWS). Fallbacks:
+  `FALLBACK_STOCKS`=100, `FALLBACK_ETFS`=113. El bridge (`bridge/main.py`) tiene sus
+  propias copias (self-contained) también a 100 — `get_stock_list()[:100]`, `get_etf_list()[:100]`
 - `SCAN_INTERVAL_SECONDS = 300` (5 min)
 - `MAX_PER_TRADE = 5000` USD
 - `STOP_LOSS_PCT = 3.0`, `TAKE_PROFIT_PCT = 8.0`

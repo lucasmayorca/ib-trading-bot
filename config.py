@@ -4,7 +4,10 @@ IB_PORT = 7497          # 7497 = paper trading, 7496 = live
 IB_CLIENT_ID = 3
 
 # === SCANNER ===
-SCAN_COUNT = 75          # Top N acciones por volumen
+# Universo objetivo (acciones y ETFs). El scanner de IB devuelve como maximo ~50
+# filas por suscripcion, asi que scanner.py fusiona el top-volumen en vivo con la
+# lista curada de respaldo hasta completar SCAN_COUNT simbolos unicos.
+SCAN_COUNT = 100         # Top N acciones / ETFs por volumen
 SCAN_EXCHANGE = "NYSE"
 SCAN_INSTRUMENT = "STK"
 
