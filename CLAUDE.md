@@ -99,6 +99,15 @@ labels can be directional while `signal` is still HOLD.
 - Columna "30D" en ambos scanners: mini sparkline SVG (`trendSparkCell`) de los últimos 30 cierres
   de `chart.ohlc`, verde/roja según el cambio; sortable por `_trendPct` (`data-col="trend"`). Las
   filas "sin datos" llevan una celda vacía extra para cuadrar el grid.
+- **Top Recomendaciones colapsable**: arranca comprimida (`_top3Collapsed=true`) mostrando solo la
+  barra de título + chips `#N SYM ±obj%` (`_t3Chips`); clic en el título expande/colapsa
+  (`toggleTop3Sec`/`toggleEtfTop3Sec` re-renderizan desde `_top3Data`/`_etfTop3Data`). El resumen
+  de cada tarjeta muestra **Objetivo** (ganancia esperada, `recObjetivo`: `target_pct` con signo
+  según dirección del label) antes de Score/Fuerza/WR/R/R.
+- **Empty states**: los headers de tabla (`#list-header`/`#etf-list-header`) nacen con
+  `display:none` y `update()`/`updateEtf()` los muestran solo cuando `total>0` — sin header
+  flotando sobre el spinner. `.tab-loading` es una tarjeta (surface + borde + min-height) usada
+  por todos los tabs.
 - Counters bar breaks down by signal_label: Compra, Venta, Compra Inminente, Venta Inminente, Virando a Compra/Venta, Zona Extrema, Neutral (only shown if count > 0)
 - Thesis includes: signal label + direction, indicator status (MACD hist, RSI level, Koncorde vs media), moving averages (SMA200/50/20 + golden/death cross), institutional flow (Koncorde azul), target with consistent direction, fundamentals
 - Portfolio "Composicion por Tipo" and "Distribucion por Sector" sections removed

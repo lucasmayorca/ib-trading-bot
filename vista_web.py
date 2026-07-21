@@ -1515,7 +1515,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .header h1 em{font-style:normal;color:var(--accent);font-weight:800}
 .header .sub{color:var(--muted);font-size:12px;text-align:right;font-weight:500}
 
-.tab-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px}
+.tab-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:70px 20px;gap:16px;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin:10px 0;min-height:240px;box-sizing:border-box}
+/* Top Recomendaciones colapsable */
+.t3-clickable{cursor:pointer;user-select:none}
+.t3-clickable:hover{opacity:.85}
+.t3-caret{font-size:9px;color:var(--muted);transition:transform .2s;margin-left:2px}
+.t3-caret.open{transform:rotate(180deg)}
+.t3-count{font-size:10px;color:var(--muted);font-weight:600;letter-spacing:0}
+.t3-chips{display:flex;gap:8px;flex-wrap:wrap;margin-left:12px}
+.t3-chip{font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;padding:3px 10px;border-radius:14px;border:1px solid var(--border);background:var(--surface);color:var(--text);display:inline-flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0}
+.t3-chip b{color:var(--accent);font-size:10px}
+.t3-chip .obj{font-weight:800}
 .tab-loading-spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .tab-loading-text{color:var(--muted);font-size:13px;text-align:center;max-width:400px;line-height:1.5}
@@ -2220,7 +2230,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="tab-scanner" class="tab-content active">
 <div id="top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
-  <div class="list-header" id="list-header">
+  <div class="list-header" id="list-header" style="display:none">
     <div class="lh-groups">
       <span class="lh-g" style="grid-column:span 5">Activo</span>
       <span class="lh-g sepg" style="grid-column:span 5">Precio vs media movil</span>
@@ -2249,7 +2259,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="tab-etf" class="tab-content">
 <div id="etf-top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
-  <div class="list-header" id="etf-list-header">
+  <div class="list-header" id="etf-list-header" style="display:none">
     <div class="lh-groups">
       <span class="lh-g" style="grid-column:span 5">Activo</span>
       <span class="lh-g sepg" style="grid-column:span 5">Precio vs media movil</span>
@@ -3613,6 +3623,26 @@ function setRecPeriod(idx,period){
 }
 
 let _recFirstRender=true;
+// Seccion Top Recomendaciones colapsable (arranca comprimida para dar espacio a la tabla)
+let _top3Collapsed=true;
+let _etfTop3Collapsed=true;
+function toggleTop3Sec(){_top3Collapsed=!_top3Collapsed;renderTop3(_top3Data);}
+function toggleEtfTop3Sec(){_etfTop3Collapsed=!_etfTop3Collapsed;renderEtfTop3(_etfTop3Data);}
+// Ganancia esperada de una recomendacion: target_pct con signo segun direccion del label
+function recObjetivo(r){
+  if(!r||r.target_pct==null)return null;
+  let sl=(r.signal_label||r.signal||'');
+  let bear=sl.indexOf('VENTA')>=0||sl.indexOf('SOBRECOMPRA')>=0||r.signal==='SELL';
+  return {txt:(bear?'-':'+')+Math.abs(r.target_pct).toFixed(0)+'%',col:bear?'var(--sell)':'var(--buy)'};
+}
+function _t3Chips(top3){
+  let chips='';
+  for(let i=0;i<top3.length;i++){
+    let r=top3[i];let o=recObjetivo(r);
+    chips+='<span class="t3-chip"><b>#'+(i+1)+'</b>'+r.symbol+(o?'<span class="obj" style="color:'+o.col+'">'+o.txt+'</span>':'')+'</span>';
+  }
+  return chips;
+}
 function renderTop3(top3){
   // Save which rec accordions are open before destroying
   let recOpenSet=new Set();
@@ -3625,7 +3655,11 @@ function renderTop3(top3){
   sec.style.display='';
 
   let periods=['ALL','5Y','1Y','3M','1M','1W','1D'];
-  let html='<div class="top3-title">Top Recomendaciones</div>';
+  let caret='<span class="t3-caret'+(_top3Collapsed?'':' open')+'">&#9660;</span>';
+  let html='<div class="top3-title t3-clickable" onclick="toggleTop3Sec()" title="Mostrar/ocultar recomendaciones">Top Recomendaciones <span class="t3-count">('+top3.length+')</span>'+caret+
+    (_top3Collapsed?'<span class="t3-chips">'+_t3Chips(top3)+'</span>':'')+'</div>';
+  // Comprimida: solo la barra con chips (mas espacio para la tabla)
+  if(_top3Collapsed){sec.innerHTML=html;_recFirstRender=false;return;}
   for(let i=0;i<top3.length;i++){
     let r=top3[i];
     let sc=r.signal==='BUY'?'rec-buy':(r.signal==='SELL'?'rec-sell':'rec-hold');
@@ -3648,6 +3682,8 @@ function renderTop3(top3){
     html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
     html+='<span class="rec-badge '+bc+'">'+sl+'</span>';
     html+='<span class="rec-sum-metrics">';
+    let obj=recObjetivo(r);
+    if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
     html+='<span class="rec-sm"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
     html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     html+='<span class="rec-sm"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
@@ -4007,6 +4043,9 @@ function update(){
     if(!html&&total===0){
       html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div>';
     }
+    // Header visible solo cuando hay filas (evita el header flotando sobre el spinner)
+    let _lh=document.getElementById('list-header');
+    if(_lh)_lh.style.display=total>0?'':'none';
     document.getElementById("stock-list").innerHTML=html;
 
     // Draw RSI sparklines for stocks with observations
@@ -4347,6 +4386,9 @@ function updateEtf(){
     if(!html&&total===0){
       html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div>';
     }
+    // Header visible solo cuando hay filas (evita el header flotando sobre el spinner)
+    let _elh=document.getElementById('etf-list-header');
+    if(_elh)_elh.style.display=total>0?'':'none';
     document.getElementById("etf-list").innerHTML=html;
 
     document.querySelectorAll('#tab-etf details[open]').forEach(d=>{
@@ -4486,7 +4528,10 @@ function renderEtfTop3(top3){
   sec.style.display='';
 
   let periods=['ALL','5Y','1Y','3M','1M','1W','1D'];
-  let html='<div class="top3-title">Top ETF Recomendaciones</div>';
+  let caret='<span class="t3-caret'+(_etfTop3Collapsed?'':' open')+'">&#9660;</span>';
+  let html='<div class="top3-title t3-clickable" onclick="toggleEtfTop3Sec()" title="Mostrar/ocultar recomendaciones">Top ETF Recomendaciones <span class="t3-count">('+top3.length+')</span>'+caret+
+    (_etfTop3Collapsed?'<span class="t3-chips">'+_t3Chips(top3)+'</span>':'')+'</div>';
+  if(_etfTop3Collapsed){sec.innerHTML=html;return;}
   for(let i=0;i<top3.length;i++){
     let r=top3[i];
     let sc=r.signal==='BUY'?'rec-buy':(r.signal==='SELL'?'rec-sell':'rec-hold');
@@ -4507,6 +4552,8 @@ function renderEtfTop3(top3){
     html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
     html+='<span class="rec-badge '+bc+'">'+sl+'</span>';
     html+='<span class="rec-sum-metrics">';
+    let obj=recObjetivo(r);
+    if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
     html+='<span class="rec-sm"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
     html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     html+='<span class="rec-sm"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
