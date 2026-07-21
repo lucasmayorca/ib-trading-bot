@@ -1515,29 +1515,10 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .header h1 em{font-style:normal;color:var(--accent);font-weight:800}
 .header .sub{color:var(--muted);font-size:12px;text-align:right;font-weight:500}
 
-/* === COUNTERS === */
-.counters{display:flex;gap:8px;padding:12px 32px;background:var(--bg);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
-.counter{padding:5px 14px;border-radius:8px;font-weight:700;font-size:12px;letter-spacing:.3px;border:1px solid transparent;transition:all .15s;cursor:default}
 .tab-loading{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px}
 .tab-loading-spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .tab-loading-text{color:var(--muted);font-size:13px;text-align:center;max-width:400px;line-height:1.5}
-.c-buy{background:rgba(11,122,75,.1);color:var(--buy);border-color:rgba(11,122,75,.2)}
-.c-sell{background:rgba(194,36,54,.1);color:var(--sell);border-color:rgba(194,36,54,.2)}
-.c-hold{background:rgba(180,83,9,.1);color:var(--hold);border-color:rgba(180,83,9,.2)}
-.c-nodata{background:rgba(154,160,171,.15);color:var(--muted);border-color:var(--border)}
-.c-total{background:rgba(36,86,230,.1);color:#2456e6;border-color:rgba(36,86,230,.2)}
-.c-buy-near{background:rgba(11,122,75,.08);color:#15803d;border-color:rgba(11,122,75,.15)}
-.c-sell-near{background:rgba(194,36,54,.08);color:#cf3d4e;border-color:rgba(194,36,54,.15)}
-.c-turning-buy{background:rgba(21,128,61,.06);color:#15803d;border-color:rgba(21,128,61,.15)}
-.c-turning-sell{background:rgba(207,61,78,.06);color:#cf3d4e;border-color:rgba(207,61,78,.15)}
-.c-zone{background:rgba(14,116,144,.06);color:#0e7490;border-color:rgba(14,116,144,.15)}
-.c-neutral{background:rgba(109,116,128,.08);color:#6d7480;border-color:rgba(109,116,128,.2)}
-.c-mkt-open{background:rgba(11,122,75,.08);color:#0b7a4b;border-color:rgba(11,122,75,.25)}
-.c-mkt-closed{background:rgba(22,24,29,.04);color:#6d7480;border-color:var(--border)}
-.c-mkt-open::before,.c-mkt-closed::before{content:'\25CF';margin-right:6px;font-size:9px}
-.c-mkt-open::before{color:#0b7a4b}
-.c-mkt-closed::before{color:#9aa0ab}
 
 /* === GRID TABLE === */
 .content{padding:0 32px 20px;overflow-x:auto}
@@ -2193,7 +2174,6 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
   <h1><em>VISTA</em> ANALISIS &mdash; TOP 100 VOLUMEN</h1>
   <div class="sub">MACD + RSI + KONCORDE &nbsp;&bull;&nbsp; <span id="port-info"></span></div>
 </div>
-<div class="counters" id="counters"></div>
 <div class="nav-tabs">
   <button class="nav-tab active" onclick="switchTab('scanner')">Scanner</button>
   <button class="nav-tab" onclick="switchTab('etf')">ETF Scanner</button>
@@ -2232,7 +2212,6 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 
 <!-- TAB: ETF SCANNER -->
 <div id="tab-etf" class="tab-content">
-<div class="counters" id="etf-counters"></div>
 <div id="etf-top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
   <div class="list-header" id="etf-list-header">
@@ -2341,13 +2320,11 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 </div>
 <script>
 // Estado del mercado NYSE (9:30-16:00 ET, L-V). No contempla feriados.
-function marketStatusChip(){
+function marketStatusText(){
   const et=new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
   const d=et.getDay(), m=et.getHours()*60+et.getMinutes();
   const open=d>=1&&d<=5&&m>=570&&m<960;
-  return open
-    ?'<span class="counter c-mkt-open">Mercado abierto</span>'
-    :'<span class="counter c-mkt-closed">Mercado cerrado &mdash; precios al cierre</span>';
+  return open?'Mercado abierto':'Mercado cerrado \u2014 precios al cierre';
 }
 const REFRESH_MS=300000;
 const DAILY_BARS={'ALL':9999,'5Y':9999,'1Y':252,'3M':63,'1M':22,'1W':5,'1D':1};
@@ -3809,7 +3786,7 @@ function update(){
   let scrollY=window.scrollY;
   fetch("/api/data").then(r=>r.json()).then(data=>{
     _data=data;
-    document.getElementById("port-info").textContent="Puerto: "+data.port+" ("+(data.port===7497?"PAPER":"LIVE")+")";
+    document.getElementById("port-info").textContent=(data.port?("Puerto: "+data.port+" ("+(data.port===7497?"PAPER":"LIVE")+") \u00b7 "):"")+marketStatusText();
     document.getElementById("footer-port").textContent="Puerto: "+data.port;
     document.getElementById("last-update").textContent=data.last_update||"--";
     let next=new Date(Date.now()+REFRESH_MS);
@@ -3832,18 +3809,6 @@ function update(){
         else neutral++;
       }
     }
-    let ch=marketStatusChip();
-    ch+='<span class="counter c-total">Total '+total+'</span>';
-    if(buy)ch+='<span class="counter c-buy">Compra '+buy+'</span>';
-    if(sell)ch+='<span class="counter c-sell">Venta '+sell+'</span>';
-    if(buyNear)ch+='<span class="counter c-buy-near">Compra Inminente '+buyNear+'</span>';
-    if(sellNear)ch+='<span class="counter c-sell-near">Venta Inminente '+sellNear+'</span>';
-    if(turnBuy)ch+='<span class="counter c-turning-buy">Virando a Compra '+turnBuy+'</span>';
-    if(turnSell)ch+='<span class="counter c-turning-sell">Virando a Venta '+turnSell+'</span>';
-    if(zone)ch+='<span class="counter c-zone">Zona Extrema '+zone+'</span>';
-    if(neutral)ch+='<span class="counter c-neutral">Neutral '+neutral+'</span>';
-    if(nodata)ch+='<span class="counter c-nodata">Sin datos '+nodata+'</span>';
-    document.getElementById("counters").innerHTML=ch;
 
     renderTop3(data.top3);
 
@@ -4121,18 +4086,6 @@ function updateEtf(){
         else neutral++;
       }
     }
-    let ch=marketStatusChip();
-    ch+='<span class="counter c-total">Total '+total+'</span>';
-    if(buy)ch+='<span class="counter c-buy">Compra '+buy+'</span>';
-    if(sell)ch+='<span class="counter c-sell">Venta '+sell+'</span>';
-    if(buyNear)ch+='<span class="counter c-buy-near">Compra Inminente '+buyNear+'</span>';
-    if(sellNear)ch+='<span class="counter c-sell-near">Venta Inminente '+sellNear+'</span>';
-    if(turnBuy)ch+='<span class="counter c-turning-buy">Virando a Compra '+turnBuy+'</span>';
-    if(turnSell)ch+='<span class="counter c-turning-sell">Virando a Venta '+turnSell+'</span>';
-    if(zone)ch+='<span class="counter c-zone">Zona Extrema '+zone+'</span>';
-    if(neutral)ch+='<span class="counter c-neutral">Neutral '+neutral+'</span>';
-    if(nodata)ch+='<span class="counter c-nodata">Sin datos '+nodata+'</span>';
-    document.getElementById("etf-counters").innerHTML=ch;
 
     // Top 3 ETF recommendations
     renderEtfTop3(data.top3);
