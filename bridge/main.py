@@ -515,6 +515,22 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
         if data.get("ok"):
             log("Autenticado con el servidor cloud", G)
             authenticated.set()
+            # Cuando el server se redespliega (Railway push, restart), pierde
+            # el store en memoria pero el bridge sigue con datos vigentes. Aca
+            # el bridge se acaba de re-autenticar, asi que reemitimos el
+            # ultimo snapshot de portfolio para que Mi Cartera aparezca al
+            # instante en lugar de esperar 2-3 min al proximo scan cycle.
+            if ib_app.portfolio_positions:
+                try:
+                    sio.emit("portfolio_data", clean({
+                        "positions": ib_app.portfolio_positions,
+                        "account_values": ib_app.account_values,
+                        "open_orders": ib_app.open_orders,
+                        "executions": [],
+                    }))
+                    log(f"  Snapshot de cartera reenviado tras auth ({len(ib_app.portfolio_positions)} posiciones)", C)
+                except Exception as e:
+                    log(f"  No se pudo reenviar snapshot post-auth: {e}", Y)
         else:
             log(f"Auth failed: {data.get('error')}", R)
             sys.exit(1)
@@ -572,6 +588,16 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
     # has actually run once).
     _refresh_portfolio(ib_app, log)
     ib_app.reqAccountUpdates(False, "")
+
+    # Emit inmediato al servidor: sin esto el usuario ve Mi Cartera vacia
+    # hasta que termine el primer scan de stocks+ETFs (~2-3 min).
+    log(f"  Enviando snapshot inicial de cartera: {len(ib_app.portfolio_positions)} posiciones", C)
+    safe_emit(sio, "portfolio_data", clean({
+        "positions": ib_app.portfolio_positions,
+        "account_values": ib_app.account_values,
+        "open_orders": ib_app.open_orders,
+        "executions": [],
+    }), server_url, authenticated)
 
     try:
         while True:
