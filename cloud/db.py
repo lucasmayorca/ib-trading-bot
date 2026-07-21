@@ -47,6 +47,19 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS flex_token TEXT")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS flex_query_id TEXT")
 
+        # Per-user live-store snapshot. The in-memory user_data store in
+        # cloud/server.py is wiped on every process restart/redeploy (Railway
+        # cycles the container). Persisting a snapshot here lets a restarted
+        # server serve last-known scan/ETF/portfolio data immediately instead
+        # of blank tabs until the bridge reconnects and re-scans (~minutes).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_store (
+                user_id    INTEGER PRIMARY KEY,
+                data       JSONB NOT NULL,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
 
 def create_user(email, hashed_password):
     token = secrets.token_urlsafe(32)
@@ -106,3 +119,28 @@ def get_flex_config(user_id):
         cur.execute("SELECT flex_token, flex_query_id FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
         return (row["flex_token"], row["flex_query_id"]) if row else (None, None)
+
+
+def save_user_store(user_id, data_json):
+    """Upsert a user's live-store snapshot. `data_json` is a JSON string
+    (already NaN/Inf-cleaned by the caller) cast to jsonb."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO user_store (user_id, data, updated_at)
+            VALUES (%s, %s::jsonb, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+            """,
+            (user_id, data_json),
+        )
+
+
+def load_all_user_stores():
+    """Return [(user_id, data_dict), ...] to restore the in-memory store on
+    boot. RealDictCursor parses the jsonb column back into a Python dict."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, data FROM user_store")
+        return [(row["user_id"], row["data"]) for row in cur.fetchall()]

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ib-trading-bridge",
-    version="1.0.0",
+    version="1.1.0",
     description="Bridge to connect Interactive Brokers TWS to IB Trading Dashboard",
     packages=["bridge"],
     python_requires=">=3.10",

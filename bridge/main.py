@@ -100,6 +100,13 @@ class BridgeIB(EWrapper, EClient):
         self.new_fills = []           # completed fills (exec + commission), ready to send
         self.executions_done = False
         self.sent_order_ids = set()   # order_ids already emitted to the server this run
+        # Last COMPLETE scan snapshot — re-emitted verbatim after every
+        # (re)connect so a restarted server (which lost its in-memory store)
+        # repopulates in seconds instead of waiting for the next full scan.
+        self.last_analysis = {}       # {symbol: result} from the last stock scan
+        self.last_stock_list = []     # symbols in that scan (order matters)
+        self.last_etf_analysis = {}   # {symbol: result} from the last ETF scan
+        self.last_etf_list = []       # ETF symbols in that scan
 
     def nextValidId(self, orderId):
         self.connected_event.set()
@@ -532,19 +539,29 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
             # Cuando el server se redespliega (Railway push, restart), pierde
             # el store en memoria pero el bridge sigue con datos vigentes. Aca
             # el bridge se acaba de re-autenticar, asi que reemitimos el
-            # ultimo snapshot de portfolio para que Mi Cartera aparezca al
-            # instante en lugar de esperar 2-3 min al proximo scan cycle.
-            if ib_app.portfolio_positions:
-                try:
+            # ultimo snapshot COMPLETO (cartera + stocks + ETFs) para que todos
+            # los tabs aparezcan al instante en lugar de esperar 2-3 min al
+            # proximo scan cycle (el server persiste esto en Postgres, pero si
+            # el bridge sigue vivo esta es la ruta de recuperacion mas rapida).
+            try:
+                if ib_app.portfolio_positions:
                     sio.emit("portfolio_data", clean({
                         "positions": ib_app.portfolio_positions,
                         "account_values": ib_app.account_values,
                         "open_orders": ib_app.open_orders,
                         "executions": [],
                     }))
-                    log(f"  Snapshot de cartera reenviado tras auth ({len(ib_app.portfolio_positions)} posiciones)", C)
-                except Exception as e:
-                    log(f"  No se pudo reenviar snapshot post-auth: {e}", Y)
+                    log(f"  Cartera reenviada tras auth ({len(ib_app.portfolio_positions)} posiciones)", C)
+                if ib_app.last_stock_list and ib_app.last_analysis:
+                    sio.emit("stock_list", {"symbols": ib_app.last_stock_list})
+                    sio.emit("analysis_batch", clean({"results": ib_app.last_analysis}))
+                    log(f"  Scanner reenviado tras auth ({len(ib_app.last_analysis)} acciones)", C)
+                if ib_app.last_etf_list and ib_app.last_etf_analysis:
+                    sio.emit("etf_stock_list", {"symbols": ib_app.last_etf_list})
+                    sio.emit("etf_analysis_batch", clean({"results": ib_app.last_etf_analysis}))
+                    log(f"  ETFs reenviados tras auth ({len(ib_app.last_etf_analysis)} ETFs)", C)
+            except Exception as e:
+                log(f"  No se pudo reenviar snapshot post-auth: {e}", Y)
         else:
             log(f"Auth failed: {data.get('error')}", R)
             sys.exit(1)
@@ -633,12 +650,14 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 log(f"Escaneando {len(stocks)} acciones...", C)
 
                 results = {}
+                full_results = {}
                 success_count = 0
                 for i, symbol in enumerate(stocks):
                     req_id = 1000 + i
                     result = analyze_stock(ib_app, symbol, req_id)
                     if result:
                         results[symbol] = result
+                        full_results[symbol] = result
                         success_count += 1
                         log(f"  ✓ {symbol}: {result.get('signal', 'NEUTRAL')} (strength={result.get('strength', 0):.1f})", G)
                     time.sleep(0.5)
@@ -653,6 +672,10 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                     log(f"  Enviando {len(results)} análisis finales al servidor...", C)
                     safe_emit(sio, "analysis_batch", clean({"results": results}), server_url, authenticated)
 
+                # Retain the complete cycle for re-emit on reconnect.
+                ib_app.last_analysis = full_results
+                ib_app.last_stock_list = list(stocks)
+
                 log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
 
                 # --- ETF scan ---
@@ -661,12 +684,14 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 log(f"Escaneando {len(etfs)} ETFs...", C)
 
                 etf_results = {}
+                etf_full = {}
                 etf_success = 0
                 for i, symbol in enumerate(etfs):
                     req_id = 3000 + i
                     result = analyze_stock(ib_app, symbol, req_id)
                     if result:
                         etf_results[symbol] = result
+                        etf_full[symbol] = result
                         etf_success += 1
                     time.sleep(0.5)
 
@@ -679,6 +704,10 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 if etf_results:
                     log(f"  Enviando {len(etf_results)} análisis ETF finales al servidor...", C)
                     safe_emit(sio, "etf_analysis_batch", clean({"results": etf_results}), server_url, authenticated)
+
+                # Retain the complete cycle for re-emit on reconnect.
+                ib_app.last_etf_analysis = etf_full
+                ib_app.last_etf_list = list(etfs)
 
                 log(f"ETF scan completado: {etf_success}/{len(etfs)} ETFs analizados", G if etf_success > 0 else Y)
 
@@ -740,7 +769,7 @@ Ejemplos:
 
     print("""
 +==========================================+
-|       IB Trading Bridge v1.0.0           |
+|       IB Trading Bridge v1.1.0           |
 |  Conecta tu TWS al dashboard cloud       |
 +==========================================+
 """)

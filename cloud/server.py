@@ -16,6 +16,7 @@ import functools
 import threading
 from datetime import datetime
 
+import gevent
 import numpy as np
 
 from flask import Flask, request, jsonify, Response, redirect
@@ -90,6 +91,69 @@ def _clean(obj):
 
 def to_json(obj):
     return json.dumps(_clean(obj))
+
+
+# ══════════════════════════════════════════════════════════════
+#  STORE PERSISTENCE  (survives restarts / redeploys)
+# ══════════════════════════════════════════════════════════════
+# The in-memory user_data store is wiped on every container restart. We
+# snapshot it to Postgres (debounced, off the hot path) and restore it on
+# boot, so a restarted server serves last-known data instead of blank tabs.
+_persist_timers = {}       # user_id -> pending gevent greenlet
+_PERSIST_DEBOUNCE = 20     # seconds; trailing write after the last mutation
+
+
+def schedule_persist(user_id):
+    """Debounced snapshot of a user's store. Rapid batches during a scan keep
+    rescheduling, so only ONE write lands ~20s after the last mutation —
+    capturing the complete cycle instead of hammering the DB per batch. Runs
+    in a gevent greenlet and never raises into the caller."""
+    try:
+        old = _persist_timers.get(user_id)
+        if old is not None:
+            old.kill(block=False)
+        _persist_timers[user_id] = gevent.spawn_later(
+            _PERSIST_DEBOUNCE, _do_persist, user_id
+        )
+    except Exception as e:
+        print(f"[PERSIST] schedule failed for user {user_id}: {e}", flush=True)
+
+
+def _do_persist(user_id):
+    _persist_timers.pop(user_id, None)
+    try:
+        store = user_data.get(user_id)
+        if not store:
+            return
+        # Drop the per-symbol on-demand chart cache (bars_*): large and
+        # re-fetchable. Keep analysis / etf / portfolio — the tab content.
+        # json.dumps doesn't yield greenlets, so this is atomic vs. the
+        # socket handlers under gevent's cooperative scheduler.
+        snapshot = {k: v for k, v in store.items() if not str(k).startswith("bars_")}
+        payload = to_json(snapshot)
+        db.save_user_store(user_id, payload)
+        print(f"[PERSIST] Saved store for user {user_id} ({len(payload) // 1024} KB)", flush=True)
+    except Exception as e:
+        print(f"[PERSIST] save failed for user {user_id}: {e}", flush=True)
+
+
+def _restore_stores():
+    """Load persisted snapshots into user_data on boot. Best-effort: any
+    failure just leaves the server starting empty (previous behaviour)."""
+    try:
+        rows = db.load_all_user_stores()
+    except Exception as e:
+        print(f"[RESTORE] load failed: {e}", flush=True)
+        return
+    restored = 0
+    for user_id, data in rows:
+        if not isinstance(data, dict):
+            continue
+        store = get_user_store(user_id)   # seeds defaults, then overlay
+        data["connected"] = False         # bridge isn't connected yet post-restart
+        store.update(data)
+        restored += 1
+    print(f"[RESTORE] Restored {restored} user store(s) from DB", flush=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -297,6 +361,7 @@ def handle_analysis_batch(data):
     for symbol, result in results.items():
         store["analysis"][symbol] = result
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
+    schedule_persist(user_id)
 
 
 @socketio.on("etf_stock_list")
@@ -319,6 +384,7 @@ def handle_etf_analysis_batch(data):
     for symbol, result in results.items():
         store["etf_analysis"][symbol] = result
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
+    schedule_persist(user_id)
 
 
 @socketio.on("portfolio_data")
@@ -333,6 +399,7 @@ def handle_portfolio_data(data):
     store["executions"] = data.get("executions", [])
     store["portfolio_received"] = True
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
+    schedule_persist(user_id)
 
 
 @socketio.on("bars_data")
@@ -1831,6 +1898,7 @@ def _dashboard_page():
 try:
     db.init_db()
     print("[SERVER] Database initialized")
+    _restore_stores()
 except Exception as e:
     print(f"[SERVER] WARNING: Database init failed: {e}")
     print("[SERVER] Server will start but registration/login won't work until DB is available")
