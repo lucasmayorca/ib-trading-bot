@@ -138,7 +138,13 @@ labels can be directional while `signal` is still HOLD.
 - **`_score_stock` (vista_web.py)** rankea por **edge esperado**: componentes strength (25),
   expectancy (30, con shrinkage por muestra), profit_factor (15), confidence (15), win_rate
   (10), señal activa (5), menos **penalización contra-tendencia** (hasta −15 si el precio va
-  contra su SMA200). El fallback relajado en `compute_top3` usa la misma escala.
+  contra su SMA200). El fallback relajado en `compute_top3` usa la misma escala. Este 0-100 es
+  el "Score" de las tarjetas de recomendación (con tooltip explicativo en el chip).
+- **Confianza: "---" ≠ 0.** Con la confianza calibrada, **0 es un resultado real** (hubo señales
+  históricas pero su edge no es estadísticamente significativo o es negativo) y se muestra como
+  0 en rojo. `fconf(val, nSignals)` reserva "---" SOLO para `nSignals<=0` (ningún setup histórico
+  en 5A — nada que backtestear). No volver a colapsar ambos casos en "---": hace parecer que el
+  backtest no corrió cuando sí corrió. El resumen de cada recomendación muestra el chip Conf.
 - **Objetivo de precio por acción (`_compute_price_levels`)**: NO usa un piso fijo del 10%
   (eso hacía que casi todo mostrara "objetivo 10%"). El **movimiento esperado** se estima por
   acción vía `_estimate_expected_move`: volatilidad (ATR·√días_de_hold) combinada con el
