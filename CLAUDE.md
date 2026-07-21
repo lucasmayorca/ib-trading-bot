@@ -192,10 +192,17 @@ User's machine                          Railway (shared)
 └──────────────────┘                     └──────────────────────────┘
 ```
 - **`cloud/server.py`** — Flask + Flask-SocketIO server (`async_mode="gevent"`). Per-user in-memory
-  store (`user_data[user_id]`) holds live scan results, portfolio, and trades — reset on every
-  process restart/redeploy. `bridge_sessions` maps a WebSocket `sid` to a `user_id`.
+  store (`user_data[user_id]`) holds live scan results, portfolio, and trades. `bridge_sessions`
+  maps a WebSocket `sid` to a `user_id`. **The store is wiped on every container restart/redeploy**
+  — two recovery paths keep the dashboard from going blank (ETF Scanner → Total 0, Mi Cartera → $0):
+  (1) the bridge re-emits its last COMPLETE stock/ETF/portfolio snapshot on every (re)auth
+  (`on_auth` in `bridge/main.py`, cached on `BridgeIB.last_analysis/last_etf_analysis/...`), and
+  (2) the server snapshots the store to Postgres (`schedule_persist`, debounced 20s via
+  `gevent.spawn_later`, `bars_*` chart cache excluded) and restores it on boot (`_restore_stores`).
+  Path (1) is the fast path when the bridge is live; (2) covers restarts while the bridge is offline.
 - **`cloud/db.py`** — Postgres: `users` table (email, password, `bridge_token`, `flex_token`,
-  `flex_query_id`). The bridge token is what `bridge/main.py --token` authenticates with.
+  `flex_query_id`) + `user_store` table (`user_id` PK, `data` JSONB, `updated_at`) for the store
+  snapshot above. The bridge token is what `bridge/main.py --token` authenticates with.
 - **`bridge/`** — a **standalone pip package** (`pip install git+https://github.com/.../ib-trading-bot.git`,
   entry point `ib-bridge = bridge.main:main`). Installed into `~/.ib-bridge/venv` on the user's machine
   via `install-bridge.sh` / `/install.sh` (server-generated, so the URL/token are pre-filled).
