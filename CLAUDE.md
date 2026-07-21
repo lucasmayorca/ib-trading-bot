@@ -85,9 +85,11 @@ labels can be directional while `signal` is still HOLD.
 ## Web Dashboard (vista_web.py)
 - Default chart period: 1Y (scanner, top recommendations, portfolio)
 - **Frecuencia de velas por ventana** (`INTRADAY_P`/`WEEKLY_P` en el JS): ALL/5Y → semanal
-  (agregado de diarios via `toWeekly`), 1Y y 3M → diario, 1M → 4h, 1W → 1h, 1D → 15min. Intradía vía `/api/bars/<sym>/<4h|1h|15m>`: IB si está
-  conectado, **fallback yfinance** (`_fetch_bars_yf`: 4h resampleado de 1h; 15m = últimos 2
-  días de trading) — sin esto 1M/1W/1D quedaban vacíos con TWS caída. El cloud tiene su
+  (agregado de diarios via `toWeekly`), 1Y y 3M → diario, 1M → 1h (~147 velas; no 4h porque
+  la sesión USA de 6.5h deja velas de 4h asimétricas), 1W → 30min (~65), 1D → 15min (~52,
+  últimos 2 días). Intradía vía `/api/bars/<sym>/<1h|30m|15m>` ("4h" sigue soportado como
+  legado): IB si está conectado, **fallback yfinance** (`_fetch_bars_yf`) — sin esto
+  1M/1W/1D quedaban vacíos con TWS caída. El cloud tiene su
   propio `/api/bars` (yfinance directo, mismo contrato `{"ohlc":[...]}` — antes hacía
   round-trip al bridge con otro shape y nunca cargaba). Los 5 renderers comparten el mapeo:
   grilla acciones, grilla ETF, rec cards (stock/ETF) y portfolio.

@@ -2384,8 +2384,9 @@ function marketStatusText(){
 const REFRESH_MS=300000;
 const DAILY_BARS={'ALL':9999,'5Y':9999,'1Y':252,'3M':63,'1M':22,'1W':5,'1D':1};
 // Frecuencia de barras por ventana: ALL/5Y -> velas semanales (agregadas de
-// los diarios), 1Y/3M -> diario, 1M -> 4h, 1W -> 1h, 1D -> 15min (via /api/bars).
-const INTRADAY_P={'1M':'4h','1W':'1h','1D':'15m'};
+// los diarios), 1Y/3M -> diario, 1M -> 1h, 1W -> 30min, 1D -> 15min (via /api/bars).
+// 1h para 1M (y no 4h): la sesion USA dura 6.5h, las velas de 4h quedan asimetricas.
+const INTRADAY_P={'1M':'1h','1W':'30m','1D':'15m'};
 const WEEKLY_P={'ALL':9999,'5Y':9999};   // periodo -> dias diarios a agregar en semanal
 let _data=null,_charts={},_periods={},_intradayCache={};
 let _activeTab='scanner';
@@ -5960,12 +5961,14 @@ def _build_ohlc(df):
 def _fetch_bars_yf(symbol, period):
     """Barras intraday/1h via yfinance (fallback cuando TWS no responde).
 
-    period: '4h' (1 mes, resampleado de 1h), '1h' (1 semana), '15m' (2 dias).
+    period: '1h' (1 mes), '30m' (1 semana), '15m' (2 dias),
+    '4h' (1 mes, resampleado de 1h; legado).
     Devuelve lista OHLC con timestamps unix para Lightweight Charts."""
     import yfinance as yf
     cfg = {
         "4h": ("1mo", "1h"),
-        "1h": ("5d", "1h"),
+        "1h": ("1mo", "1h"),
+        "30m": ("5d", "30m"),
         "15m": ("5d", "15m"),
     }
     if period not in cfg:
@@ -6004,7 +6007,8 @@ def api_bars(symbol, period):
     IB primero si esta conectado; fallback a yfinance (TWS caida/ausente)."""
     configs = {
         "4h": ("1 M", "4 hours"),
-        "1h": ("1 W", "1 hour"),
+        "1h": ("1 M", "1 hour"),
+        "30m": ("1 W", "30 mins"),
         "15m": ("2 D", "15 mins"),
     }
     if period not in configs:

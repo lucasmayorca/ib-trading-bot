@@ -594,7 +594,7 @@ def api_bars(symbol, period):
     """Barras intradiarias (4h/1h/15m) via yfinance, mismo contrato {"ohlc": [...]}
     que el dashboard local espera. (Antes hacia un round-trip al bridge y devolvia
     202/otro shape -> los graficos 1M/1W/1D nunca cargaban en el cloud.)"""
-    if period not in ("4h", "1h", "15m"):
+    if period not in ("4h", "1h", "30m", "15m"):
         return Response('{"error":"invalid"}', status=400, mimetype="application/json")
     cache_key = (symbol, period)
     cached = _bars_cache.get(cache_key)
