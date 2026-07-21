@@ -1521,8 +1521,8 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .tab-loading-text{color:var(--muted);font-size:13px;text-align:center;max-width:400px;line-height:1.5}
 
 /* === MARKET PULSE === */
-.pulse-bar{display:flex;gap:8px;padding:10px 32px;background:var(--bg);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
-.pulse-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:12px;font-weight:600;color:var(--muted)}
+.pulse-bar{display:flex;gap:5px;padding:8px 20px;background:var(--bg);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.pulse-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:11.5px;font-weight:600;color:var(--muted);white-space:nowrap}
 .pulse-chip b{color:var(--text);font-weight:700}
 .pulse-pct{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11.5px}
 .pulse-up{color:var(--buy)}.pulse-down{color:var(--sell)}
@@ -3965,20 +3965,20 @@ function gaugeSvg(score,col){
     +'<circle cx="21" cy="21" r="2.5" fill="var(--text)"/></svg>';
 }
 function vixSvg(v){
-  const x=4+Math.max(0,Math.min(1,(v-10)/35))*64;
-  return '<svg width="72" height="14" viewBox="0 0 72 14">'
-    +'<rect x="4" y="5" width="9"  height="4" rx="2" fill="#0b7a4b" opacity=".75"/>'
-    +'<rect x="13" y="5" width="9"  height="4" fill="#84a94d" opacity=".75"/>'
-    +'<rect x="22" y="5" width="18" height="4" fill="#d97706" opacity=".75"/>'
-    +'<rect x="40" y="5" width="28" height="4" rx="2" fill="#c22436" opacity=".75"/>'
+  const x=3+Math.max(0,Math.min(1,(v-10)/35))*54;
+  return '<svg width="60" height="14" viewBox="0 0 60 14">'
+    +'<rect x="3" y="5" width="8"  height="4" rx="2" fill="#0b7a4b" opacity=".75"/>'
+    +'<rect x="11" y="5" width="8"  height="4" fill="#84a94d" opacity=".75"/>'
+    +'<rect x="19" y="5" width="15" height="4" fill="#d97706" opacity=".75"/>'
+    +'<rect x="34" y="5" width="23" height="4" rx="2" fill="#c22436" opacity=".75"/>'
     +'<circle cx="'+x.toFixed(1)+'" cy="7" r="4.5" fill="var(--text)" stroke="var(--surface)" stroke-width="2"/></svg>';
 }
 // Barra cargada de amplitud: % alcista en verde vs bajista en rojo
 function breadthSvg(pct){
-  const w=Math.round(64*pct/100);
-  return '<svg width="72" height="12" viewBox="0 0 72 12">'
-    +'<rect x="4" y="4" width="64" height="5" rx="2.5" fill="#c22436" opacity=".55"/>'
-    +'<rect x="4" y="4" width="'+w+'" height="5" rx="2.5" fill="#0b7a4b"/></svg>';
+  const w=Math.round(54*pct/100);
+  return '<svg width="60" height="12" viewBox="0 0 60 12">'
+    +'<rect x="3" y="4" width="54" height="5" rx="2.5" fill="#c22436" opacity=".55"/>'
+    +'<rect x="3" y="4" width="'+w+'" height="5" rx="2.5" fill="#0b7a4b"/></svg>';
 }
 async function loadPulse(){
   try{
@@ -3986,24 +3986,24 @@ async function loadPulse(){
     const d=await r.json();
     const el=document.getElementById('pulse-bar'); if(!el)return;
     const open=marketStatusText().startsWith('Mercado abierto');
-    let h='<span class="pulse-chip"><span class="pulse-dot" style="background:'+(open?'var(--buy)':'var(--dim)')+'"></span>'+marketStatusText()+'</span>';
+    let h='<span class="pulse-chip" title="'+marketStatusText()+'"><span class="pulse-dot" style="background:'+(open?'var(--buy)':'var(--dim)')+'"></span>'+(open?'Mercado abierto':'Mercado cerrado')+'</span>';
     for(const q of (d.quotes||[])){
       const cls=q.pct>=0?'pulse-up':'pulse-down', sign=q.pct>=0?'+':'';
       if(q.name==='VIX'){
-        h+='<span class="pulse-chip" title="VIX: volatilidad implicita del SPX"><b>VIX</b> '+q.last.toFixed(1)
-          +vixSvg(q.last)+'<span class="pulse-note">'+q.label+'</span></span>';
+        h+='<span class="pulse-chip" title="VIX '+q.last.toFixed(1)+' — zona '+q.label+' (volatilidad implicita del SPX)"><b>VIX</b> '+q.last.toFixed(1)
+          +vixSvg(q.last)+'</span>';
       }else{
-        h+='<span class="pulse-chip"><b>'+q.name+'</b> '+(q.name==='BTC'?Math.round(q.last).toLocaleString():q.last.toFixed(2))
+        h+='<span class="pulse-chip"><b>'+q.name+'</b> '+(q.name==='BTC'?Math.round(q.last).toLocaleString():q.last.toFixed(1))
           +' <span class="pulse-pct '+cls+'">'+sign+q.pct.toFixed(2)+'%</span></span>';
       }
     }
     if(d.breadth!=null){
-      h+='<span class="pulse-chip" title="% de simbolos del scanner con sesgo alcista">Amplitud'
-        +breadthSvg(d.breadth)+'<b>'+d.breadth+'%</b><span class="pulse-note">alcista</span></span>';
+      h+='<span class="pulse-chip" title="Amplitud: '+d.breadth+'% de los simbolos del scanner con sesgo alcista">Amplitud'
+        +breadthSvg(d.breadth)+'<b>'+d.breadth+'%</b></span>';
     }
     if(d.sentiment!=null){
       const s=d.sentiment, col=s>=55?'var(--buy)':(s>=45?'var(--hold)':'var(--sell)');
-      h+='<span class="pulse-chip" title="Compuesto: VIX + dia SPY + tendencia SPY + amplitud">Sentimiento'
+      h+='<span class="pulse-chip" title="Sentimiento compuesto: VIX + dia SPY + tendencia SPY + amplitud">'
         +gaugeSvg(s,col)
         +'<b style="color:'+col+'">'+s+'</b><span class="pulse-note">'+d.sentiment_label.toLowerCase()+'</span></span>';
     }
