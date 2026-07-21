@@ -629,6 +629,69 @@ def _score_stock(sym, data):
     return max(0.0, min(100.0, score))
 
 
+def _estimate_expected_move(price, atr, data, is_bearish):
+    """Movimiento anticipado (fracción del precio) para el objetivo, POR ACCIÓN.
+
+    Combina dos señales reales en vez de un piso fijo del 10%:
+      1. Volatilidad: ATR escalado al horizonte típico de la estrategia
+         (√días de hold) → cuánto suele moverse *esta* acción en ese lapso.
+      2. Histórico: el retorno medio de las operaciones GANADORAS de este mismo
+         setup en el backtest (`buy/sell_avg_win`) → cuánto capturó la señal
+         cuando funcionó.
+    Devuelve (expected_pct, basis) con expected_pct acotado a [3%, 30%]."""
+    hold_days = getattr(config, "BACKTEST_MAX_HOLD_DAYS", 20)
+    atr_pct = (atr / price) if price > 0 else 0.02
+    vol_move = atr_pct * math.sqrt(max(1, hold_days))   # movimiento esperado por volatilidad
+
+    bt = data.get("backtest", {}) or {}
+    emp = bt.get("sell_avg_win") if is_bearish else bt.get("buy_avg_win")
+    if emp is not None and emp > 0:
+        # Promedia volatilidad e histórico (el histórico ya es neto de costes)
+        expected = 0.5 * vol_move + 0.5 * (emp / 100.0)
+        basis = "ATR + histórico"
+    else:
+        expected = vol_move
+        basis = "volatilidad ATR"
+
+    expected = max(0.03, min(0.30, expected))
+    return expected, basis
+
+
+def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
+                             expected_dist, is_bearish):
+    """Elige el objetivo: el primer nivel técnico (MA/swing) que esté al menos a
+    `0.6·movimiento_esperado` y no más allá de `1.8·movimiento_esperado`. Si el
+    nivel más cercano queda demasiado lejos (o no hay), usa el movimiento esperado
+    directo. Reemplaza el viejo 'nivel más cercano, con piso fijo de 10%'."""
+    min_dist = 0.6 * expected_dist
+    max_dist = 1.8 * expected_dist
+
+    if is_bearish:
+        levels = [(ma_names.get(k, k), v) for k, v in ma_vals.items() if v < price]
+        if swing_l < price:
+            levels.append(("Swing low", swing_l))
+        levels.sort(key=lambda x: -x[1])           # más cercano primero (soporte más alto)
+        for name, v in levels:
+            if (price - v) >= min_dist:
+                if (price - v) <= max_dist:
+                    return v, f"Soporte {name} en ${v:.2f}"
+                break                               # el más cercano ya está muy lejos
+        target = price - expected_dist
+        return target, None                         # basis lo pone el caller (movimiento esperado)
+    else:
+        levels = [(ma_names.get(k, k), v) for k, v in ma_vals.items() if v > price]
+        if swing_h > price:
+            levels.append(("Swing high", swing_h))
+        levels.sort(key=lambda x: x[1])            # más cercano primero (resistencia más baja)
+        for name, v in levels:
+            if (v - price) >= min_dist:
+                if (v - price) <= max_dist:
+                    return v, f"Resistencia {name} en ${v:.2f}"
+                break
+        target = price + expected_dist
+        return target, None
+
+
 def _compute_price_levels(data):
     """Compute entry zone, target, stop loss from MAs + ATR."""
     price = data.get("price", 0)
@@ -653,7 +716,9 @@ def _compute_price_levels(data):
     # Map MA keys to readable names
     ma_names = {"sma200_val": "SMA200", "sma100_val": "SMA100", "sma50_val": "SMA50",
                 "sma20_val": "SMA20", "ema9_val": "EMA9"}
-    min_target_pct = 0.10  # 10% minimum target
+    # Movimiento anticipado por acción (volatilidad + histórico), NO un piso fijo del 10%
+    expected_pct, emove_basis = _estimate_expected_move(price, atr, data, is_bearish)
+    expected_dist = price * expected_pct
 
     if is_bearish:
         # Resistances above for entry ceiling
@@ -661,23 +726,10 @@ def _compute_price_levels(data):
         entry_high = min(res_above[0], price + 1.5 * atr) if res_above else price + atr
         entry_low = price
 
-        # Supports below for target
-        sup_below = sorted([(k, v) for k, v in ma_vals.items() if v < price], key=lambda x: x[1], reverse=True)
-        if sup_below:
-            target = sup_below[0][1]
-            target_basis = f"Soporte {ma_names.get(sup_below[0][0], sup_below[0][0])} en ${target:.2f}"
-        elif swing_l < price - 2 * atr:
-            target = swing_l
-            target_basis = f"Swing low reciente en ${swing_l:.2f}"
-        else:
-            target = price - 2 * atr
-            target_basis = f"Extension ATR 2x bajo precio"
-
-        # Enforce 10% minimum
-        orig_target_pct = (price - target) / price if price > 0 else 0
-        if orig_target_pct < min_target_pct and price > 0:
-            target = round(price * (1 - min_target_pct), 2)
-            target_basis = f"Minimo 10% aplicado (tecnico sugeria {orig_target_pct*100:.1f}%)"
+        target, target_basis = _pick_directional_target(
+            price, ma_vals, ma_names, swing_h, swing_l, expected_dist, is_bearish=True)
+        if target_basis is None:
+            target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
         stop = max(entry_high + atr, swing_h + 0.5 * atr)
         risk = stop - price
@@ -688,23 +740,10 @@ def _compute_price_levels(data):
         entry_low = max(sup_below[0], price - 1.5 * atr) if sup_below else price - atr
         entry_high = price
 
-        # Resistances above for target
-        res_above = sorted([(k, v) for k, v in ma_vals.items() if v > price], key=lambda x: x[1])
-        if res_above:
-            target = res_above[0][1]
-            target_basis = f"Resistencia {ma_names.get(res_above[0][0], res_above[0][0])} en ${target:.2f}"
-        elif swing_h > price + 2 * atr:
-            target = swing_h
-            target_basis = f"Swing high reciente en ${swing_h:.2f}"
-        else:
-            target = price + 2 * atr
-            target_basis = f"Extension ATR 2x sobre precio"
-
-        # Enforce 10% minimum
-        orig_target_pct = (target - price) / price if price > 0 else 0
-        if orig_target_pct < min_target_pct and price > 0:
-            target = round(price * (1 + min_target_pct), 2)
-            target_basis = f"Minimo 10% aplicado (tecnico sugeria {orig_target_pct*100:.1f}%)"
+        target, target_basis = _pick_directional_target(
+            price, ma_vals, ma_names, swing_h, swing_l, expected_dist, is_bearish=False)
+        if target_basis is None:
+            target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
         stop = min(entry_low - atr, swing_l - 0.5 * atr)
         risk = price - stop
@@ -713,11 +752,14 @@ def _compute_price_levels(data):
     rr = round(reward / risk, 2) if risk > 0 else 0.0
     target_pct = reward / price * 100 if price > 0 else 0
 
-    # Horizon estimate: distance_to_target / (ATR * efficiency_factor)
+    # Horizon estimate: para un movimiento dominado por volatilidad, la distancia
+    # crece como ATR·√t (difusión), así que el tiempo esperado para recorrer
+    # `distance` es (distance/ATR)² días de trading. Mucho más honesto que el
+    # lineal distance/(ATR·k), que daba ~7 días para cualquier objetivo-ATR.
     horizon_weeks = ""
     if atr > 0 and price > 0:
         distance = abs(target - price)
-        days_est = distance / (atr * 0.6)
+        days_est = min(250.0, (distance / atr) ** 2)
         weeks = max(1, round(days_est / 5))
         if weeks <= 2:
             horizon_weeks = "1-2 semanas"
@@ -741,6 +783,7 @@ def _compute_price_levels(data):
         "target_pct": round(target_pct, 1),
         "target_basis": target_basis,
         "horizon_weeks": horizon_weeks,
+        "expected_move_pct": round(expected_pct * 100, 1),
     }
 
 

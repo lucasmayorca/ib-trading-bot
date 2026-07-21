@@ -106,6 +106,13 @@ labels can be directional while `signal` is still HOLD.
   expectancy (30, con shrinkage por muestra), profit_factor (15), confidence (15), win_rate
   (10), señal activa (5), menos **penalización contra-tendencia** (hasta −15 si el precio va
   contra su SMA200). El fallback relajado en `compute_top3` usa la misma escala.
+- **Objetivo de precio por acción (`_compute_price_levels`)**: NO usa un piso fijo del 10%
+  (eso hacía que casi todo mostrara "objetivo 10%"). El **movimiento esperado** se estima por
+  acción vía `_estimate_expected_move`: volatilidad (ATR·√días_de_hold) combinada con el
+  retorno medio ganador histórico del setup (`buy/sell_avg_win`). `_pick_directional_target`
+  elige el primer nivel técnico (MA/swing) dentro de `[0.6, 1.8]·movimiento_esperado`; si no
+  hay, usa el movimiento esperado directo. El horizonte usa la relación difusiva `(dist/ATR)²`
+  días (antes lineal → daba ~1-2 semanas para todo). Se expone `expected_move_pct`.
 - **Calibración (`calibration.py` + `/api/calibration`)**: cierra el lazo predicho-vs-real.
   Corre `backtester.run_calibration_trades` sobre 5Y (yfinance) del universo (WATCHLIST +
   escaneados, cap 20, cache 1h) y agrupa por **fuerza de señal** → win-rate/retorno reales,
