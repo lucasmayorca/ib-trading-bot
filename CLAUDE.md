@@ -87,6 +87,10 @@ labels can be directional while `signal` is still HOLD.
 - `compute_top3()` muestra `config.TOP_RECOMMENDATIONS` (5) recomendaciones en cada scanner
   (acciones y ETFs, local y cloud). El nombre `top3`/`renderTop3` se conserva por historia;
   el render itera sobre la longitud del array, no asume 3.
+- Columna "30D" en ambos scanners: mini sparkline SVG (`trendSparkCell`) de los últimos 30 cierres
+  de `chart.ohlc`, verde/roja según el cambio; sortable por `_trendPct` (`data-col="trend"`). El
+  grid `.list-header,.stock-row` tiene 18 columnas (la 18ª es 92px); las filas "sin datos" llevan
+  una celda vacía extra para cuadrar.
 - Counters bar breaks down by signal_label: Compra, Venta, Compra Inminente, Venta Inminente, Virando a Compra/Venta, Zona Extrema, Neutral (only shown if count > 0)
 - Thesis includes: signal label + direction, indicator status (MACD hist, RSI level, Koncorde vs media), moving averages (SMA200/50/20 + golden/death cross), institutional flow (Koncorde azul), target with consistent direction, fundamentals
 - Portfolio "Composicion por Tipo" and "Distribucion por Sector" sections removed

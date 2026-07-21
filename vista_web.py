@@ -1537,9 +1537,11 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .content{padding:0 32px 20px;overflow-x:auto}
 .list-header,.stock-row{
   display:grid;
-  grid-template-columns:20px 70px 84px 90px 40px 52px 52px 52px 52px 52px 60px 48px 60px 40px 44px 56px 56px;
+  grid-template-columns:20px 70px 84px 90px 40px 52px 52px 52px 52px 52px 60px 48px 60px 40px 44px 56px 56px 92px;
   gap:4px;align-items:center;padding:8px 14px;min-width:960px;
 }
+.trend-spark{width:100%;height:20px;display:block}
+.tspark-na{color:var(--dim);font-size:10px;text-align:center}
 .list-header{
   background:var(--surface);
   border-bottom:1px solid var(--accent);color:var(--muted);
@@ -2191,6 +2193,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span data-col="konc" style="text-align:right" onclick="sortListBy('konc')">Konc</span><span data-col="cond" onclick="sortListBy('cond')">C</span>
     <span class="sep" data-col="conf" style="text-align:right" onclick="sortListBy('conf')">Conf</span>
     <span data-col="buy_ret" style="text-align:right" title="Retorno prom. senales de compra (backtest 5Y)" onclick="sortListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno prom. senales de venta (backtest 5Y)" onclick="sortListBy('sell_ret')">Ret.V</span>
+    <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortListBy('trend')">30D</span>
   </div>
   <div id="stock-list"><div id="scanner-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div></div>
 </div>
@@ -2210,6 +2213,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span data-col="konc" style="text-align:right" onclick="sortEtfListBy('konc')">Konc</span><span data-col="cond" onclick="sortEtfListBy('cond')">C</span>
     <span class="sep" data-col="conf" style="text-align:right" onclick="sortEtfListBy('conf')">Conf</span>
     <span data-col="buy_ret" style="text-align:right" title="Retorno prom. senales de compra (backtest 5Y)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno prom. senales de venta (backtest 5Y)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
+    <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortEtfListBy('trend')">30D</span>
   </div>
   <div id="etf-list"><div id="etf-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div></div>
 </div>
@@ -2979,6 +2983,37 @@ function fma(mas,key,price){
   let cls=pct>=0?'v-ok':'v-no';
   return'<span class="iv '+cls+'" title="$'+v.toFixed(2)+'">'+s+pct.toFixed(1)+'%</span>';
 }
+// Mini linea de tendencia (sparkline SVG) de los ultimos N cierres.
+function _trendCloses(r,n){
+  let o=r&&r.chart?r.chart.ohlc:null;
+  if(!o||o.length<2)return null;
+  let k=Math.min(n||30,o.length);
+  return o.slice(-k).map(b=>b.close).filter(v=>v!=null&&!isNaN(v));
+}
+function trendSparkCell(r){
+  let cl=_trendCloses(r,30);
+  if(!cl||cl.length<2)return '<span class="tspark-na">--</span>';
+  let min=Math.min(...cl),max=Math.max(...cl),rng=(max-min)||1;
+  let W=80,H=20,pad=2,n=cl.length;
+  let pts=cl.map((v,i)=>{
+    let x=pad+i*(W-2*pad)/(n-1);
+    let y=pad+(1-(v-min)/rng)*(H-2*pad);
+    return x.toFixed(1)+','+y.toFixed(1);
+  });
+  let up=cl[n-1]>=cl[0];
+  let col=up?'#0b7a4b':'#c22436';
+  let pct=((cl[n-1]-cl[0])/cl[0]*100);
+  let area='2,'+H+' '+pts.join(' ')+' '+(W-2)+','+H;
+  return '<svg class="trend-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" title="'+(pct>=0?'+':'')+pct.toFixed(1)+'% en 30 dias">'+
+    '<polygon points="'+area+'" fill="'+col+'" opacity="0.08"/>'+
+    '<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+col+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>'+
+    '</svg>';
+}
+function _trendPct(r){
+  let cl=_trendCloses(r,30);
+  if(!cl||cl.length<2)return null;
+  return (cl[cl.length-1]-cl[0])/cl[0];
+}
 let _sortCol='vol'; // default sort by dollar volume
 let _sortDir='desc';
 
@@ -3004,6 +3039,7 @@ function _getSortVal(r,col){
     case 'conf':return r.confidence!=null?r.confidence:null;
     case 'buy_ret':return r.buy_avg_return!=null?r.buy_avg_return:null;
     case 'sell_ret':return r.sell_avg_return!=null?r.sell_avg_return:null;
+    case 'trend':return _trendPct(r);
     case 'vol':return r.dollar_vol||0;
     default:return 0;
   }
@@ -3779,7 +3815,7 @@ function update(){
           '<span class="arrow">&#9654;</span><span class="sym">'+sym+'</span>'+
           '<span class="price" style="color:var(--dim)">---</span><span></span>'+na+
           na+na+na+na+na+na+na+na+
-          '<span class="cond cond-0">--</span>'+na+na+na+
+          '<span class="cond cond-0">--</span>'+na+na+na+na+
           '</div></summary>'+
           '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
         idx++;continue;
@@ -3806,6 +3842,7 @@ function update(){
         fv(mh,r.macd_ok)+fv(rv,r.rsi_ok)+fv(km,r.konc_ok)+
         '<span class="'+cc(cond)+'">'+cond+'/3</span>'+
         fconf(r.confidence)+fret(r.buy_avg_return)+fret(r.sell_avg_return)+
+        trendSparkCell(r)+
         '</div>';
       html+='</summary>';
 
@@ -3979,6 +4016,7 @@ function _getEtfSortVal(r,col){
     case 'conf':return r.confidence!=null?r.confidence:null;
     case 'buy_ret':return r.buy_avg_return!=null?r.buy_avg_return:null;
     case 'sell_ret':return r.sell_avg_return!=null?r.sell_avg_return:null;
+    case 'trend':return _trendPct(r);
     case 'vol':return r.dollar_vol||0;
     default:return 0;
   }
@@ -4118,7 +4156,7 @@ function updateEtf(){
           '<span class="arrow">&#9654;</span><span class="sym">'+sym+'</span>'+
           '<span class="price" style="color:var(--dim)">---</span><span></span>'+na+
           na+na+na+na+na+na+na+na+
-          '<span class="cond cond-0">--</span>'+na+na+na+
+          '<span class="cond cond-0">--</span>'+na+na+na+na+
           '</div></summary>'+
           '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
         idx++;continue;
@@ -4145,6 +4183,7 @@ function updateEtf(){
         fv(mh,r.macd_ok)+fv(rv,r.rsi_ok)+fv(km,r.konc_ok)+
         '<span class="'+cc(cond)+'">'+cond+'/3</span>'+
         fconf(r.confidence)+fret(r.buy_avg_return)+fret(r.sell_avg_return)+
+        trendSparkCell(r)+
         '</div>';
       html+='</summary>';
 
