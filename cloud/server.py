@@ -558,6 +558,23 @@ def api_etf_data():
     )
 
 
+@app.route("/api/market-pulse")
+@login_required
+def api_market_pulse():
+    # Espejo del endpoint local: cotizaciones/sentimiento son globales (cache
+    # compartido en vista_web), la amplitud sale del scan del usuario.
+    from vista_web import _pulse_base, _pulse_sentiment, _breadth_from_results
+
+    store = get_user_store(request.user_id)
+    base = _pulse_base()
+    breadth = _breadth_from_results(store.get("analysis", {}), store.get("etf_analysis", {}))
+    score, label = _pulse_sentiment(base, breadth)
+    return to_json({
+        "quotes": base.get("quotes", []),
+        "sentiment": score, "sentiment_label": label, "breadth": breadth,
+    })
+
+
 @app.route("/api/bars/<symbol>/<period>")
 @login_required
 def api_bars(symbol, period):

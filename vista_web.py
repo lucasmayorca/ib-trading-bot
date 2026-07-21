@@ -1520,6 +1520,16 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 @keyframes spin{to{transform:rotate(360deg)}}
 .tab-loading-text{color:var(--muted);font-size:13px;text-align:center;max-width:400px;line-height:1.5}
 
+/* === MARKET PULSE === */
+.pulse-bar{display:flex;gap:8px;padding:10px 32px;background:var(--bg);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.pulse-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:12px;font-weight:600;color:var(--muted)}
+.pulse-chip b{color:var(--text);font-weight:700}
+.pulse-pct{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11.5px}
+.pulse-up{color:var(--buy)}.pulse-down{color:var(--sell)}
+.pulse-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.pulse-note{color:var(--muted);font-weight:500}
+@media(max-width:700px){.pulse-bar{padding:8px 12px}}
+
 /* === GRID TABLE === */
 .content{padding:0 32px 20px;overflow-x:auto}
 .list-header,.stock-row{
@@ -2174,6 +2184,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
   <h1><em>VISTA</em> ANALISIS &mdash; TOP 100 VOLUMEN</h1>
   <div class="sub">MACD + RSI + KONCORDE &nbsp;&bull;&nbsp; <span id="port-info"></span></div>
 </div>
+<div class="pulse-bar" id="pulse-bar" style="display:none"></div>
 <div class="nav-tabs">
   <button class="nav-tab active" onclick="switchTab('scanner')">Scanner</button>
   <button class="nav-tab" onclick="switchTab('etf')">ETF Scanner</button>
@@ -3786,7 +3797,7 @@ function update(){
   let scrollY=window.scrollY;
   fetch("/api/data").then(r=>r.json()).then(data=>{
     _data=data;
-    document.getElementById("port-info").textContent=(data.port?("Puerto: "+data.port+" ("+(data.port===7497?"PAPER":"LIVE")+") \u00b7 "):"")+marketStatusText();
+    if(data.port)document.getElementById("port-info").textContent="Puerto: "+data.port+" ("+(data.port===7497?"PAPER":"LIVE")+")";
     document.getElementById("footer-port").textContent="Puerto: "+data.port;
     document.getElementById("last-update").textContent=data.last_update||"--";
     let next=new Date(Date.now()+REFRESH_MS);
@@ -3938,8 +3949,32 @@ function update(){
   }).catch(err=>console.error("Error:",err));
 }
 
+async function loadPulse(){
+  try{
+    const r=await fetch('/api/market-pulse'); if(!r.ok)return;
+    const d=await r.json();
+    const el=document.getElementById('pulse-bar'); if(!el)return;
+    const open=marketStatusText().startsWith('Mercado abierto');
+    let h='<span class="pulse-chip"><span class="pulse-dot" style="background:'+(open?'var(--buy)':'var(--dim)')+'"></span>'+marketStatusText()+'</span>';
+    for(const q of (d.quotes||[])){
+      const cls=q.pct>=0?'pulse-up':'pulse-down', sign=q.pct>=0?'+':'';
+      h+='<span class="pulse-chip"><b>'+q.name+'</b> '+(q.name==='BTC'?Math.round(q.last).toLocaleString():q.last.toFixed(2))
+        +' <span class="pulse-pct '+cls+'">'+sign+q.pct.toFixed(2)+'%</span>'
+        +(q.label?' <span class="pulse-note">('+q.label+')</span>':'')+'</span>';
+    }
+    if(d.sentiment!=null){
+      const s=d.sentiment, col=s>=55?'var(--buy)':(s>=45?'var(--hold)':'var(--sell)');
+      h+='<span class="pulse-chip" style="margin-left:auto"><span class="pulse-dot" style="background:'+col+'"></span>Sentimiento <b style="color:'+col+'">'+d.sentiment_label+' '+s+'</b>'
+        +(d.breadth!=null?' <span class="pulse-note">&middot; amplitud '+d.breadth+'% alcista</span>':'')+'</span>';
+    }
+    el.innerHTML=h; el.style.display='flex';
+  }catch(e){}
+}
+
 update();
 setInterval(update,REFRESH_MS);
+loadPulse();
+setInterval(loadPulse,REFRESH_MS);
 
 // ══════════════════════════════════════════════════════════════
 //  ETF SCANNER
@@ -6824,6 +6859,107 @@ def build_calibration_report():
     report = _calib.calibrate_universe(ohlc_by_symbol)
     report["symbols_requested"] = len(syms)
     return report
+
+
+
+# ══════════════════════════════════════════════════════════════
+#  MARKET PULSE (mini monitor de sentimiento en el header)
+# ══════════════════════════════════════════════════════════════
+
+_pulse_cache = {"ts": 0.0, "base": None}
+_PULSE_TICKERS = [("SPY", "SPY"), ("QQQ", "QQQ"), ("IWM", "IWM"), ("^VIX", "VIX"), ("BTC-USD", "BTC")]
+
+
+def _pulse_base(cache_secs=300):
+    """Cotizaciones (indices + VIX + BTC) y score tecnico del SPY via yfinance.
+
+    Cache global (el pulso de mercado es igual para todos los usuarios)."""
+    now = time.time()
+    if _pulse_cache["base"] and now - _pulse_cache["ts"] < cache_secs:
+        return _pulse_cache["base"]
+    import yfinance as yf
+    quotes, vix, sma_score = [], None, None
+    for tk, name in _PULSE_TICKERS:
+        try:
+            t = yf.Ticker(tk)
+            fi = t.fast_info
+            last = float(fi.last_price)
+            prev = float(fi.previous_close)
+            pct = (last / prev - 1.0) * 100.0 if prev else 0.0
+            q = {"name": name, "last": round(last, 2), "pct": round(pct, 2)}
+            if name == "VIX":
+                vix = last
+                q["label"] = ("calma" if last < 15 else "normal" if last < 20
+                              else "nervioso" if last < 30 else "panico")
+            quotes.append(q)
+            if name == "SPY":
+                h = t.history(period="1y", interval="1d")
+                if h is not None and len(h) > 200:
+                    close = h["Close"]
+                    px = float(close.iloc[-1])
+                    above200 = px > float(close.rolling(200).mean().iloc[-1])
+                    above50 = px > float(close.rolling(50).mean().iloc[-1])
+                    sma_score = 50 + (25 if above200 else -25) + (15 if above50 else -15)
+        except Exception as e:
+            print(f"  [pulse] {tk}: {e}")
+    base = {"quotes": quotes, "vix": vix, "sma_score": sma_score}
+    if quotes:
+        _pulse_cache["base"] = base
+        _pulse_cache["ts"] = now
+    return base
+
+
+def _breadth_from_results(*result_dicts):
+    """% de simbolos analizados con sesgo alcista. None si la muestra es chica."""
+    bull = bear = 0
+    for results in result_dicts:
+        for r in (results or {}).values():
+            if not isinstance(r, dict):
+                continue
+            label = (r.get("signal_label") or "").upper()
+            if "COMPRA" in label:
+                bull += 1
+            elif "VENTA" in label:
+                bear += 1
+    total = bull + bear
+    if total < 5:
+        return None
+    return round(bull * 100.0 / total)
+
+
+def _pulse_sentiment(base, breadth):
+    """Composite 0-100 (miedo -> codicia): VIX + dia del SPY + tendencia SPY + amplitud."""
+    comp = []
+    if base.get("vix") is not None:
+        comp.append(max(5.0, min(95.0, 90.0 - (base["vix"] - 12.0) * 3.5)))
+    spy = next((q for q in base.get("quotes", []) if q["name"] == "SPY"), None)
+    if spy:
+        comp.append(max(5.0, min(95.0, 50.0 + spy["pct"] * 12.0)))
+    if base.get("sma_score") is not None:
+        comp.append(float(base["sma_score"]))
+    if breadth is not None:
+        comp.append(float(breadth))
+    if not comp:
+        return None, ""
+    score = round(sum(comp) / len(comp))
+    label = ("Codicia" if score >= 65 else "Optimista" if score >= 55 else
+             "Neutral" if score >= 45 else "Cauteloso" if score >= 35 else "Miedo")
+    return score, label
+
+
+@flask_app.route("/api/market-pulse")
+def api_market_pulse():
+    base = _pulse_base()
+    with update_lock:
+        stocks = dict(analysis_cache)
+    with etf_update_lock:
+        etfs = dict(etf_analysis_cache)
+    breadth = _breadth_from_results(stocks, etfs)
+    score, label = _pulse_sentiment(base, breadth)
+    return Response(json.dumps({
+        "quotes": base.get("quotes", []),
+        "sentiment": score, "sentiment_label": label, "breadth": breadth,
+    }), mimetype="application/json")
 
 
 @flask_app.route("/api/calibration")
