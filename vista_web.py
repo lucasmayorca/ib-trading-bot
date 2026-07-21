@@ -1966,6 +1966,28 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .olab-bias.bearish{background:rgba(194,36,54,.15);color:#c22436;border:1px solid rgba(194,36,54,.3)}
 .olab-bias.neutral{background:rgba(36,86,230,.15);color:#4262d9;border:1px solid rgba(36,86,230,.3)}
 
+/* Stock forecast */
+.olab-forecast-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:18px}
+.olab-forecast-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px}
+.olab-forecast-card.target{border-left:3px solid #0b7a4b}
+.olab-fc-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600;margin-bottom:6px}
+.olab-fc-value{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.2}
+.olab-fc-sub{font-size:11px;color:var(--muted);margin-top:4px}
+.olab-fc-basis{font-size:10px;color:var(--muted);margin-top:4px;font-style:italic}
+.olab-forecast-bar-wrap{margin:12px 0 4px;padding:0 4px}
+.olab-forecast-bar{position:relative;height:28px;background:var(--border);border-radius:14px;overflow:visible}
+.olab-fb-zone{position:absolute;top:0;height:100%;border-radius:14px}
+.olab-fb-zone.entry{background:rgba(36,86,230,.12);border:1px dashed rgba(36,86,230,.35)}
+.olab-fb-marker{position:absolute;top:-6px;transform:translateX(-50%);text-align:center}
+.olab-fb-marker .dot{width:10px;height:10px;border-radius:50%;margin:0 auto 3px;border:2px solid #fff}
+.olab-fb-marker .lbl{font-size:8px;font-weight:700;white-space:nowrap}
+.olab-fb-marker.stop .dot{background:#c22436}
+.olab-fb-marker.stop .lbl{color:#c22436}
+.olab-fb-marker.current .dot{background:#2456e6}
+.olab-fb-marker.current .lbl{color:#2456e6}
+.olab-fb-marker.target .dot{background:#0b7a4b}
+.olab-fb-marker.target .lbl{color:#0b7a4b}
+
 /* Multi-symbol cards */
 .olab-multi-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:16px;overflow:hidden}
 .olab-multi-header{padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;border-bottom:1px solid var(--border)}
@@ -4291,6 +4313,9 @@ function renderOptionsLab(d){
       '<p>'+d.summary+'</p>'+
     '</div>';
 
+  // Stock Forecast
+  renderStockForecast(d);
+
   // IV Analysis
   renderIVSection(d);
 
@@ -4299,6 +4324,111 @@ function renderOptionsLab(d){
 
   // Strategies
   renderStrategies(d);
+}
+
+function renderStockForecast(d){
+  let pl=d.price_levels;
+  if(!pl) return;
+  let price=d.price||0;
+  let isBear=_labelIsBearish(d.signal_label||'');
+  let dirColor=isBear?'#c22436':'#0b7a4b';
+  let dirIcon=isBear?'&#x25BC;':'&#x25B2;';
+  let dirLabel=isBear?'BAJISTA':'ALCISTA';
+
+  let targetPct=pl.target_pct||0;
+  let rr=pl.risk_reward||0;
+  let stopDist=price>0?Math.abs(pl.stop_loss-price)/price*100:0;
+
+  // Backtest expected move (median 30d if available)
+  let bt=d.backtest||{};
+  let outcomes=bt.outcomes||{};
+  let bt30=outcomes['30']||outcomes['20']||{};
+  let btAvg=bt30.avg_return;
+  let btWr=bt30.win_rate;
+  let btP10=bt30.percentiles?bt30.percentiles.p10:null;
+  let btP90=bt30.percentiles?bt30.percentiles.p90:null;
+
+  let html='<div class="olab-section-title">Pronostico del Activo'+
+    '<span class="olab-badge" style="background:'+dirColor+'18;color:'+dirColor+'">'+dirIcon+' '+dirLabel+'</span>'+
+    (pl.horizon_weeks?'<span class="olab-badge" style="background:rgba(36,86,230,.12);color:#4262d9">&#x23F1; '+pl.horizon_weeks+'</span>':'')+
+    '</div>';
+
+  html+='<div class="olab-forecast-grid">';
+
+  // Price target card
+  html+='<div class="olab-forecast-card target">'+
+    '<div class="olab-fc-label">Precio Objetivo</div>'+
+    '<div class="olab-fc-value" style="color:'+dirColor+'">$'+pl.target.toFixed(2)+'</div>'+
+    '<div class="olab-fc-sub">'+(isBear?'-':'+')+targetPct.toFixed(1)+'% desde actual</div>'+
+    '<div class="olab-fc-basis">'+pl.target_basis+'</div>'+
+  '</div>';
+
+  // Entry zone card
+  html+='<div class="olab-forecast-card">'+
+    '<div class="olab-fc-label">Zona de Entrada</div>'+
+    '<div class="olab-fc-value">$'+pl.entry_low.toFixed(2)+' &ndash; $'+pl.entry_high.toFixed(2)+'</div>'+
+    '<div class="olab-fc-sub">Precio actual: $'+price.toFixed(2)+'</div>'+
+  '</div>';
+
+  // Stop loss card
+  html+='<div class="olab-forecast-card">'+
+    '<div class="olab-fc-label">Stop Loss</div>'+
+    '<div class="olab-fc-value" style="color:#c22436">$'+pl.stop_loss.toFixed(2)+'</div>'+
+    '<div class="olab-fc-sub">-'+stopDist.toFixed(1)+'% | R/R: '+rr.toFixed(1)+'x</div>'+
+  '</div>';
+
+  // Backtest expected card
+  if(btAvg!=null){
+    let btColor=btAvg>=0?'#0b7a4b':'#c22436';
+    html+='<div class="olab-forecast-card">'+
+      '<div class="olab-fc-label">Movimiento Esperado (hist.)</div>'+
+      '<div class="olab-fc-value" style="color:'+btColor+'">'+(btAvg>=0?'+':'')+btAvg.toFixed(1)+'%</div>'+
+      '<div class="olab-fc-sub">Win rate: '+(btWr||0).toFixed(0)+'%'+
+        (btP10!=null?' | P10: '+btP10+'% P90: '+btP90+'%':'')+
+      '</div>'+
+    '</div>';
+  }
+
+  html+='</div>';
+
+  // Visual bar: stop — entry — current — target
+  html+=renderForecastBar(price,pl,isBear);
+
+  let existFc=document.getElementById('olab-forecast');
+  if(existFc) existFc.remove();
+  document.getElementById('olab-summary').insertAdjacentHTML('afterend',
+    '<div id="olab-forecast">'+html+'</div>');
+}
+
+function renderForecastBar(price,pl,isBear){
+  let pts=[pl.stop_loss,pl.entry_low,pl.entry_high,price,pl.target];
+  let lo=Math.min(...pts)*0.995;
+  let hi=Math.max(...pts)*1.005;
+  let range=hi-lo;
+  if(range<=0) return '';
+  function pct(v){return ((v-lo)/range*100).toFixed(1);}
+
+  let html='<div class="olab-forecast-bar-wrap">';
+  html+='<div class="olab-forecast-bar">';
+
+  // Entry zone band
+  html+='<div class="olab-fb-zone entry" style="left:'+pct(pl.entry_low)+'%;width:'+((pl.entry_high-pl.entry_low)/range*100).toFixed(1)+'%"></div>';
+
+  // Stop marker
+  html+='<div class="olab-fb-marker stop" style="left:'+pct(pl.stop_loss)+'%"><div class="dot"></div><div class="lbl">Stop $'+pl.stop_loss.toFixed(0)+'</div></div>';
+
+  // Current price marker
+  html+='<div class="olab-fb-marker current" style="left:'+pct(price)+'%"><div class="dot"></div><div class="lbl">Actual $'+price.toFixed(0)+'</div></div>';
+
+  // Target marker
+  html+='<div class="olab-fb-marker target" style="left:'+pct(pl.target)+'%"><div class="dot"></div><div class="lbl">Obj $'+pl.target.toFixed(0)+'</div></div>';
+
+  html+='</div></div>';
+  return html;
+}
+
+function _labelIsBearish(label){
+  return /VENTA|BAJISTA|BEARISH/i.test(label);
 }
 
 function renderIVSection(d){
@@ -4450,6 +4580,25 @@ function renderStrategyDetail(s,idx){
   if(s.iv_edge){
     html+='<div style="font-size:10px;color:#b45309;margin-top:6px">&#x26A0; '+s.iv_edge+'</div>';
   }
+
+  // P&L at target price from stock forecast
+  let plDetail=(_olabData||{}).price_levels;
+  if(plDetail&&plDetail.target&&s.payoff_points&&s.payoff_points.length){
+    let tgt=plDetail.target;
+    let closest=s.payoff_points[0];
+    for(let pt of s.payoff_points){
+      if(Math.abs(pt.price-tgt)<Math.abs(closest.price-tgt)) closest=pt;
+    }
+    let pnlColor=closest.pnl>=0?'#0b7a4b':'#c22436';
+    let capReq=s.capital_required||1;
+    let retPct=capReq>0?(closest.pnl/capReq*100):0;
+    html+='<div style="margin-top:8px;padding:6px 10px;border-radius:6px;background:'+(closest.pnl>=0?'rgba(11,122,75,.08)':'rgba(194,36,54,.08)')+';font-size:11px">'+
+      '<strong style="color:'+pnlColor+'">Si el activo llega al objetivo ($'+tgt.toFixed(0)+'):</strong> '+
+      '<span style="color:'+pnlColor+';font-weight:800">'+(closest.pnl>=0?'+':'')+closest.pnl.toFixed(0)+' USD</span>'+
+      ' <span style="color:var(--muted)">('+(retPct>=0?'+':'')+retPct.toFixed(1)+'% sobre capital)</span>'+
+    '</div>';
+  }
+
   html+='</div>';
 
   // Right: Greeks + Legs
@@ -4592,6 +4741,50 @@ function drawPayoffChart(idx){
   ctx.lineWidth=2;
   ctx.stroke();
 
+  // Target price and stop loss from stock forecast
+  let pl=(_olabData||{}).price_levels;
+  if(pl){
+    let tgt=pl.target;
+    let sl=pl.stop_loss;
+
+    // Expected move shaded zone (entry_low to target)
+    let eLow=pl.entry_low, eHigh=pl.entry_high;
+    let zoneLeft=Math.max(Math.min(isBearTarget(pl)?tgt:eLow, maxX), minX);
+    let zoneRight=Math.min(Math.max(isBearTarget(pl)?eHigh:tgt, minX), maxX);
+    if(zoneRight>zoneLeft){
+      ctx.fillStyle='rgba(36,86,230,0.06)';
+      ctx.fillRect(x(zoneLeft),0,x(zoneRight)-x(zoneLeft),H);
+    }
+
+    // Target price line (green dashed)
+    if(tgt>minX&&tgt<maxX){
+      ctx.strokeStyle='rgba(11,122,75,0.5)';
+      ctx.setLineDash([5,3]);
+      ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(x(tgt),0);ctx.lineTo(x(tgt),H);ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#0b7a4b';
+      ctx.font='bold 9px sans-serif';
+      let tgtLbl='Objetivo $'+tgt.toFixed(0);
+      let tgtPct=cp>0?((tgt-cp)/cp*100).toFixed(1):'';
+      if(tgtPct) tgtLbl+=' ('+(tgt>cp?'+':'')+tgtPct+'%)';
+      ctx.fillText(tgtLbl,x(tgt)+3,26);
+    }
+
+    // Stop loss line (red dashed)
+    if(sl>minX&&sl<maxX){
+      ctx.strokeStyle='rgba(194,36,54,0.4)';
+      ctx.setLineDash([5,3]);
+      ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(x(sl),0);ctx.lineTo(x(sl),H);ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#c22436';
+      ctx.font='bold 9px sans-serif';
+      ctx.fillText('Stop $'+sl.toFixed(0),x(sl)+3,H-16);
+    }
+  }
+  function isBearTarget(p){return p.target<((_olabData||{}).price||0);}
+
   // Breakevens
   if(strat.breakevens){
     for(let bk of strat.breakevens){
@@ -4602,6 +4795,24 @@ function drawPayoffChart(idx){
         ctx.fillText('BE $'+bk.toFixed(0),x(bk)-12,y0-8);
       }
     }
+  }
+
+  // P&L at target price
+  if(pl&&pl.target>minX&&pl.target<maxX){
+    let tgtIdx=0;
+    let tgtPrice=pl.target;
+    for(let i=1;i<prices.length;i++){
+      if(Math.abs(prices[i]-tgtPrice)<Math.abs(prices[tgtIdx]-tgtPrice)) tgtIdx=i;
+    }
+    let pnlAtTarget=pnls[tgtIdx];
+    let dotColor=pnlAtTarget>=0?'#0b7a4b':'#c22436';
+    ctx.fillStyle=dotColor;
+    ctx.beginPath();ctx.arc(x(prices[tgtIdx]),y(pnlAtTarget),5,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(x(prices[tgtIdx]),y(pnlAtTarget),5,0,Math.PI*2);ctx.stroke();
+    ctx.fillStyle=dotColor;
+    ctx.font='bold 10px sans-serif';
+    ctx.fillText((pnlAtTarget>=0?'+':'')+pnlAtTarget.toFixed(0)+' si objetivo',x(prices[tgtIdx])+8,y(pnlAtTarget)-4);
   }
 
   // Labels
@@ -4634,14 +4845,19 @@ function renderOptionsLabMulti(opportunities){
     let topStrat=(d.strategies||[])[0];
     let biasCls=topStrat?(topStrat.bias==='bullish'?'bullish':(topStrat.bias==='bearish'?'bearish':'neutral')):'neutral';
 
+    let pl=d.price_levels||{};
+    let tgtPct=pl.target_pct||0;
+    let tgtDir=pl.target>(d.price||0)?'+':'';
+    let tgtColor=pl.target>(d.price||0)?'#0b7a4b':'#c22436';
+
     html+='<div class="olab-multi-card" id="olab-multi-'+i+'">'+
       '<div class="olab-multi-header" onclick="toggleOlabMulti('+i+',\''+d.symbol+'\')">'+
         '<span style="font-size:18px;font-weight:900;color:'+sigColor+'">'+d.symbol+'</span>'+
         '<span style="font-size:12px;color:var(--muted)">$'+(d.price||0).toFixed(2)+'</span>'+
         '<span class="olab-bias '+biasCls+'" style="font-size:9px">'+(d.signal_label||d.signal)+'</span>'+
+        (pl.target?'<span style="font-size:11px;font-weight:700;color:'+tgtColor+'">&#x2192; $'+pl.target.toFixed(0)+' ('+tgtDir+tgtPct.toFixed(1)+'%)'+(pl.horizon_weeks?' '+pl.horizon_weeks:'')+'</span>':'')+
         '<span style="font-size:11px;color:var(--muted);margin-left:auto">'+
           'IV: '+(iv.estimated_iv?((iv.estimated_iv*100).toFixed(0)+'%'):'--')+
-          ' | Score: '+(d.stock_score||0).toFixed(0)+
           ' | Top: '+(topStrat?topStrat.name:'--')+
           ' ('+((topStrat||{}).prob_profit||0).toFixed(0)+'% prob)'+
         '</span>'+
@@ -4668,6 +4884,21 @@ function toggleOlabMulti(idx,sym){
 
     // Build scoped content directly
     let html='';
+
+    // Stock forecast inline
+    let plm=d.price_levels||{};
+    if(plm.target){
+      let isBear=plm.target<(d.price||0);
+      let dirC=isBear?'#c22436':'#0b7a4b';
+      let stopDist=(d.price||1)>0?Math.abs(plm.stop_loss-(d.price||0))/(d.price||1)*100:0;
+      html+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">';
+      html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Objetivo</div><div style="font-size:16px;font-weight:800;color:'+dirC+'">$'+plm.target.toFixed(2)+' <span style="font-size:11px">'+(isBear?'-':'+')+plm.target_pct.toFixed(1)+'%</span></div></div>';
+      html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Entrada</div><div style="font-size:14px;font-weight:700;color:var(--text)">$'+plm.entry_low.toFixed(2)+' &ndash; $'+plm.entry_high.toFixed(2)+'</div></div>';
+      html+='<div style="flex:1;min-width:100px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Stop Loss</div><div style="font-size:14px;font-weight:700;color:#c22436">$'+plm.stop_loss.toFixed(2)+' <span style="font-size:10px">(-'+stopDist.toFixed(1)+'%)</span></div></div>';
+      html+='<div style="flex:1;min-width:80px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">R/R</div><div style="font-size:14px;font-weight:700;color:var(--text)">'+(plm.risk_reward||0).toFixed(1)+'x</div></div>';
+      if(plm.horizon_weeks) html+='<div style="flex:1;min-width:80px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Horizonte</div><div style="font-size:14px;font-weight:700;color:#4262d9">'+plm.horizon_weeks+'</div></div>';
+      html+='</div>';
+    }
 
     // IV section
     let iv=d.iv_analysis||{};
@@ -5678,6 +5909,8 @@ def api_options_lab(symbol):
         return Response(to_json({"error": f"Error generando Options Lab: {str(e)}"}),
                         status=500, mimetype="application/json")
 
+    result["price_levels"] = _compute_price_levels(data)
+
     with options_lab_lock:
         options_lab_cache[symbol] = {"data": result, "ts": time.time()}
 
@@ -5695,7 +5928,7 @@ def api_options_lab_top():
 
     # 1. Pre-screen: score all stocks quickly for options potential
     candidates = []
-    for sym, data in analysis_cache.items():
+    for sym, data in list(analysis_cache.items()):
         if data is None:
             continue
         price = data.get("price", 0)
@@ -5787,6 +6020,7 @@ def api_options_lab_top():
                 dte_options=config.OPTIONS_DTE_TARGETS,
             )
             lab["stock_score"] = round(opt_score, 1)
+            lab["price_levels"] = _compute_price_levels(data)
             results.append(lab)
         except Exception as e:
             print(f"  Options Lab error for {sym}: {e}")
