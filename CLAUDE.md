@@ -87,10 +87,18 @@ labels can be directional while `signal` is still HOLD.
 - `compute_top3()` muestra `config.TOP_RECOMMENDATIONS` (5) recomendaciones en cada scanner
   (acciones y ETFs, local y cloud). El nombre `top3`/`renderTop3` se conserva por historia;
   el render itera sobre la longitud del array, no asume 3.
+- **Tabla del scanner (rediseño 2026-07)**: header en dos niveles — fila de grupos (`.lh-groups`:
+  Activo · Precio vs media móvil · Momentum · Backtest 5A · Tend., con `grid-column:span N`) sobre
+  la fila de columnas (`.lh-cols`). El grid de 18 columnas vive en `.lh-groups,.lh-cols,.stock-row`
+  (min-width 1020px); el sort sigue anclado a `#list-header [data-col=...]` (spans anidados OK).
+  Celdas compuestas: `fsym` (ticker + $vol 20d), `fpx` (precio + Δ vs cierre anterior), `fstr`
+  (fuerza + micro-barra coloreada por dirección del label), `frsi` (píldora por zona `.rsi-os/osl/
+  obl/ob`), `fv` (valor + `.okdot` si la condición de giro se cumple, tooltip = detail), `fcond`
+  (3 puntos `.cond-dot`), `fconf` (número + micro-barra). Todos con tooltips `title`. Los headers
+  están duplicados para acciones (`sortListBy`) y ETFs (`sortEtfListBy`) — cambiar ambos.
 - Columna "30D" en ambos scanners: mini sparkline SVG (`trendSparkCell`) de los últimos 30 cierres
-  de `chart.ohlc`, verde/roja según el cambio; sortable por `_trendPct` (`data-col="trend"`). El
-  grid `.list-header,.stock-row` tiene 18 columnas (la 18ª es 92px); las filas "sin datos" llevan
-  una celda vacía extra para cuadrar.
+  de `chart.ohlc`, verde/roja según el cambio; sortable por `_trendPct` (`data-col="trend"`). Las
+  filas "sin datos" llevan una celda vacía extra para cuadrar el grid.
 - Counters bar breaks down by signal_label: Compra, Venta, Compra Inminente, Venta Inminente, Virando a Compra/Venta, Zona Extrema, Neutral (only shown if count > 0)
 - Thesis includes: signal label + direction, indicator status (MACD hist, RSI level, Koncorde vs media), moving averages (SMA200/50/20 + golden/death cross), institutional flow (Koncorde azul), target with consistent direction, fundamentals
 - Portfolio "Composicion por Tipo" and "Distribucion por Sector" sections removed

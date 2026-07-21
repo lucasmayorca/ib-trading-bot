@@ -1535,21 +1535,58 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 
 /* === GRID TABLE === */
 .content{padding:0 32px 20px;overflow-x:auto}
-.list-header,.stock-row{
+.lh-groups,.lh-cols,.stock-row{
   display:grid;
-  grid-template-columns:20px 70px 84px 90px 40px 52px 52px 52px 52px 52px 60px 48px 60px 40px 44px 56px 56px 92px;
-  gap:4px;align-items:center;padding:8px 14px;min-width:960px;
+  grid-template-columns:20px 76px 86px 104px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 92px;
+  gap:4px;align-items:center;
 }
+.stock-row{padding:9px 14px;min-width:1020px}
 .trend-spark{width:100%;height:20px;display:block}
 .tspark-na{color:var(--dim);font-size:10px;text-align:center}
 .list-header{
   background:var(--surface);
   border-bottom:1px solid var(--accent);color:var(--muted);
-  font-size:10px;text-transform:uppercase;letter-spacing:.7px;font-weight:700;
   position:sticky;top:0;z-index:10;border-radius:8px 8px 0 0;
+  padding:0 14px;min-width:1020px;
 }
-/* Section separators in header */
+.lh-groups{padding-top:7px;font-size:8.5px;text-transform:uppercase;letter-spacing:1px;font-weight:800;color:var(--dim)}
+.lh-groups .lh-g{white-space:nowrap;overflow:hidden}
+.lh-groups .sepg{border-left:1px solid var(--border);padding-left:8px}
+.lh-cols{padding:4px 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;font-weight:700}
+/* Section separators in header + rows */
 .list-header .sep{border-left:1px solid var(--dim);padding-left:8px}
+/* Hover de fila */
+summary:hover .stock-row{background:rgba(36,86,230,.035)}
+/* Ticker con volumen */
+.sym-cell{display:flex;flex-direction:column;line-height:1.2;min-width:0}
+.sym-cell b{font-weight:800;color:var(--text);font-size:13.5px;letter-spacing:-.3px}
+.sym-cell small{font-size:9px;color:var(--dim);font-family:'JetBrains Mono',monospace;font-weight:600}
+/* Precio con variacion diaria */
+.px-cell{display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;font-family:'JetBrains Mono',monospace}
+.px-cell b{font-weight:600;color:#3a3f48;font-size:12.5px}
+.px-cell small{font-size:9px;font-weight:700}
+/* Fuerza: numero + micro-barra */
+.str-cell{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.str-cell b{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700}
+.str-bar{display:block;width:36px;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.str-bar u{display:block;height:100%;border-radius:2px}
+/* RSI: pildora por zona */
+.rsi-pill{padding:2px 6px;border-radius:5px;font-weight:700;justify-self:end;text-align:center;min-width:26px;box-sizing:border-box}
+.rsi-os{background:rgba(11,122,75,.14);color:var(--buy)}
+.rsi-osl{background:rgba(11,122,75,.07);color:#15803d}
+.rsi-ob{background:rgba(194,36,54,.14);color:var(--sell)}
+.rsi-obl{background:rgba(194,36,54,.07);color:#b91c30}
+.rsi-mid{color:var(--muted)}
+/* Punto de condicion cumplida (MACD/Koncorde girando) */
+.okdot{display:inline-block;width:4px;height:4px;border-radius:50%;margin-left:3px;vertical-align:2px}
+/* Condiciones: 3 puntos */
+.cond-dots{display:flex;gap:3px;justify-content:center;align-items:center}
+.cond-dot{width:7px;height:7px;border-radius:50%;background:var(--border)}
+/* Confianza: numero + micro-barra */
+.conf-cell{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.conf-cell b{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700}
+.conf-bar{display:block;width:36px;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.conf-bar u{display:block;height:100%;border-radius:2px}
 
 /* === ACCORDION === */
 details{background:var(--surface);border-bottom:1px solid var(--border-subtle);margin:0;transition:all .2s ease}
@@ -1565,7 +1602,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 /* === CELLS === */
 .sym{font-weight:800;color:var(--text);font-size:14px;letter-spacing:-.3px}
 .price{font-family:'JetBrains Mono',monospace;font-weight:600;color:#3a3f48;text-align:right;font-size:13px}
-.badge{display:inline-block;padding:3px 10px;border-radius:6px;font-weight:800;font-size:9.5px;text-transform:uppercase;text-align:center;letter-spacing:.3px;white-space:nowrap;min-width:64px}
+.badge{display:inline-block;padding:3px 6px;border-radius:6px;font-weight:800;font-size:8.5px;text-transform:uppercase;text-align:center;letter-spacing:.2px;white-space:nowrap;min-width:64px;max-width:100%;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box}
 .b-buy{background:rgba(11,122,75,.12);color:var(--buy);border:1px solid rgba(11,122,75,.25)}
 .b-buy-strong{background:rgba(11,122,75,.18);color:#0b7a4b;border:1px solid rgba(11,122,75,.35);box-shadow:0 0 12px rgba(11,122,75,.15)}
 .b-sell{background:rgba(194,36,54,.12);color:var(--sell);border:1px solid rgba(194,36,54,.25)}
@@ -2184,16 +2221,25 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
   <div class="list-header" id="list-header">
-    <span></span><span data-col="sym" onclick="sortListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" onclick="sortListBy('price')">Precio</span>
-    <span data-col="signal" onclick="sortListBy('signal')">Senal</span><span data-col="strength" style="text-align:right" title="Fuerza de la senal (0-5.1)" onclick="sortListBy('strength')">Str</span>
-    <span class="sep" data-col="sma200" style="text-align:right" onclick="sortListBy('sma200')">200</span><span data-col="sma100" style="text-align:right" onclick="sortListBy('sma100')">100</span>
-    <span data-col="sma50" style="text-align:right" onclick="sortListBy('sma50')">50</span><span data-col="sma20" style="text-align:right" onclick="sortListBy('sma20')">20</span>
-    <span data-col="ema9" style="text-align:right" onclick="sortListBy('ema9')">9e</span>
-    <span class="sep" data-col="macd" style="text-align:right" onclick="sortListBy('macd')">MACD</span><span data-col="rsi" style="text-align:right" onclick="sortListBy('rsi')">RSI</span>
-    <span data-col="konc" style="text-align:right" onclick="sortListBy('konc')">Konc</span><span data-col="cond" onclick="sortListBy('cond')">C</span>
-    <span class="sep" data-col="conf" style="text-align:right" onclick="sortListBy('conf')">Conf</span>
-    <span data-col="buy_ret" style="text-align:right" title="Retorno prom. senales de compra (backtest 5Y)" onclick="sortListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno prom. senales de venta (backtest 5Y)" onclick="sortListBy('sell_ret')">Ret.V</span>
+    <div class="lh-groups">
+      <span class="lh-g" style="grid-column:span 5">Activo</span>
+      <span class="lh-g sepg" style="grid-column:span 5">Precio vs media movil</span>
+      <span class="lh-g sepg" style="grid-column:span 4">Momentum</span>
+      <span class="lh-g sepg" style="grid-column:span 3">Backtest 5A</span>
+      <span class="lh-g sepg" style="grid-column:span 1">Tend.</span>
+    </div>
+    <div class="lh-cols">
+    <span></span><span data-col="sym" title="Simbolo · debajo, volumen promedio en dolares (20d)" onclick="sortListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" title="Ultimo precio · debajo, variacion vs cierre anterior" onclick="sortListBy('price')">Precio</span>
+    <span data-col="signal" title="Etiqueta de senal segun MACD + RSI + Koncorde" onclick="sortListBy('signal')">Senal</span><span data-col="strength" style="text-align:right" title="Fuerza de la senal (0-5.1): indicadores que confirman + bonus por intensidad" onclick="sortListBy('strength')">Fuerza</span>
+    <span class="sep" data-col="sma200" style="text-align:right" title="Distancia del precio a la SMA de 200 ruedas" onclick="sortListBy('sma200')">MA200</span><span data-col="sma100" style="text-align:right" title="Distancia del precio a la SMA de 100 ruedas" onclick="sortListBy('sma100')">MA100</span>
+    <span data-col="sma50" style="text-align:right" title="Distancia del precio a la SMA de 50 ruedas" onclick="sortListBy('sma50')">MA50</span><span data-col="sma20" style="text-align:right" title="Distancia del precio a la SMA de 20 ruedas" onclick="sortListBy('sma20')">MA20</span>
+    <span data-col="ema9" style="text-align:right" title="Distancia del precio a la EMA de 9 ruedas" onclick="sortListBy('ema9')">EMA9</span>
+    <span class="sep" data-col="macd" style="text-align:right" title="Histograma MACD (12,26,9) · punto = condicion de giro cumplida" onclick="sortListBy('macd')">MACD</span><span data-col="rsi" style="text-align:right" title="RSI 14 · verde <30 sobreventa, rojo >70 sobrecompra" onclick="sortListBy('rsi')">RSI</span>
+    <span data-col="konc" style="text-align:right" title="Koncorde marron (manos fuertes) · punto = giro vs media cumplido" onclick="sortListBy('konc')">Konc.</span><span data-col="cond" style="text-align:center" title="Condiciones alineadas de 3 (MACD, RSI, Koncorde)" onclick="sortListBy('cond')">Cond</span>
+    <span class="sep" data-col="conf" style="text-align:right" title="Confianza calibrada del backtest 5A (0-100): significancia del edge x muestra" onclick="sortListBy('conf')">Conf</span>
+    <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)" onclick="sortListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por senal de VENTA (backtest 5A, neto de costes)" onclick="sortListBy('sell_ret')">Ret.V</span>
     <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortListBy('trend')">30D</span>
+    </div>
   </div>
   <div id="stock-list"><div id="scanner-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div></div>
 </div>
@@ -2204,16 +2250,25 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="etf-top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
   <div class="list-header" id="etf-list-header">
-    <span></span><span data-col="sym" onclick="sortEtfListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" onclick="sortEtfListBy('price')">Precio</span>
-    <span data-col="signal" onclick="sortEtfListBy('signal')">Senal</span><span data-col="strength" style="text-align:right" title="Fuerza de la senal (0-5.1)" onclick="sortEtfListBy('strength')">Str</span>
-    <span class="sep" data-col="sma200" style="text-align:right" onclick="sortEtfListBy('sma200')">200</span><span data-col="sma100" style="text-align:right" onclick="sortEtfListBy('sma100')">100</span>
-    <span data-col="sma50" style="text-align:right" onclick="sortEtfListBy('sma50')">50</span><span data-col="sma20" style="text-align:right" onclick="sortEtfListBy('sma20')">20</span>
-    <span data-col="ema9" style="text-align:right" onclick="sortEtfListBy('ema9')">9e</span>
-    <span class="sep" data-col="macd" style="text-align:right" onclick="sortEtfListBy('macd')">MACD</span><span data-col="rsi" style="text-align:right" onclick="sortEtfListBy('rsi')">RSI</span>
-    <span data-col="konc" style="text-align:right" onclick="sortEtfListBy('konc')">Konc</span><span data-col="cond" onclick="sortEtfListBy('cond')">C</span>
-    <span class="sep" data-col="conf" style="text-align:right" onclick="sortEtfListBy('conf')">Conf</span>
-    <span data-col="buy_ret" style="text-align:right" title="Retorno prom. senales de compra (backtest 5Y)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno prom. senales de venta (backtest 5Y)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
+    <div class="lh-groups">
+      <span class="lh-g" style="grid-column:span 5">Activo</span>
+      <span class="lh-g sepg" style="grid-column:span 5">Precio vs media movil</span>
+      <span class="lh-g sepg" style="grid-column:span 4">Momentum</span>
+      <span class="lh-g sepg" style="grid-column:span 3">Backtest 5A</span>
+      <span class="lh-g sepg" style="grid-column:span 1">Tend.</span>
+    </div>
+    <div class="lh-cols">
+    <span></span><span data-col="sym" title="Simbolo · debajo, volumen promedio en dolares (20d)" onclick="sortEtfListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" title="Ultimo precio · debajo, variacion vs cierre anterior" onclick="sortEtfListBy('price')">Precio</span>
+    <span data-col="signal" title="Etiqueta de senal segun MACD + RSI + Koncorde" onclick="sortEtfListBy('signal')">Senal</span><span data-col="strength" style="text-align:right" title="Fuerza de la senal (0-5.1): indicadores que confirman + bonus por intensidad" onclick="sortEtfListBy('strength')">Fuerza</span>
+    <span class="sep" data-col="sma200" style="text-align:right" title="Distancia del precio a la SMA de 200 ruedas" onclick="sortEtfListBy('sma200')">MA200</span><span data-col="sma100" style="text-align:right" title="Distancia del precio a la SMA de 100 ruedas" onclick="sortEtfListBy('sma100')">MA100</span>
+    <span data-col="sma50" style="text-align:right" title="Distancia del precio a la SMA de 50 ruedas" onclick="sortEtfListBy('sma50')">MA50</span><span data-col="sma20" style="text-align:right" title="Distancia del precio a la SMA de 20 ruedas" onclick="sortEtfListBy('sma20')">MA20</span>
+    <span data-col="ema9" style="text-align:right" title="Distancia del precio a la EMA de 9 ruedas" onclick="sortEtfListBy('ema9')">EMA9</span>
+    <span class="sep" data-col="macd" style="text-align:right" title="Histograma MACD (12,26,9) · punto = condicion de giro cumplida" onclick="sortEtfListBy('macd')">MACD</span><span data-col="rsi" style="text-align:right" title="RSI 14 · verde <30 sobreventa, rojo >70 sobrecompra" onclick="sortEtfListBy('rsi')">RSI</span>
+    <span data-col="konc" style="text-align:right" title="Koncorde marron (manos fuertes) · punto = giro vs media cumplido" onclick="sortEtfListBy('konc')">Konc.</span><span data-col="cond" style="text-align:center" title="Condiciones alineadas de 3 (MACD, RSI, Koncorde)" onclick="sortEtfListBy('cond')">Cond</span>
+    <span class="sep" data-col="conf" style="text-align:right" title="Confianza calibrada del backtest 5A (0-100): significancia del edge x muestra" onclick="sortEtfListBy('conf')">Conf</span>
+    <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por senal de VENTA (backtest 5A, neto de costes)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
     <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortEtfListBy('trend')">30D</span>
+    </div>
   </div>
   <div id="etf-list"><div id="etf-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div></div>
 </div>
@@ -2915,45 +2970,89 @@ function fmtN(n){
 
 function badge(s,label){
   let text=label||s;
-  if(s==="BUY"){
-    let cls=text.includes('FUERTE')?'b-buy-strong':'b-buy';
-    return'<span class="badge '+cls+'">'+text+'</span>';
-  }
-  if(s==="SELL"){
-    let cls=text.includes('FUERTE')?'b-sell-strong':'b-sell';
-    return'<span class="badge '+cls+'">'+text+'</span>';
-  }
-  if(!label||label==='HOLD')return'<span class="badge b-hold">NEUTRAL</span>';
-  if(label.includes('INMINENTE')&&label.includes('COMPRA'))return'<span class="badge b-buy-near">'+text+'</span>';
-  if(label.includes('INMINENTE')&&label.includes('VENTA'))return'<span class="badge b-sell-near">'+text+'</span>';
-  if(label.includes('VIRANDO')&&label.includes('COMPRA'))return'<span class="badge b-turning-buy">'+text+'</span>';
-  if(label.includes('VIRANDO')&&label.includes('VENTA'))return'<span class="badge b-turning-sell">'+text+'</span>';
-  if(label.includes('SOBREVENTA'))return'<span class="badge b-oversold">'+text+'</span>';
-  if(label.includes('SOBRECOMPRA'))return'<span class="badge b-overbought">'+text+'</span>';
-  return'<span class="badge b-hold">'+text+'</span>';
+  let cls='b-hold';
+  if(s==="BUY")cls=text.includes('FUERTE')?'b-buy-strong':'b-buy';
+  else if(s==="SELL")cls=text.includes('FUERTE')?'b-sell-strong':'b-sell';
+  else if(!label||label==='HOLD')text='NEUTRAL';
+  else if(label.includes('INMINENTE')&&label.includes('COMPRA'))cls='b-buy-near';
+  else if(label.includes('INMINENTE')&&label.includes('VENTA'))cls='b-sell-near';
+  else if(label.includes('VIRANDO')&&label.includes('COMPRA'))cls='b-turning-buy';
+  else if(label.includes('VIRANDO')&&label.includes('VENTA'))cls='b-turning-sell';
+  else if(label.includes('SOBREVENTA'))cls='b-oversold';
+  else if(label.includes('SOBRECOMPRA'))cls='b-overbought';
+  return'<span class="badge '+cls+'" title="'+text+'">'+text+'</span>';
 }
 function fp(p){return p!=null?"$"+p.toFixed(2):"---";}
-function fv(val,ok){
+function fdv(v){
+  if(!v||v<=0)return'';
+  if(v>=1e9)return'$'+(v/1e9).toFixed(1)+'B';
+  if(v>=1e6)return'$'+(v/1e6).toFixed(0)+'M';
+  return'';
+}
+function fsym(sym,r){
+  let dv=fdv(r?r.dollar_vol:null);
+  let t=dv?' title="Volumen promedio en dolares (20d): '+dv+'"':'';
+  return'<span class="sym-cell"'+t+'><b>'+sym+'</b>'+(dv?'<small>'+dv+' vol</small>':'')+'</span>';
+}
+function fpx(r){
+  if(!r||r.price==null)return'<span class="px-cell"><b>---</b></span>';
+  let sub='',t='Ultimo precio';
+  let o=r.chart?r.chart.ohlc:null;
+  if(o&&o.length>=2){
+    let prev=o[o.length-2].close,last=o[o.length-1].close;
+    if(prev){
+      let d=(last-prev)/prev*100;
+      let col=d>=0?'var(--buy)':'var(--sell)';
+      sub='<small style="color:'+col+'">'+(d>=0?'+':'')+d.toFixed(2)+'%</small>';
+      t+=' · '+(d>=0?'+':'')+d.toFixed(2)+'% vs cierre anterior';
+    }
+  }
+  return'<span class="px-cell" title="'+t+'"><b>$'+r.price.toFixed(2)+'</b>'+sub+'</span>';
+}
+function fv(val,ok,tip){
   if(val==null||(typeof val==='number'&&isNaN(val)))return'<span class="iv v-na">---</span>';
-  return'<span class="iv '+(ok?'v-ok':'v-no')+'">'+val.toFixed(1)+'</span>';
+  let t=tip?' title="'+String(tip).replace(/"/g,'&quot;')+'"':'';
+  let dot=ok?'<i class="okdot" style="background:currentColor"></i>':'';
+  return'<span class="iv '+(ok?'v-ok':'v-no')+'"'+t+'>'+val.toFixed(1)+dot+'</span>';
+}
+function frsi(v,ok,detail){
+  if(v==null||(typeof v==='number'&&isNaN(v)))return'<span class="iv v-na">---</span>';
+  let cls='rsi-mid',zone='zona neutral';
+  if(v<30){cls='rsi-os';zone='SOBREVENTA (<30)';}
+  else if(v<40){cls='rsi-osl';zone='acercandose a sobreventa';}
+  else if(v>70){cls='rsi-ob';zone='SOBRECOMPRA (>70)';}
+  else if(v>60){cls='rsi-obl';zone='acercandose a sobrecompra';}
+  let t='RSI(14): '+v.toFixed(1)+' — '+zone+(detail?'\n'+detail:'');
+  return'<span class="iv rsi-pill '+cls+'" title="'+t.replace(/"/g,'&quot;')+'">'+v.toFixed(0)+'</span>';
+}
+function fcond(n,r){
+  n=n||0;
+  let cols=['var(--dim)','var(--sell)','var(--hold)','var(--buy)'];
+  let col=cols[Math.max(0,Math.min(3,n))];
+  let t='Condiciones alineadas: '+n+'/3\nMACD: '+(r&&r.macd_ok?'cumple':'no')+'\nRSI: '+(r&&r.rsi_ok?'cumple':'no')+'\nKoncorde: '+(r&&r.konc_ok?'cumple':'no');
+  let dots='';
+  for(let i=0;i<3;i++)dots+='<i class="cond-dot"'+(i<n?' style="background:'+col+'"':'')+'></i>';
+  return'<span class="cond-dots" title="'+t+'">'+dots+'</span>';
 }
 function cc(n){return"cond cond-"+n;}
 function fconf(val){
-  if(val==null||val===0)return'<span class="iv v-na">---</span>';
-  let cls='v-no';if(val>=60)cls='v-ok';else if(val>=30)cls='v-warn';
-  return'<span class="iv '+cls+'">'+val.toFixed(0)+'</span>';
+  if(val==null||val===0)return'<span class="iv v-na" title="Sin confianza de backtest: pocas senales historicas o edge no significativo">---</span>';
+  let col=val>=60?'var(--buy)':(val>=30?'var(--hold)':'var(--sell)');
+  let t='Confianza calibrada del backtest 5A: '+val.toFixed(0)+'/100\n(significancia estadistica del edge x tamano de muestra)';
+  return'<span class="conf-cell" title="'+t+'"><b style="color:'+col+'">'+val.toFixed(0)+'</b><i class="conf-bar"><u style="width:'+Math.min(100,val)+'%;background:'+col+'"></u></i></span>';
 }
-function fret(val){
+function fret(val,tip){
   if(val==null)return'<span class="iv v-na">---</span>';
   let cls=val>=0?'v-ok':'v-no';let s=val>=0?'+':'';
-  return'<span class="iv '+cls+'">'+s+val.toFixed(1)+'%</span>';
+  let t=tip?' title="'+tip+'"':'';
+  return'<span class="iv '+cls+'"'+t+'>'+s+val.toFixed(1)+'%</span>';
 }
 function fstr(val,sig,r){
   if(val==null||val===0)return'<span class="iv v-na">---</span>';
-  let cls='v-na';
-  if(sig==='BUY')cls=val>=3?'v-ok':'v-warn';
-  else if(sig==='SELL')cls=val>=3?'v-no':'v-warn';
-  else cls=val>=3?'v-warn':'v-na';
+  let label=(r&&r.signal_label)||sig||'';
+  let col='var(--hold)';
+  if(label.indexOf('COMPRA')>=0||label.indexOf('SOBREVENTA')>=0)col='var(--buy)';
+  else if(label.indexOf('VENTA')>=0||label.indexOf('SOBRECOMPRA')>=0)col='var(--sell)';
   let t='FUERZA DE SENAL: '+val.toFixed(2)+' / 5.1\n';
   t+='Mide cuantos indicadores confirman y con que intensidad.\n\n';
   if(r){
@@ -2971,17 +3070,20 @@ function fstr(val,sig,r){
     t+=')';
     t+='\n  '+((r.konc_detail||'').replace(/ /g,' '));
   }
-  return'<span class="iv '+cls+'" title="'+t.replace(/"/g,'&quot;')+'">'+val.toFixed(1)+'</span>';
+  let pct=Math.max(4,Math.min(100,val/5.1*100));
+  return'<span class="str-cell" title="'+t.replace(/"/g,'&quot;')+'"><b style="color:'+col+'">'+val.toFixed(1)+'</b><i class="str-bar"><u style="width:'+pct+'%;background:'+col+'"></u></i></span>';
 }
 function sd(d){let s=String(d).replace(/-/g,"").replace(/ .*/,"");if(s.length>=8)return s.slice(6,8)+"/"+s.slice(4,6);return String(d).slice(-5);}
 function fma(mas,key,price){
   if(!mas||price==null)return'<span class="iv v-na">---</span>';
   let v=mas[key];
   if(v==null)return'<span class="iv v-na">---</span>';
+  let names={sma200_val:'SMA200',sma100_val:'SMA100',sma50_val:'SMA50',sma20_val:'SMA20',ema9_val:'EMA9'};
   let pct=(price-v)/v*100;
   let s=pct>=0?'+':'';
   let cls=pct>=0?'v-ok':'v-no';
-  return'<span class="iv '+cls+'" title="$'+v.toFixed(2)+'">'+s+pct.toFixed(1)+'%</span>';
+  let t=(names[key]||key)+': $'+v.toFixed(2)+' — precio '+s+pct.toFixed(1)+'% '+(pct>=0?'por encima':'por debajo');
+  return'<span class="iv '+cls+'" title="'+t+'">'+s+pct.toFixed(1)+'%</span>';
 }
 // Mini linea de tendencia (sparkline SVG) de los ultimos N cierres.
 function _trendCloses(r,n){
@@ -3833,15 +3935,19 @@ function update(){
       html+='<details data-sym="'+sym+'" data-idx="'+idx+'"'+(isOpen?' open':'')+'>';
       html+='<summary><div class="stock-row">'+
         '<span class="arrow">&#9654;</span>'+
-        '<span class="sym">'+sym+'</span>'+
-        '<span class="price">'+fp(r.price)+'</span>'+
+        fsym(sym,r)+
+        fpx(r)+
         badge(r.signal,r.signal_label)+fstr(r.strength,r.signal,r)+
         fma(mas,'sma200_val',r.price)+fma(mas,'sma100_val',r.price)+
         fma(mas,'sma50_val',r.price)+fma(mas,'sma20_val',r.price)+
         fma(mas,'ema9_val',r.price)+
-        fv(mh,r.macd_ok)+fv(rv,r.rsi_ok)+fv(km,r.konc_ok)+
-        '<span class="'+cc(cond)+'">'+cond+'/3</span>'+
-        fconf(r.confidence)+fret(r.buy_avg_return)+fret(r.sell_avg_return)+
+        fv(mh,r.macd_ok,'Histograma MACD (12,26,9)\n'+(r.macd_detail||''))+
+        frsi(rv,r.rsi_ok,r.rsi_detail)+
+        fv(km,r.konc_ok,'Koncorde marron (manos fuertes) vs su media\n'+(r.konc_detail||''))+
+        fcond(cond,r)+
+        fconf(r.confidence)+
+        fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
+        fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
         trendSparkCell(r)+
         '</div>';
       html+='</summary>';
@@ -4174,15 +4280,19 @@ function updateEtf(){
       html+='<details data-sym="'+sym+'" data-idx="'+idx+'"'+(isOpen?' open':'')+'>';
       html+='<summary><div class="stock-row">'+
         '<span class="arrow">&#9654;</span>'+
-        '<span class="sym">'+sym+'</span>'+
-        '<span class="price">'+fp(r.price)+'</span>'+
+        fsym(sym,r)+
+        fpx(r)+
         badge(r.signal,r.signal_label)+fstr(r.strength,r.signal,r)+
         fma(mas,'sma200_val',r.price)+fma(mas,'sma100_val',r.price)+
         fma(mas,'sma50_val',r.price)+fma(mas,'sma20_val',r.price)+
         fma(mas,'ema9_val',r.price)+
-        fv(mh,r.macd_ok)+fv(rv,r.rsi_ok)+fv(km,r.konc_ok)+
-        '<span class="'+cc(cond)+'">'+cond+'/3</span>'+
-        fconf(r.confidence)+fret(r.buy_avg_return)+fret(r.sell_avg_return)+
+        fv(mh,r.macd_ok,'Histograma MACD (12,26,9)\n'+(r.macd_detail||''))+
+        frsi(rv,r.rsi_ok,r.rsi_detail)+
+        fv(km,r.konc_ok,'Koncorde marron (manos fuertes) vs su media\n'+(r.konc_detail||''))+
+        fcond(cond,r)+
+        fconf(r.confidence)+
+        fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
+        fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
         trendSparkCell(r)+
         '</div>';
       html+='</summary>';
