@@ -2394,7 +2394,49 @@ function _portVerdictLabel(v){
   return 'HOLD';
 }
 
+// Estado de espera de datos del bridge (solo aplica al modo cloud —
+// en local `bridge_connected` no viene y este check es siempre false).
+function _isPortfolioWaiting(d){
+  if(d.bridge_connected===undefined)return false;
+  if((d.positions||[]).length>0)return false;
+  return d.bridge_connected===true && d.portfolio_received!==true;
+}
+function _isBridgeDisconnected(d){
+  return d.bridge_connected===false;
+}
+
+function _renderPortWaitingState(d){
+  // Limpia todos los slots que mostrarian ceros o vacio
+  document.getElementById('port-summary').innerHTML='';
+  document.getElementById('port-alerts').innerHTML='';
+  document.getElementById('port-metrics').innerHTML='';
+  document.getElementById('port-verdicts').innerHTML='';
+  let html='';
+  if(_isBridgeDisconnected(d)){
+    html='<div class="tab-loading" style="padding:60px 20px">'+
+      '<div class="tab-loading-text" style="color:var(--text);max-width:520px;line-height:1.5">'+
+        '<div style="font-size:16px;font-weight:700;margin-bottom:8px">Tu bridge no esta conectado</div>'+
+        '<div style="color:var(--muted);font-size:12px;margin-bottom:14px">Para ver tu cartera necesitas instalar el bridge que lee TWS/IB Gateway en tu maquina y lo transmite al servidor.</div>'+
+        '<button onclick="switchTab(\'setup\')" style="background:var(--accent);color:#fff;border:none;padding:8px 18px;border-radius:6px;font-weight:700;font-size:12px;cursor:pointer">Ir a Conectar TWS</button>'+
+      '</div>'+
+      '</div>';
+  }else{
+    html='<div class="tab-loading" style="padding:60px 20px">'+
+      '<div class="tab-loading-spinner"></div>'+
+      '<div class="tab-loading-text" style="max-width:480px">Recibiendo datos de tu cuenta desde TWS...<br>'+
+      '<span style="color:var(--muted);font-size:11px">Puede tardar hasta 3 minutos si el bridge esta arrancando</span></div>'+
+      '</div>';
+  }
+  document.getElementById('port-analysis-list').innerHTML=html;
+}
+
 function renderPortfolio(d){
+  // Antes de renderizar $0.00, chequear si es "esperando datos del bridge"
+  if(_isPortfolioWaiting(d)||_isBridgeDisconnected(d)){
+    _renderPortWaitingState(d);
+    return;
+  }
+
   // Summary cards
   let pnlCol=d.total_pnl>=0?'var(--buy)':'var(--sell)';
   let pnlSign=d.total_pnl>=0?'+':'';

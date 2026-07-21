@@ -64,6 +64,7 @@ def get_user_store(user_id):
                 "etf_stocks": [],
                 "etf_analysis": {},
                 "portfolio_positions": [],
+                "portfolio_received": False,
                 "account_values": {},
                 "open_orders": [],
                 "executions": [],
@@ -330,6 +331,7 @@ def handle_portfolio_data(data):
     store["account_values"] = data.get("account_values", {})
     store["open_orders"] = data.get("open_orders", [])
     store["executions"] = data.get("executions", [])
+    store["portfolio_received"] = True
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
 
 
@@ -778,6 +780,7 @@ def api_portfolio():
             "alerts": alerts,
             "metrics": metrics,
             "bridge_connected": store.get("connected", False),
+            "portfolio_received": store.get("portfolio_received", False),
             "warnings": [],
         }),
         mimetype="application/json",
