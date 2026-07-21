@@ -10,10 +10,179 @@ Usa Black-Scholes para pricing teorico y Greeks.
 """
 
 import math
+import time
 import numpy as np
 from scipy.stats import norm
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Tuple
+
+
+# ══════════════════════════════════════════════════════════════
+#  DATOS REALES DE MERCADO (cadena de opciones via yfinance)
+# ══════════════════════════════════════════════════════════════
+
+_OPTION_CHAIN_CACHE = {}          # symbol -> (timestamp, OptionMarket|None)
+_OPTION_CHAIN_TTL = 600           # 10 min: la cadena cambia lento intradia
+
+
+class OptionMarket:
+    """Cadena de opciones real de un subyacente (bid/ask/IV por strike y vencimiento).
+
+    Permite (a) obtener una IV de mercado ATM para alimentar el analisis IV/HV y
+    (b) valuar cada pata al mid real cobrando medio spread bid/ask como coste.
+    """
+
+    def __init__(self, symbol, spot, dte_map, atm_iv):
+        self.symbol = symbol
+        self.spot = spot
+        # dte_map: {dte_objetivo: {"expiry": str, "C": {strike:(bid,ask,iv)}, "P": {...}}}
+        self.dte_map = dte_map
+        self.iv = atm_iv              # IV ATM del vencimiento mas cercano a ~30d
+
+    def _nearest_dte(self, dte):
+        if not self.dte_map:
+            return None
+        return min(self.dte_map.keys(), key=lambda d: abs(d - dte))
+
+    def real_dte(self, dte):
+        """Dias reales al vencimiento del contrato usado para este DTE objetivo."""
+        d = self._nearest_dte(dte)
+        if d is None:
+            return None
+        return self.dte_map[d].get("dte")
+
+    def lookup(self, dte, right, strike):
+        """Devuelve (strike_real, mid, half_spread, iv) del strike mas cercano, o None.
+
+        Devuelve el strike realmente disponible para que el llamador snapee la pata
+        a el (premium y strike deben corresponder al MISMO contrato)."""
+        d = self._nearest_dte(dte)
+        if d is None:
+            return None
+        table = self.dte_map[d].get(right, {})
+        if not table:
+            return None
+        k = min(table.keys(), key=lambda s: abs(s - strike))
+        # Rechaza si el strike disponible dista demasiado del pedido (>15%)
+        if strike > 0 and abs(k - strike) / strike > 0.15:
+            return None
+        bid, ask, iv = table[k]
+        if bid is None or ask is None or ask <= 0:
+            return None
+        mid = (bid + ask) / 2.0
+        if mid <= 0:
+            return None
+        half_spread = max(0.0, (ask - bid) / 2.0)
+        return (k, mid, half_spread, iv)
+
+
+def fetch_option_market(symbol, dte_targets, spot=None):
+    """Descarga la cadena de opciones real de yfinance para los DTE objetivo.
+
+    Devuelve un OptionMarket, o None si no hay datos / falla la red. Nunca lanza:
+    el analisis de opciones debe seguir funcionando (con pricing teorico) si esto
+    falla. Cachea por simbolo durante _OPTION_CHAIN_TTL segundos.
+    """
+    now = time.time()
+    cached = _OPTION_CHAIN_CACHE.get(symbol)
+    if cached and (now - cached[0]) < _OPTION_CHAIN_TTL:
+        return cached[1]
+
+    market = None
+    try:
+        import datetime as _dt
+        import yfinance as yf
+
+        tk = yf.Ticker(symbol)
+        expiries = list(tk.options or [])
+        if not expiries:
+            _OPTION_CHAIN_CACHE[symbol] = (now, None)
+            return None
+
+        today = _dt.date.today()
+        exp_dates = []
+        for e in expiries:
+            try:
+                d = _dt.datetime.strptime(e, "%Y-%m-%d").date()
+                dte = (d - today).days
+                if dte > 0:
+                    exp_dates.append((e, dte))
+            except Exception:
+                continue
+        if not exp_dates:
+            _OPTION_CHAIN_CACHE[symbol] = (now, None)
+            return None
+
+        dte_map = {}
+        used_expiries = set()
+        for target in dte_targets:
+            e, dte = min(exp_dates, key=lambda x: abs(x[1] - target))
+            if e in used_expiries:
+                dte_map[target] = _extract_chain(tk, e, dte)
+                continue
+            used_expiries.add(e)
+            dte_map[target] = _extract_chain(tk, e, dte)
+
+        # IV ATM: usa el vencimiento mas cercano a 30d y el strike mas cercano al spot
+        atm_iv = _atm_iv_from_map(dte_map, spot)
+        if any(v for v in dte_map.values()):
+            market = OptionMarket(symbol, spot, dte_map, atm_iv)
+    except Exception:
+        market = None
+
+    _OPTION_CHAIN_CACHE[symbol] = (now, market)
+    return market
+
+
+def _extract_chain(tk, expiry, dte):
+    """Extrae {'expiry','C':{strike:(bid,ask,iv)}, 'P':{...}} de un vencimiento."""
+    entry = {"expiry": expiry, "dte": dte, "C": {}, "P": {}}
+    try:
+        oc = tk.option_chain(expiry)
+    except Exception:
+        return entry
+    for df, right in ((oc.calls, "C"), (oc.puts, "P")):
+        try:
+            for _, row in df.iterrows():
+                strike = float(row["strike"])
+                bid = row.get("bid")
+                ask = row.get("ask")
+                iv = row.get("impliedVolatility")
+                bid = float(bid) if bid == bid and bid is not None else None
+                ask = float(ask) if ask == ask and ask is not None else None
+                iv = float(iv) if iv == iv and iv is not None else None
+                entry[right][strike] = (bid, ask, iv)
+        except Exception:
+            continue
+    return entry
+
+
+def _atm_iv_from_map(dte_map, spot):
+    """IV ATM del vencimiento mas cercano a 30d (promedio call/put del strike ATM)."""
+    if not dte_map or not spot:
+        return None
+    target = min(dte_map.keys(), key=lambda d: abs(d - 30))
+    entry = dte_map[target]
+    ivs = []
+    for right in ("C", "P"):
+        table = entry.get(right, {})
+        if not table:
+            continue
+        k = min(table.keys(), key=lambda s: abs(s - spot))
+        iv = table[k][2]
+        if iv and 0.01 < iv < 5.0:
+            ivs.append(iv)
+    if not ivs:
+        return None
+    return sum(ivs) / len(ivs)
+
+
+def get_option_market(symbol, dte_targets, spot=None):
+    """Wrapper cacheado y seguro para obtener la cadena real (o None)."""
+    try:
+        return fetch_option_market(symbol, dte_targets, spot)
+    except Exception:
+        return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -243,6 +412,9 @@ class Strategy:
     backtest_result: dict = field(default_factory=dict)
     iv_edge: str = ""
     complexity: int = 1         # 1-3
+    expected_value: float = 0.0     # EV en $ (media del Monte Carlo, neto de spread)
+    market_priced: bool = False     # True si las patas se valuaron con precios reales de mercado
+    spread_cost: float = 0.0        # coste estimado de cruzar el spread bid/ask ($ por posicion)
 
     def to_dict(self):
         d = asdict(self)
@@ -333,42 +505,34 @@ def _prob_between(S, lo, hi, T, sigma, r=0.05):
 #  STRATEGY BUILDERS
 # ══════════════════════════════════════════════════════════════
 
-def _build_strategy(name, name_es, legs, S, T, r, sigma, bias, dte,
-                    description="", complexity=1, iv_edge=""):
-    """Construye Strategy completa con payoff, greeks, breakevens, etc."""
-    # Calcular premiums y greeks para cada pata
-    for leg in legs:
-        leg.premium = bs_price(S, leg.strike, T, r, sigma, leg.right)
-        leg.greeks_data = greeks(S, leg.strike, T, r, sigma, leg.right)
-
+def _derive_metrics(legs, S, T, r, sigma):
+    """Calcula payoff, PoP, EV, breakevens, capital y griegas a partir de los
+    premiums YA asignados en cada pata. Reutilizado por _build_strategy (precios
+    teoricos) y por _apply_market_pricing (precios reales de mercado)."""
     # Net premium (positivo = credito, negativo = debito)
     net = sum(leg.net_premium() for leg in legs) / 100  # per-share
 
     # Payoff
     step = _strike_step(S)
-    lo = S * 0.7
-    hi = S * 1.3
-    price_range = np.arange(lo, hi, step * 0.2)
+    price_range = np.arange(S * 0.7, S * 1.3, step * 0.2)
     payoff = _compute_payoff(legs, price_range)
 
-    # Max profit / loss
     pnls = [p["pnl"] for p in payoff]
     max_profit = max(pnls) * 100
     max_loss = min(pnls) * 100
-
-    # Breakevens
     breakevens = _find_breakevens(payoff)
 
-    # Prob of profit (Monte Carlo simpificado con log-normal)
+    # Monte Carlo log-normal: PoP y valor esperado (EV)
     n_sims = 10000
     np.random.seed(42)
     drift = (r - 0.5 * sigma ** 2) * T
     diffusion = sigma * math.sqrt(T) * np.random.randn(n_sims)
     final_prices = S * np.exp(drift + diffusion)
 
+    pnl_sum = 0.0
     profitable = 0
     for fp in final_prices:
-        pnl = 0
+        pnl = 0.0
         for leg in legs:
             if leg.right == "C":
                 intrinsic = max(fp - leg.strike, 0)
@@ -378,17 +542,39 @@ def _build_strategy(name, name_es, legs, S, T, r, sigma, bias, dte,
                 pnl += (intrinsic - leg.premium) * leg.qty
             else:
                 pnl += (leg.premium - intrinsic) * leg.qty
+        pnl_sum += pnl
         if pnl > 0:
             profitable += 1
     prob_profit = round(profitable / n_sims * 100, 1)
+    expected_value = (pnl_sum / n_sims) * 100   # EV en $ por posicion (1 contrato)
 
-    # Risk/reward
     risk_reward = round(abs(max_profit / max_loss), 2) if max_loss != 0 else float("inf")
-
-    # Capital required
     capital = abs(max_loss) if max_loss < 0 else abs(net * 100)
 
-    greeks_agg = _aggregate_greeks(legs)
+    return {
+        "net": net,
+        "payoff": payoff,
+        "max_profit": round(max_profit, 2),
+        "max_loss": round(max_loss, 2),
+        "breakevens": breakevens,
+        "prob_profit": prob_profit,
+        "expected_value": round(expected_value, 2),
+        "risk_reward": risk_reward,
+        "capital": round(abs(capital), 2),
+        "net_premium": round(net * 100, 2),
+        "greeks_agg": _aggregate_greeks(legs),
+    }
+
+
+def _build_strategy(name, name_es, legs, S, T, r, sigma, bias, dte,
+                    description="", complexity=1, iv_edge=""):
+    """Construye Strategy completa con payoff, greeks, breakevens, etc."""
+    # Calcular premiums y greeks teoricos (Black-Scholes) para cada pata
+    for leg in legs:
+        leg.premium = bs_price(S, leg.strike, T, r, sigma, leg.right)
+        leg.greeks_data = greeks(S, leg.strike, T, r, sigma, leg.right)
+
+    m = _derive_metrics(legs, S, T, r, sigma)
 
     strat = Strategy(
         name=name,
@@ -397,18 +583,73 @@ def _build_strategy(name, name_es, legs, S, T, r, sigma, bias, dte,
         dte=dte,
         description=description,
         bias=bias,
-        max_profit=round(max_profit, 2),
-        max_loss=round(max_loss, 2),
-        breakevens=breakevens,
-        prob_profit=prob_profit,
-        risk_reward=risk_reward,
-        capital_required=round(abs(capital), 2),
-        net_premium=round(net * 100, 2),
-        greeks_agg=greeks_agg,
-        payoff_points=payoff,
+        max_profit=m["max_profit"],
+        max_loss=m["max_loss"],
+        breakevens=m["breakevens"],
+        prob_profit=m["prob_profit"],
+        risk_reward=m["risk_reward"],
+        capital_required=m["capital"],
+        net_premium=m["net_premium"],
+        greeks_agg=m["greeks_agg"],
+        payoff_points=m["payoff"],
         complexity=complexity,
         iv_edge=iv_edge,
+        expected_value=m["expected_value"],
     )
+    return strat
+
+
+def _apply_market_pricing(strat, market, S, T, r, sigma):
+    """Reprecio las patas de una estrategia con precios reales de mercado.
+
+    Si TODAS las patas tienen mid real disponible, sustituye los premiums
+    teoricos por los mid reales, cobra medio spread bid/ask por pata como coste,
+    y recalcula payoff/PoP/EV/capital. Si falta alguna pata, deja el pricing
+    teorico intacto (no mezcla ambos). Devuelve el strat (mutado o no)."""
+    if market is None:
+        return strat
+
+    # Usar el DTE REAL del vencimiento elegido (no el objetivo): los premios reales
+    # corresponden a ese vencimiento, asi que payoff/PoP/EV/griegas deben usar su T.
+    real_dte = market.real_dte(strat.dte)
+    if real_dte and real_dte > 0:
+        strat.dte = int(real_dte)
+        T = real_dte / 365.0
+
+    reals = []
+    total_half_spread = 0.0
+    for leg in strat.legs:
+        res = market.lookup(strat.dte, leg.right, leg.strike)
+        if res is None:
+            return strat   # falta liquidez en alguna pata -> conservar teorico
+        real_strike, mid, half_spread, _iv = res
+        reals.append((leg, real_strike, mid))
+        total_half_spread += half_spread * leg.qty
+
+    # Todas las patas tienen precio real: aplicar (snapear strike al contrato real
+    # para que premium y strike correspondan al mismo contrato)
+    for leg, real_strike, mid in reals:
+        leg.strike = real_strike
+        leg.premium = mid
+        # Griegas: recomputar con la IV de mercado (sigma ya es la IV ATM real)
+        leg.greeks_data = greeks(S, leg.strike, T, r, sigma, leg.right)
+
+    m = _derive_metrics(strat.legs, S, T, r, sigma)
+    spread_cost = round(total_half_spread * 100, 2)   # $ por posicion (round trip aprox una via)
+
+    strat.max_profit = m["max_profit"]
+    strat.max_loss = m["max_loss"]
+    strat.breakevens = m["breakevens"]
+    strat.prob_profit = m["prob_profit"]
+    strat.risk_reward = m["risk_reward"]
+    strat.capital_required = m["capital"]
+    strat.net_premium = m["net_premium"]
+    strat.greeks_agg = m["greeks_agg"]
+    strat.payoff_points = m["payoff"]
+    # EV neto del coste de cruzar el spread al abrir la posicion
+    strat.expected_value = round(m["expected_value"] - spread_cost, 2)
+    strat.spread_cost = spread_cost
+    strat.market_priced = True
     return strat
 
 
@@ -903,36 +1144,48 @@ def backtest_similar_conditions(closes, highs, lows, signal_data, lookforward_da
 
 def _score_strategy(strat, signal_type, iv_regime, backtest_outcomes):
     """Puntua una estrategia 0-100 considerando:
-      - Alineacion con la senal del subyacente (30 pts)
-      - Probabilidad de beneficio (25 pts)
-      - Risk/reward (20 pts)
+      - Alineacion con la senal del subyacente (25 pts)
+      - Valor esperado / EV sobre el capital (15 pts)  ← corrige el sesgo de PoP alto y EV negativo
+      - Probabilidad de beneficio (20 pts)
+      - Risk/reward (15 pts)
       - Alineacion con regimen de IV (15 pts)
       - Backtest support (10 pts)
+    Menos penalizacion por complejidad y por spread bid/ask ancho.
     """
     score = 0.0
 
-    # 1. Alineacion con senal (30 pts)
+    # 1. Alineacion con senal (25 pts)
     bias = strat.bias
     if signal_type == "BUY" and bias == "bullish":
-        score += 30
-    elif signal_type == "SELL" and bias == "bearish":
-        score += 30
-    elif signal_type == "HOLD" and bias == "neutral":
         score += 25
+    elif signal_type == "SELL" and bias == "bearish":
+        score += 25
+    elif signal_type == "HOLD" and bias == "neutral":
+        score += 21
     elif signal_type == "BUY" and bias == "neutral":
-        score += 15
+        score += 13
     elif signal_type == "SELL" and bias == "neutral":
-        score += 15
+        score += 13
     elif signal_type == "HOLD" and bias in ("bullish", "bearish"):
-        score += 10
+        score += 8
 
-    # 2. Probabilidad de beneficio (25 pts)
+    # 2. Valor esperado sobre capital (15 pts). El EV es la media del Monte Carlo
+    #    (neto del coste de spread si se valuo a mercado). Un PoP alto con EV
+    #    negativo (tipico de vender prima barata) deja de puntuar bien aqui.
+    cap = strat.capital_required if strat.capital_required and strat.capital_required > 0 else None
+    if cap:
+        ev_roc = strat.expected_value / cap    # retorno esperado sobre capital
+    else:
+        ev_roc = 0.0
+    score += max(0.0, min(1.0, ev_roc / 0.15)) * 15   # >=15% EV/capital -> full
+
+    # 3. Probabilidad de beneficio (20 pts)
     pp = strat.prob_profit
-    score += min(pp / 100, 1.0) * 25
+    score += min(pp / 100, 1.0) * 20
 
-    # 3. Risk/reward (20 pts)
+    # 4b. Risk/reward (15 pts)
     rr = min(strat.risk_reward, 5.0)
-    score += (rr / 5.0) * 20
+    score += (rr / 5.0) * 15
 
     # 4. IV regime alignment (15 pts)
     if iv_regime == "high":
@@ -973,6 +1226,12 @@ def _score_strategy(strat, signal_type, iv_regime, backtest_outcomes):
     # Penalizar complejidad ligeramente
     score -= (strat.complexity - 1) * 2
 
+    # Penalizar spread bid/ask ancho (solo si se valuo a mercado): un spread que
+    # se come una fraccion grande del capital hace la estrategia poco ejecutable.
+    if strat.market_priced and strat.capital_required and strat.capital_required > 0:
+        spread_frac = strat.spread_cost / strat.capital_required
+        score -= min(1.0, spread_frac / 0.10) * 8   # spread >=10% del capital -> -8
+
     return max(0, min(100, round(score, 1)))
 
 
@@ -982,7 +1241,7 @@ def _score_strategy(strat, signal_type, iv_regime, backtest_outcomes):
 
 def generate_options_lab(symbol, price, signal_data, closes, highs=None, lows=None,
                          market_iv=None, risk_free_rate=0.05,
-                         dte_options=None):
+                         dte_options=None, option_market=None):
     """Genera el analisis completo del Options Lab para un simbolo.
 
     Parametros:
@@ -1008,6 +1267,12 @@ def generate_options_lab(symbol, price, signal_data, closes, highs=None, lows=No
     S = price
     r = risk_free_rate
     signal_type = signal_data.get("signal", "HOLD")
+
+    # IV de mercado real: si viene una cadena (option_market) y no se paso IV
+    # explicita, usar su IV ATM. Esto activa el analisis IV/HV real (antes muerto,
+    # porque market_iv nunca se pasaba y estimated_iv caia siempre en HV30).
+    if market_iv is None and option_market is not None and option_market.iv:
+        market_iv = option_market.iv
 
     # 1. IV Analysis
     iv_data = iv_analysis(closes, market_iv)
@@ -1109,6 +1374,15 @@ def generate_options_lab(symbol, price, signal_data, closes, highs=None, lows=No
             except Exception:
                 pass
 
+    # 3b. Reprecio a mercado real cada estrategia (mid bid/ask + coste de spread).
+    #     Si no hay cadena, quedan con pricing teorico Black-Scholes.
+    if option_market is not None:
+        for strat in all_strategies:
+            try:
+                _apply_market_pricing(strat, option_market, S, strat.dte / 365.0, r, sigma)
+            except Exception:
+                pass
+
     # 4. Score and rank all strategies
     for strat in all_strategies:
         strat.score = _score_strategy(strat, signal_type, iv_regime, bt_outcomes)
@@ -1158,7 +1432,8 @@ def generate_options_lab(symbol, price, signal_data, closes, highs=None, lows=No
     else:
         summary_parts.append(f"{symbol} en posicion NEUTRAL")
 
-    summary_parts.append(f"IV estimada {sigma * 100:.0f}% (regimen {iv_regime})")
+    iv_src = "mercado" if market_iv is not None else "estimada de HV"
+    summary_parts.append(f"IV {iv_src} {sigma * 100:.0f}% (regimen {iv_regime})")
 
     if bt.get("similar_count", 0) > 0:
         summary_parts.append(f"{bt['similar_count']} situaciones historicas similares encontradas")
@@ -1188,6 +1463,9 @@ def generate_options_lab(symbol, price, signal_data, closes, highs=None, lows=No
         "strength": signal_data.get("strength", 0),
         "iv_analysis": iv_data,
         "iv_opportunities": iv_opportunities,
+        "iv_source": "market" if market_iv is not None else "hv",
+        "market_priced": bool(option_market is not None and any(
+            s.get("market_priced") for s in strategies_out)),
         "strategies": strategies_out,
         "backtest": bt,
         "summary": summary,

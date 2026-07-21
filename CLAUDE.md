@@ -75,6 +75,8 @@ labels can be directional while `signal` is still HOLD.
 - `STOP_LOSS_PCT = 3.0`, `TAKE_PROFIT_PCT = 8.0`
 - `MAX_OPEN_POSITIONS = 10`
 - MACD: 12/26/9, RSI: 14/21, Koncorde EMA: 255
+- Backtest: `BACKTEST_COST_PCT=0.10` (round-trip), `BACKTEST_COOLDOWN=True`,
+  `BACKTEST_ROBUST_TRADES=12` (muestra para confianza plena), `BACKTEST_TREND_SMA=200`
 
 ## Web Dashboard (vista_web.py)
 - Default chart period: 1Y (scanner, top recommendations, portfolio)
@@ -86,6 +88,25 @@ labels can be directional while `signal` is still HOLD.
   `DASHBOARD_HTML`; chart colors (Lightweight Charts / Chart.js / canvas payoff) are passed via JS literals,
   NOT CSS — when changing palette, sweep both. Dark-theme colors must not be reintroduced (user explicitly
   chose light background for readability).
+
+## Backtest & Calibración (calidad de la estimación)
+- **`backtester.py` — confianza calibrada, no win-rate crudo**: el backtest usa
+  **cooldown** (no abre un nuevo trade hasta cerrar el anterior → sin solapes que inflen
+  la muestra), resta **coste round-trip** por trade (`BACKTEST_COST_PCT`), y calcula la
+  `confidence` como `Φ(t-stat de expectancy>0) · shrinkage(n)` reescalada 0.5→0..100
+  (antes era `win_rate·volumen`, que premiaba edges no significativos). Reporta además
+  `buy/sell_expectancy`, `avg_win/avg_loss`, `profit_factor`, y stats con-tendencia
+  (`*_win_rate_trend`, tag `with_trend` vía SMA200). `bridge/backtester.py` es el duplicado
+  standalone — mantener en paridad (numpy disponible en el bridge).
+- **`_score_stock` (vista_web.py)** rankea por **edge esperado**: componentes strength (25),
+  expectancy (30, con shrinkage por muestra), profit_factor (15), confidence (15), win_rate
+  (10), señal activa (5), menos **penalización contra-tendencia** (hasta −15 si el precio va
+  contra su SMA200). El fallback relajado en `compute_top3` usa la misma escala.
+- **Calibración (`calibration.py` + `/api/calibration`)**: cierra el lazo predicho-vs-real.
+  Corre `backtester.run_calibration_trades` sobre 5Y (yfinance) del universo (WATCHLIST +
+  escaneados, cap 20, cache 1h) y agrupa por **fuerza de señal** → win-rate/retorno reales,
+  más monotonicidad y splits por régimen/dirección. UI: panel colapsable arriba del tab
+  Escáner (`.calib-*`, `renderCalibration`). El cloud tiene su propio endpoint espejo.
 
 ## Patterns
 - IB API wrapper pattern (EWrapper + EClient inheritance)
@@ -103,7 +124,18 @@ labels can be directional while `signal` is still HOLD.
 - Auto-loads top 10 opportunities on tab switch (no manual input needed)
 - Pre-screens ALL scanner stocks with quick IV check, then runs full lab on top 10 candidates
 - Ranking independent from signal score: considers signal strength + IV regime + HV rank + backtest confidence + liquidity
-- Black-Scholes pricing + Newton-Raphson IV estimation
+- **IV y precios REALES de mercado (yfinance)**: `get_option_market(symbol, dtes)` descarga la
+  cadena real (bid/ask/IV por strike, cache 10min, `OptionMarket`) y se pasa como `option_market`
+  a `generate_options_lab`. Con cadena disponible: la IV ATM alimenta `iv_analysis` (antes muerto —
+  `market_iv` nunca se pasaba, `estimated_iv` caía siempre en HV30), y `_apply_market_pricing`
+  revalúa cada pata al **mid real** (snapeando strike y DTE a los reales) cobrando medio spread
+  bid/ask; recalcula payoff/PoP/EV. Si falta liquidez en alguna pata o no hay cadena → pricing
+  teórico Black-Scholes (fallback, comportamiento previo). Flags: `market_priced`, `iv_source`.
+- **Scoring por EV**: `_score_strategy` incluye **valor esperado sobre capital** (15pts, EV = media
+  del Monte Carlo neto de spread) — corrige el sesgo de premiar PoP alto con EV negativo (vender
+  prima barata). Pesos: señal 25, EV 15, PoP 20, R/R 15, régimen IV 15, backtest 10; menos
+  penalización por complejidad y por spread ancho. UI muestra "Valor Esp." y badge PRECIO REAL/TEORICO.
+- Black-Scholes pricing + Newton-Raphson IV estimation (fallback teórico)
 - 15 strategy types: Long Call/Put, Bull/Bear Call/Put Spreads, Iron Condor/Butterfly, Straddle/Strangle (long & short), Calendar Spread, Covered Call, Protective Put, Butterfly, Ratio Put Spread
 - Strategy scoring (0-100): signal alignment (30pts), prob of profit (25pts), risk/reward (20pts), IV regime alignment (15pts), backtest support (10pts)
 - IV misalignment detection: compares estimated IV vs HV (10d/30d/60d), HV rank percentile, flags when IV/HV ratio > 1.3 (sell premium) or < 0.75 (buy premium)

@@ -546,7 +546,13 @@ def _label_is_bearish(label):
 
 
 def _score_stock(sym, data):
-    """Score a stock 0-100 for top-3 ranking. Returns None if ineligible."""
+    """Score a stock 0-100 for top-3 ranking. Returns None if ineligible.
+
+    Ranks by the *expected quality* of the current signal, leaning on the
+    backtest's per-trade expectancy (already net of costs) and profit factor
+    rather than raw win rate. Small-sample edges are shrunk toward neutral,
+    and signals that fight the SMA200 trend are penalized.
+    """
     sig = data.get("signal", "HOLD")
     label = data.get("signal_label", sig)
     is_bearish = _label_is_bearish(label)
@@ -555,36 +561,72 @@ def _score_stock(sym, data):
     bt = data.get("backtest", {}) or {}
     confidence = bt.get("confidence", 0) or 0
 
-    # Eligibility
-    if sig == "HOLD" and (conditions < 2 or confidence < 30):
+    # Eligibility: an active order signal, or at least 2/3 conditions aligning.
+    if sig == "HOLD" and conditions < 2:
         return None
     ohlc = (data.get("chart") or {}).get("ohlc", [])
     if len(ohlc) < 20:
         return None
 
-    # Component 1: strength (0-30)
-    s1 = min(strength / 5.1, 1.0) * 30
-
-    # Component 2: backtest confidence (0-25)
-    s2 = min(confidence / 100, 1.0) * 25
-
-    # Component 3: win rate (0-25)
+    # Side-specific backtest stats (the direction the label points to)
     if is_bearish:
         wr = bt.get("sell_win_rate", 0) or 0
-        avg_ret = bt.get("sell_avg_return") or 0
+        expectancy = bt.get("sell_expectancy")
+        pf = bt.get("sell_profit_factor")
+        n_side = bt.get("sell_count", 0) or 0
+        wr_trend = bt.get("sell_win_rate_trend")
     else:
         wr = bt.get("buy_win_rate", 0) or 0
-        avg_ret = bt.get("buy_avg_return") or 0
-    s3 = min(wr, 1.0) * 25
+        expectancy = bt.get("buy_expectancy")
+        pf = bt.get("buy_profit_factor")
+        n_side = bt.get("buy_count", 0) or 0
+        wr_trend = bt.get("buy_win_rate_trend")
 
-    # Component 4: avg return quality (±10)
-    capped = max(-15.0, min(15.0, float(avg_ret)))
-    s4 = (capped / 15.0) * 10
+    # Small-sample shrinkage: with few historical trades, trust the edge less.
+    robust_n = getattr(config, "BACKTEST_ROBUST_TRADES", 12)
+    sample_w = min(1.0, n_side / robust_n) if n_side else 0.0
 
-    # Component 5: active signal bonus (0 or 10)
-    s5 = 10.0 if sig in ("BUY", "SELL") else 0.0
+    # Component 1: snapshot conviction (0-25)
+    s1 = min(strength / 5.1, 1.0) * 25
 
-    return max(0.0, min(100.0, s1 + s2 + s3 + s4 + s5))
+    # Component 2: expectancy — the honest core (0-30), shrunk by sample size
+    exp_val = float(expectancy) if expectancy is not None else 0.0
+    exp_capped = max(-6.0, min(6.0, exp_val))          # ±6% per-trade caps the scale
+    s2 = ((exp_capped + 6.0) / 12.0) * 30 * sample_w    # 0.5*30 at zero edge, scaled
+
+    # Component 3: profit factor (0-15), shrunk by sample size
+    pf_val = float(pf) if pf is not None else 1.0
+    pf_norm = max(0.0, min(1.0, (pf_val - 1.0) / 1.5))  # PF 1.0->0, PF>=2.5->full
+    s3 = pf_norm * 15 * sample_w
+
+    # Component 4: calibrated confidence / statistical robustness (0-15)
+    s4 = min(confidence / 100, 1.0) * 15
+
+    # Component 5: win rate (0-10), shrunk by sample size
+    s5 = min(wr, 1.0) * 10 * sample_w
+
+    # Component 6: active order signal bonus (0 or 5)
+    s6 = 5.0 if sig in ("BUY", "SELL") else 0.0
+
+    score = s1 + s2 + s3 + s4 + s5 + s6
+
+    # Penalty: counter-trend. If the current signal fights the SMA200 trend and
+    # the trend-aligned history also underperformed, dock up to 15 points.
+    mas = (data.get("chart") or {}).get("mas", {})
+    sma200 = mas.get("sma200_val")
+    price = data.get("price", 0) or 0
+    if sma200 and price > 0:
+        # Counter-trend = buying below the 200-SMA (downtrend) or selling above it
+        # (uptrend). Mirrors the backtest's `with_trend` tagging.
+        counter_trend = (is_bearish and price > sma200) or (not is_bearish and price < sma200)
+        if counter_trend:
+            # Base penalty; deepen it when trend-aligned trades won < 50%.
+            pen = 10.0
+            if wr_trend is not None and wr_trend < 0.5:
+                pen += 5.0
+            score -= pen
+
+    return max(0.0, min(100.0, score))
 
 
 def _compute_price_levels(data):
@@ -1168,10 +1210,10 @@ def compute_top3(cache):
                 continue
             strength = data.get("strength", 0) or 0
             bt = data.get("backtest", {}) or {}
-            wr = bt.get("buy_win_rate", 0) or 0
             confidence = bt.get("confidence", 0) or 0
-            # Relaxed score for HOLDs
-            s = min(strength / 5.1, 1.0) * 30 + min(confidence / 100, 1.0) * 25 + min(wr, 1.0) * 25
+            # Relaxed score for weak HOLDs: same scale as _score_stock's
+            # conviction (25) + robustness (15) components, no edge credit.
+            s = min(strength / 5.1, 1.0) * 25 + min(confidence / 100, 1.0) * 15
             if s > 0:
                 scored.append((sym, data, round(s, 1)))
         scored.sort(key=lambda x: x[2], reverse=True)
@@ -1936,6 +1978,27 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .olab-strat-body{display:none;padding:0 18px 18px;border-top:1px solid var(--border)}
 .olab-strat-card.open .olab-strat-body{display:block}
 
+/* Calibracion del modelo */
+.calib-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:14px;overflow:hidden}
+.calib-head{padding:12px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+.calib-head:hover{background:rgba(36,86,230,.03)}
+.calib-title{font-size:13px;font-weight:800;color:var(--text)}
+.calib-sub{font-size:11px;font-weight:500;color:var(--muted)}
+.calib-caret{color:var(--muted);transition:transform .2s}
+.calib-caret.open{transform:rotate(180deg)}
+.calib-body{padding:0 16px 16px;border-top:1px solid var(--border)}
+.calib-verdict{padding:10px 12px;border-radius:8px;font-size:12px;font-weight:600;margin:12px 0}
+.calib-verdict.good{background:rgba(11,122,75,.08);color:#0b7a4b}
+.calib-verdict.bad{background:rgba(194,36,54,.08);color:#c22436}
+.calib-verdict.warn{background:rgba(180,83,9,.08);color:#b45309}
+.calib-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:6px}
+.calib-card{border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.calib-card .ct{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);margin-bottom:6px}
+.calib-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 0;font-variant-numeric:tabular-nums}
+.calib-row .rl{color:var(--muted)}
+.calib-bar{height:6px;border-radius:3px;background:var(--border);margin-top:3px;overflow:hidden}
+.calib-bar>span{display:block;height:100%;border-radius:3px}
+
 /* Strategy detail grid */
 .olab-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px}
 @media(max-width:900px){.olab-detail-grid{grid-template-columns:1fr}}
@@ -2071,6 +2134,15 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <!-- TAB: SCANNER -->
 <div id="tab-scanner" class="tab-content active">
 <div id="top3-section" class="top3-section" style="display:none"></div>
+<div class="calib-panel">
+  <div class="calib-head" onclick="toggleCalib()">
+    <span class="calib-title">&#x1F3AF; Calibracion del modelo <span class="calib-sub">&mdash; senal predicha vs resultado real (5A)</span></span>
+    <span id="calib-caret" class="calib-caret">&#x25BC;</span>
+  </div>
+  <div id="calib-body" class="calib-body" style="display:none">
+    <div id="calib-content"><div class="tab-loading-text">Cargando calibracion...</div></div>
+  </div>
+</div>
 <div class="content">
   <div class="list-header" id="list-header">
     <span></span><span data-col="sym" onclick="sortListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" onclick="sortListBy('price')">Precio</span>
@@ -2232,6 +2304,62 @@ function switchTab(tab){
   if(tab==='trades'&&!_thLoaded){_thLoaded=true;loadTradesHistory();}
   if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}
   if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}
+}
+
+var _calibLoaded=false;
+function toggleCalib(){
+  var body=document.getElementById('calib-body'), caret=document.getElementById('calib-caret');
+  var open=body.style.display==='none';
+  body.style.display=open?'block':'none';
+  caret.classList.toggle('open',open);
+  if(open&&!_calibLoaded){_calibLoaded=true;loadCalibration();}
+}
+function loadCalibration(){
+  fetch('/api/calibration').then(r=>r.json()).then(renderCalibration)
+    .catch(e=>{document.getElementById('calib-content').innerHTML='<div class="calib-verdict bad">Error: '+e.message+'</div>';});
+}
+function _calibAgg(a){
+  if(!a||a.n===0)return '<span class="rl">sin datos</span>';
+  var wr=a.win_rate!=null?a.win_rate.toFixed(0)+'%':'N/A';
+  var ar=a.avg_return!=null?(a.avg_return>=0?'+':'')+a.avg_return.toFixed(2)+'%':'N/A';
+  var arc=a.avg_return!=null&&a.avg_return>=0?'#0b7a4b':'#c22436';
+  return 'WR '+wr+' &middot; <span style="color:'+arc+'">'+ar+'</span> &middot; n='+a.n;
+}
+function renderCalibration(d){
+  var el=document.getElementById('calib-content');
+  if(d.error){el.innerHTML='<div class="calib-verdict warn">'+d.error+'</div>';return;}
+  var ov=d.overall||{};
+  var h='';
+  // Veredicto general
+  if(ov.n>0){
+    var pos=ov.avg_return>0;
+    var cls=pos?'good':'bad';
+    h+='<div class="calib-verdict '+cls+'">Sobre '+(d.symbols_used||0)+' simbolos y '+ov.n+' senales historicas (5A, neto de costes): '+
+       'win-rate <b>'+ov.win_rate.toFixed(0)+'%</b>, retorno medio <b>'+(ov.avg_return>=0?'+':'')+ov.avg_return.toFixed(2)+'%</b> por operacion. '+
+       (pos?'El sistema muestra edge positivo historico.':'Ojo: edge historico negativo — las senales tal cual no baten el break-even tras costes.')+'</div>';
+  }
+  // Reliability: win-rate por fuerza de senal
+  h+='<div class="calib-grid">';
+  h+='<div class="calib-card"><div class="ct">Win-rate por fuerza de senal</div>';
+  (d.by_strength||[]).forEach(function(b){
+    var wr=b.win_rate!=null?b.win_rate:0;
+    var col=wr>=55?'#0b7a4b':(wr>=45?'#b45309':'#c22436');
+    h+='<div class="calib-row"><span class="rl">'+b.label+'</span><span>'+(b.win_rate!=null?wr.toFixed(0)+'%':'—')+' <span style="color:var(--muted)">(n='+b.n+')</span></span></div>';
+    h+='<div class="calib-bar"><span style="width:'+Math.min(100,wr)+'%;background:'+col+'"></span></div>';
+  });
+  var mono=d.monotonic;
+  h+='<div class="calib-row" style="margin-top:6px"><span class="rl">Monotonica?</span><span style="color:'+(mono===true?'#0b7a4b':(mono===false?'#c22436':'var(--muted)'))+'">'+(mono===true?'Si — mas fuerza, mas aciertos':(mono===false?'No — la fuerza no predice mejor':'insuficiente'))+'</span></div>';
+  h+='</div>';
+  // Regimen
+  h+='<div class="calib-card"><div class="ct">Regimen de tendencia</div>'+
+     '<div class="calib-row"><span class="rl">A favor (SMA200)</span><span>'+_calibAgg(d.by_trend&&d.by_trend.with_trend)+'</span></div>'+
+     '<div class="calib-row"><span class="rl">Contra-tendencia</span><span>'+_calibAgg(d.by_trend&&d.by_trend.counter_trend)+'</span></div></div>';
+  // Direccion
+  h+='<div class="calib-card"><div class="ct">Por direccion</div>'+
+     '<div class="calib-row"><span class="rl">Compras</span><span>'+_calibAgg(d.by_side&&d.by_side.buy)+'</span></div>'+
+     '<div class="calib-row"><span class="rl">Ventas</span><span>'+_calibAgg(d.by_side&&d.by_side.sell)+'</span></div></div>';
+  h+='</div>';
+  el.innerHTML=h;
 }
 
 function loadPortfolio(){
@@ -4536,13 +4664,18 @@ function renderStrategies(d){
 
     let mpColor=s.max_profit>=0?'#0b7a4b':'#c22436';
     let mlColor='#c22436';
+    let ev=(s.expected_value!=null)?s.expected_value:null;
+    let evColor=ev!=null&&ev>=0?'#0b7a4b':'#c22436';
+    let priceBadge=s.market_priced
+      ? ' <span title="Valuado con precios reales bid/ask del mercado" style="font-size:9px;font-weight:700;color:#0b7a4b;background:rgba(11,122,75,.1);padding:1px 5px;border-radius:4px">PRECIO REAL</span>'
+      : ' <span title="Pricing teorico Black-Scholes (cadena de mercado no disponible)" style="font-size:9px;font-weight:700;color:var(--muted);background:var(--border);padding:1px 5px;border-radius:4px">TEORICO</span>';
 
     html+='<div class="olab-strat-card" id="olab-strat-'+i+'">'+
       '<div class="olab-strat-header" onclick="toggleOlabStrat('+i+')">'+
         '<div class="olab-strat-rank '+rankCls+'">'+rank+'</div>'+
         '<div class="olab-strat-info">'+
           '<div class="olab-strat-name">'+s.name+' <span class="olab-bias '+biasCls+'">'+biasLabel+'</span>'+
-            (s.dte?' <span style="font-size:10px;color:var(--muted);font-weight:400">'+s.dte+'d</span>':'')+
+            (s.dte?' <span style="font-size:10px;color:var(--muted);font-weight:400">'+s.dte+'d</span>':'')+priceBadge+
           '</div>'+
           '<div class="olab-strat-desc">'+s.description+'</div>'+
         '</div>'+
@@ -4550,6 +4683,7 @@ function renderStrategies(d){
           '<div class="olab-strat-metric"><div class="val" style="color:'+mpColor+'">$'+(s.max_profit>=0?'+':'')+s.max_profit.toFixed(0)+'</div><div class="lbl">Max Profit</div></div>'+
           '<div class="olab-strat-metric"><div class="val" style="color:'+mlColor+'">$'+s.max_loss.toFixed(0)+'</div><div class="lbl">Max Loss</div></div>'+
           '<div class="olab-strat-metric"><div class="val">'+s.prob_profit.toFixed(0)+'%</div><div class="lbl">Prob. Profit</div></div>'+
+          (ev!=null?'<div class="olab-strat-metric"><div class="val" style="color:'+evColor+'">$'+(ev>=0?'+':'')+ev.toFixed(0)+'</div><div class="lbl">Valor Esp.</div></div>':'')+
           '<div class="olab-strat-metric"><div class="val">'+s.risk_reward.toFixed(1)+'x</div><div class="lbl">R/R</div></div>'+
         '</div>'+
         '<div class="olab-strat-score" style="background:'+scoreColor+'22;color:'+scoreColor+';border:2px solid '+scoreColor+'">'+s.score.toFixed(0)+'</div>'+
@@ -5892,6 +6026,10 @@ def api_options_lab(symbol):
     highs = np.array([b["high"] for b in ohlc], dtype=float)
     lows = np.array([b["low"] for b in ohlc], dtype=float)
 
+    # Cadena de opciones real (IV + bid/ask) para pricing de mercado; None si falla
+    option_market = options_lab.get_option_market(
+        symbol, config.OPTIONS_DTE_TARGETS, spot=price)
+
     try:
         result = options_lab.generate_options_lab(
             symbol=symbol,
@@ -5902,6 +6040,7 @@ def api_options_lab(symbol):
             lows=lows,
             risk_free_rate=config.OPTIONS_RISK_FREE_RATE,
             dte_options=config.OPTIONS_DTE_TARGETS,
+            option_market=option_market,
         )
     except Exception as e:
         import traceback
@@ -6012,12 +6151,15 @@ def api_options_lab_top():
         highs_arr = np.array([b["high"] for b in ohlc], dtype=float)
         lows_arr = np.array([b["low"] for b in ohlc], dtype=float)
 
+        option_market = options_lab.get_option_market(
+            sym, config.OPTIONS_DTE_TARGETS, spot=price)
         try:
             lab = options_lab.generate_options_lab(
                 symbol=sym, price=price, signal_data=signal_data,
                 closes=closes, highs=highs_arr, lows=lows_arr,
                 risk_free_rate=config.OPTIONS_RISK_FREE_RATE,
                 dte_options=config.OPTIONS_DTE_TARGETS,
+                option_market=option_market,
             )
             lab["stock_score"] = round(opt_score, 1)
             lab["price_levels"] = _compute_price_levels(data)
@@ -6587,6 +6729,50 @@ def _fetch_trade_chart_data(symbol, entry_date, exit_date):
     except Exception as e:
         print(f"  [TradesHistory] Error fetching chart for {symbol}: {e}")
         return None
+
+
+_calibration_cache = {"data": None, "ts": 0}
+_CALIBRATION_TTL = 3600         # 1h
+_CALIBRATION_MAX_SYMBOLS = 20   # acota latencia del fetch 5Y por yfinance
+
+
+def build_calibration_report():
+    """Colecta 5Y de historia para el universo (watchlist + escaneados) y mide
+    la calibracion del modelo: win-rate y retorno realizados por fuerza de senal."""
+    import calibration as _calib
+
+    syms = list(dict.fromkeys(list(getattr(config, "WATCHLIST", [])) +
+                              list(analysis_cache.keys())))[:_CALIBRATION_MAX_SYMBOLS]
+    ohlc_by_symbol = {}
+    for s in syms:
+        df = _fetch_historical_yf(s, "5 Y")
+        if df is not None and len(df) > 300:
+            ohlc_by_symbol[s] = df
+
+    if not ohlc_by_symbol:
+        return {"error": "Sin datos historicos suficientes para calibrar", "overall": {"n": 0}}
+
+    report = _calib.calibrate_universe(ohlc_by_symbol)
+    report["symbols_requested"] = len(syms)
+    return report
+
+
+@flask_app.route("/api/calibration")
+def api_calibration():
+    """Diagrama de calibracion: contrasta la fuerza de senal predicha contra el
+    win-rate y retorno realmente observados en 5 anos de historia del universo."""
+    if _calibration_cache["data"] and time.time() - _calibration_cache["ts"] < _CALIBRATION_TTL:
+        return Response(to_json(_calibration_cache["data"]), mimetype="application/json")
+    try:
+        result = build_calibration_report()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response(to_json({"error": f"Error de calibracion: {e}", "overall": {"n": 0}}),
+                        mimetype="application/json", status=500)
+    _calibration_cache["data"] = result
+    _calibration_cache["ts"] = time.time()
+    return Response(to_json(result), mimetype="application/json")
 
 
 @flask_app.route("/api/trades-history")

@@ -51,6 +51,10 @@ MAX_OPEN_POSITIONS = 10  # Maximo de posiciones abiertas simultaneas
 BACKTEST_DURATION = "5 Y"      # 5 anos de datos para backtesting
 BACKTEST_WARMUP_BARS = 260     # Barras iniciales a saltar (EMA255 + margen)
 BACKTEST_MAX_HOLD_DAYS = 20    # Max dias por trade simulado
+BACKTEST_COST_PCT = 0.10       # Coste round-trip por trade (comision + slippage), en %
+BACKTEST_ROBUST_TRADES = 12    # Nº de trades no-solapados para peso de confianza pleno
+BACKTEST_COOLDOWN = True       # No abrir un nuevo trade hasta cerrar el anterior (evita solapes)
+BACKTEST_TREND_SMA = 200       # SMA para clasificar regimen (con/contra tendencia)
 
 # === DATOS HISTORICOS ===
 HIST_DURATION = "1 Y"    # 1 año de datos

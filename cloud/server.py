@@ -27,6 +27,7 @@ load_dotenv()
 from cloud import db, auth, flex
 import config
 import options_lab
+import calibration
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -928,12 +929,15 @@ def api_options_lab_top():
         highs_arr = np.array([b["high"] for b in ohlc], dtype=float)
         lows_arr = np.array([b["low"] for b in ohlc], dtype=float)
 
+        option_market = options_lab.get_option_market(
+            sym, config.OPTIONS_DTE_TARGETS, spot=price)
         try:
             lab = options_lab.generate_options_lab(
                 symbol=sym, price=price, signal_data=signal_data,
                 closes=closes, highs=highs_arr, lows=lows_arr,
                 risk_free_rate=config.OPTIONS_RISK_FREE_RATE,
                 dte_options=config.OPTIONS_DTE_TARGETS,
+                option_market=option_market,
             )
             lab["stock_score"] = round(opt_score, 1)
             results.append(lab)
@@ -945,6 +949,64 @@ def api_options_lab_top():
     ) + r.get("stock_score", 0), reverse=True)
 
     return Response(to_json({"opportunities": results}), mimetype="application/json")
+
+
+_calibration_cache = {"data": None, "ts": 0}
+_CALIBRATION_TTL = 3600
+_CALIBRATION_MAX_SYMBOLS = 20
+
+
+def _fetch_5y_yf(symbol):
+    """5Y OHLCV via yfinance con el shape que espera calibration/backtester."""
+    try:
+        import yfinance as yf
+        import pandas as pd
+        h = yf.Ticker(symbol.replace(" ", "-")).history(period="5y", interval="1d",
+                                                        auto_adjust=False)
+        if h is None or h.empty:
+            return None
+        return pd.DataFrame({
+            "date": [d.strftime("%Y%m%d") for d in h.index],
+            "open": h["Open"].values, "high": h["High"].values,
+            "low": h["Low"].values, "close": h["Close"].values,
+            "volume": h["Volume"].astype(float).values,
+        })
+    except Exception:
+        return None
+
+
+@app.route("/api/calibration")
+@login_required
+def api_calibration():
+    """Diagrama de calibracion (universo-nivel, cacheado global 1h): fuerza de
+    senal predicha vs win-rate y retorno realmente observados en 5A."""
+    if _calibration_cache["data"] and time.time() - _calibration_cache["ts"] < _CALIBRATION_TTL:
+        return Response(to_json(_calibration_cache["data"]), mimetype="application/json")
+
+    store = get_user_store(request.user_id)
+    syms = list(dict.fromkeys(list(getattr(config, "WATCHLIST", [])) +
+                              list(store.get("analysis", {}).keys())))[:_CALIBRATION_MAX_SYMBOLS]
+    try:
+        ohlc = {}
+        for s in syms:
+            df = _fetch_5y_yf(s)
+            if df is not None and len(df) > 300:
+                ohlc[s] = df
+        if not ohlc:
+            result = {"error": "Sin datos historicos suficientes para calibrar",
+                      "overall": {"n": 0}}
+        else:
+            result = calibration.calibrate_universe(ohlc)
+            result["symbols_requested"] = len(syms)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response(to_json({"error": f"Error de calibracion: {e}", "overall": {"n": 0}}),
+                        mimetype="application/json", status=500)
+
+    _calibration_cache["data"] = result
+    _calibration_cache["ts"] = time.time()
+    return Response(to_json(result), mimetype="application/json")
 
 
 @app.route("/api/options-lab/<symbol>")
@@ -983,6 +1045,8 @@ def api_options_lab(symbol):
     highs = np.array([b["high"] for b in ohlc], dtype=float)
     lows = np.array([b["low"] for b in ohlc], dtype=float)
 
+    option_market = options_lab.get_option_market(
+        symbol, config.OPTIONS_DTE_TARGETS, spot=price)
     try:
         result = options_lab.generate_options_lab(
             symbol=symbol,
@@ -993,6 +1057,7 @@ def api_options_lab(symbol):
             lows=lows,
             risk_free_rate=config.OPTIONS_RISK_FREE_RATE,
             dte_options=config.OPTIONS_DTE_TARGETS,
+            option_market=option_market,
         )
     except Exception as e:
         print(f"[OPTIONS_LAB] Error for {symbol}: {e}", flush=True)
