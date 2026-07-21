@@ -45,6 +45,16 @@ socketio = SocketIO(
     # MB. Without raising this, engineio silently kills the connection with
     # "packet is too large" the moment the first real batch goes out.
     max_http_buffer_size=25 * 1024 * 1024,
+    # Defaults ping_interval=25s + ping_timeout=20s mean that between scans
+    # (5 min sleep on the bridge), the first missed ping/pong terminates the
+    # session. On flaky ARG residential links that easily runs every ~30s,
+    # and every reconnect triggers a full re-emit (cart + 100 stocks + 100
+    # ETFs — several MB) that saturates the TCP window and cascades into
+    # another write-timeout. Ping every 15s keeps NATs/proxies from timing
+    # out the socket, and a 40s ping_timeout tolerates one slow-link hiccup
+    # without dropping the whole connection.
+    ping_interval=15,
+    ping_timeout=40,
 )
 
 # Per-user live data store: { user_id: { ... } }
