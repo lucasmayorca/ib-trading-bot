@@ -1,5 +1,3 @@
-import os
-
 # === CONEXION IB ===
 IB_HOST = "127.0.0.1"
 IB_PORT = 7497          # 7497 = paper trading, 7496 = live
@@ -120,8 +118,9 @@ OPTIONS_TOP_STRATEGIES = 10     # Cuantas estrategias mostrar
 OPTIONS_BACKTEST_HORIZONS = [5, 10, 20, 30, 45]  # Horizontes de backtest (dias)
 
 # === FLEX WEB SERVICE (trades historicos) ===
-FLEX_TOKEN = os.environ.get("IB_FLEX_TOKEN", "")   # token de IB Flex Web Service (env var; no commitear el literal)
-FLEX_QUERY_ID = os.environ.get("IB_FLEX_QUERY_ID", "")  # ID de la Flex Query (env var)
+import os as _os
+FLEX_TOKEN = _os.environ.get("IB_FLEX_TOKEN", "643600840119916776246936")
+FLEX_QUERY_ID = _os.environ.get("IB_FLEX_QUERY_ID", "1542204")
 
 # Telegram alerts
 TELEGRAM_BOT_TOKEN = ""      # Obtener de @BotFather

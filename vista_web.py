@@ -2455,6 +2455,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .th-trade-badge.win{background:rgba(11,122,75,.15);color:#0b7a4b;border:1px solid rgba(11,122,75,.3)}
 .th-trade-badge.loss{background:rgba(194,36,54,.15);color:#c22436;border:1px solid rgba(194,36,54,.3)}
 .th-trade-badge.stk{background:rgba(36,86,230,.12);color:var(--accent);border:1px solid rgba(36,86,230,.25)}
+.th-trade-badge.etf{background:rgba(6,148,162,.12);color:#0694a2;border:1px solid rgba(6,148,162,.25)}
 .th-trade-badge.opt{background:rgba(180,83,9,.12);color:#b45309;border:1px solid rgba(180,83,9,.25)}
 .th-trade-badge.spread{background:rgba(124,58,237,.12);color:#7c3aed;border:1px solid rgba(124,58,237,.25)}
 .th-trade-badge.estimated{background:rgba(180,83,9,.12);color:#b45309;border:1px solid rgba(180,83,9,.25);font-size:9px}
@@ -2639,7 +2640,9 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <div class="th-filters" id="th-filters">
       <button class="th-filter-btn active" onclick="filterTrades('all')">Todos</button>
       <button class="th-filter-btn" onclick="filterTrades('stk')">Acciones</button>
+      <button class="th-filter-btn" onclick="filterTrades('etf')">ETFs</button>
       <button class="th-filter-btn" onclick="filterTrades('opt')">Opciones</button>
+      <span style="width:1px;background:var(--border);margin:0 4px"></span>
       <button class="th-filter-btn" onclick="filterTrades('win')">Ganadores</button>
       <button class="th-filter-btn" onclick="filterTrades('loss')">Perdedores</button>
     </div>
@@ -5691,17 +5694,36 @@ function openInOptionsLab(sym){
 function loadTradesHistory(){
   document.getElementById('th-loading').style.display='';
   document.getElementById('th-content').style.display='none';
+  _thFilter='all';
+  document.querySelectorAll('.th-filter-btn').forEach(b=>b.classList.remove('active'));
+  let allBtn=document.querySelector('.th-filter-btn[onclick*="\'all\'"]');
+  if(allBtn)allBtn.classList.add('active');
   fetch('/api/trades-history').then(r=>r.json()).then(data=>{
     _thData=data;
     document.getElementById('th-loading').style.display='none';
     document.getElementById('th-content').style.display='';
     renderThSummary(data.summary);
     renderThList(data.trades);
+    _thUpdateFilterCounts(data.trades);
     let st=document.getElementById('th-refresh-status');
     if(data.flex_last_update)st.textContent='Ultima sync: '+data.flex_last_update;
     else if(data.flex_configured===false)st.textContent='Flex no configurado';
   }).catch(e=>{
     document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">Error cargando trades: '+e.message+'</span>';
+  });
+}
+function _thUpdateFilterCounts(trades){
+  let counts={all:trades.length,stk:0,etf:0,opt:0,win:0,loss:0};
+  trades.forEach(t=>{
+    if(t.type==='STK')counts.stk++;
+    else if(t.type==='ETF')counts.etf++;
+    else counts.opt++;
+    if(t.result==='WIN')counts.win++;else counts.loss++;
+  });
+  let labels={all:'Todos',stk:'Acciones',etf:'ETFs',opt:'Opciones',win:'Ganadores',loss:'Perdedores'};
+  Object.keys(labels).forEach(k=>{
+    let btn=document.querySelector('.th-filter-btn[onclick*="\''+k+'\'"]');
+    if(btn)btn.textContent=labels[k]+' ('+counts[k]+')';
   });
 }
 
@@ -5722,13 +5744,37 @@ function refreshTradesFromFlex(){
   });
 }
 
-function renderThSummary(s){
+function _thComputeSummary(trades){
+  if(!trades||!trades.length)return null;
+  let wins=trades.filter(t=>t.result==='WIN');
+  let durs=trades.filter(t=>t.duration_days>0).map(t=>t.duration_days);
+  let pnl=trades.reduce((a,t)=>a+t.pnl,0);
+  let comm=trades.reduce((a,t)=>a+t.commissions,0);
+  let best=trades.reduce((a,t)=>t.pnl>a.pnl?t:a,trades[0]);
+  let worst=trades.reduce((a,t)=>t.pnl<a.pnl?t:a,trades[0]);
+  return {
+    total_trades:trades.length, wins:wins.length, losses:trades.length-wins.length,
+    win_rate:+(wins.length/trades.length*100).toFixed(1),
+    total_pnl:+pnl.toFixed(2),
+    best_trade:{symbol:best.symbol,pnl:best.pnl,pnl_pct:best.pnl_pct},
+    worst_trade:{symbol:worst.symbol,pnl:worst.pnl,pnl_pct:worst.pnl_pct},
+    avg_duration_days:durs.length?Math.round(durs.reduce((a,d)=>a+d,0)/durs.length):0,
+    avg_return_pct:+(trades.reduce((a,t)=>a+t.pnl_pct,0)/trades.length).toFixed(2),
+    total_commissions:+comm.toFixed(2),
+    stocks_count:trades.filter(t=>t.type==='STK').length,
+    etfs_count:trades.filter(t=>t.type==='ETF').length,
+    options_count:trades.filter(t=>t.type==='OPT'||t.type==='SPREAD').length,
+  };
+}
+
+function renderThSummary(s,filterLabel){
   if(!s)return;
   let el=document.getElementById('th-summary');
   let wrColor=s.win_rate>=60?'color:var(--buy)':s.win_rate>=40?'color:var(--hold)':'color:var(--sell)';
   let pnlColor=s.total_pnl>=0?'color:var(--buy)':'color:var(--sell)';
   let h='';
-  h+='<div class="th-card"><div class="label">Total Trades</div><div class="value">'+s.total_trades+'</div><div class="sub">'+s.stocks_count+' acciones, '+s.options_count+' opciones</div></div>';
+  let sub0=filterLabel||((s.stocks_count||0)+' acciones, '+(s.etfs_count||0)+' ETFs, '+(s.options_count||0)+' opciones');
+  h+='<div class="th-card"><div class="label">Total Trades</div><div class="value">'+s.total_trades+'</div><div class="sub">'+sub0+'</div></div>';
   h+='<div class="th-card"><div class="label">Win Rate</div><div class="value" style="'+wrColor+'">'+s.win_rate+'%</div><div class="sub">'+s.wins+'W / '+s.losses+'L</div></div>';
   h+='<div class="th-card"><div class="label">P&L Total</div><div class="value" style="'+pnlColor+'">$'+fmtN(s.total_pnl)+'</div><div class="sub">Comisiones: $'+fmtN(s.total_commissions)+'</div></div>';
   h+='<div class="th-card"><div class="label">Retorno Promedio</div><div class="value" style="'+(s.avg_return_pct>=0?'color:var(--buy)':'color:var(--sell)')+'">'+s.avg_return_pct.toFixed(1)+'%</div><div class="sub">Duracion prom: '+s.avg_duration_days+'d</div></div>';
@@ -5745,12 +5791,18 @@ function filterTrades(f){
   _thFilter=f;
   document.querySelectorAll('.th-filter-btn').forEach(b=>b.classList.remove('active'));
   document.querySelector('.th-filter-btn[onclick*="\''+f+'\'"]').classList.add('active');
-  if(_thData)renderThList(_thData.trades);
+  if(!_thData)return;
+  let filtered=_thData.trades.filter(t=>_thFilterMatch(t,f));
+  let labels={all:null,stk:'Solo acciones',etf:'Solo ETFs',opt:'Solo opciones',win:'Solo ganadores',loss:'Solo perdedores'};
+  if(f==='all'){renderThSummary(_thData.summary);}
+  else{let cs=_thComputeSummary(filtered);if(cs)renderThSummary(cs,labels[f]);}
+  renderThList(_thData.trades);
 }
 
 function _thFilterMatch(t,f){
   if(f==='all')return true;
   if(f==='stk')return t.type==='STK';
+  if(f==='etf')return t.type==='ETF';
   if(f==='opt')return t.type==='OPT'||t.type==='SPREAD';
   if(f==='win')return t.result==='WIN';
   if(f==='loss')return t.result==='LOSS';
@@ -5778,7 +5830,7 @@ function renderThList(trades){
   filtered.forEach((t,i)=>{
     let pnlColor=t.pnl>=0?'var(--buy)':'var(--sell)';
     let pnlSign=t.pnl>=0?'+':'';
-    let typeBadge=t.type==='STK'?'stk':t.type==='SPREAD'?'spread':'opt';
+    let typeBadge=t.type==='STK'?'stk':t.type==='ETF'?'etf':t.type==='SPREAD'?'spread':'opt';
     let optDetail=t.option_detail?'<span class="th-trade-badge '+typeBadge+'" style="font-size:9px;padding:2px 7px">'+t.option_detail+'</span>':'';
 
     h+='<div class="th-trade" id="th-trade-'+i+'">';
@@ -7043,6 +7095,24 @@ def build_trades_history(trades_file=None):
     from collections import defaultdict
     from datetime import datetime as dt, timedelta
 
+    try:
+        from scanner import FALLBACK_ETFS
+        _etf_set = set(FALLBACK_ETFS)
+    except Exception:
+        _etf_set = {
+            "SPY","QQQ","IWM","DIA","VOO","VTI","EFA","EEM","VWO","VEA","IEMG",
+            "AGG","BND","TLT","IEF","SHY","LQD","HYG","TIP","VCIT","VNQ","XLRE",
+            "IYR","XLF","XLK","XLV","XLE","XLI","XLY","XLP","XLU","XLB","XLC",
+            "ARKK","ARKW","ARKG","ARKF","GLD","SLV","GDX","IAU","USO","UNG",
+            "SMH","SOXX","XBI","IBB","ITB","XHB","KRE","XME","XRT","HACK","BOTZ",
+            "VIG","SCHD","DVY","HDV","VYM","DGRO","MTUM","VLUE","QUAL","USMV",
+            "RSP","SPHD","SPLV","MOAT","COWZ","TQQQ","SQQQ","SPXL","SPXS","UVXY",
+            "IVV","QQQM","VT","ACWI","IWF","IWD","IWB","VUG","VTV","IJH","IJR",
+            "MDY","VXUS","BNDX","EMB","MUB","JNK","BKLN","EWJ","EWZ","FXI","INDA",
+            "KWEB","EWT","EWY","JETS","XOP","OIH","IGV","VGT","GDXJ","ICLN","TAN",
+            "LIT","DBC","DBA","IBIT","BITO","BITB","FBTC","ETHE",
+        }
+
     if trades_file is None:
         trades_file = os.path.join(os.path.dirname(__file__), "trades_imported.json")
     if not os.path.exists(trades_file):
@@ -7112,10 +7182,11 @@ def build_trades_history(trades_file=None):
         except ValueError:
             dur = 0
 
-        trade_idx = sum(1 for t in completed_trades if t["symbol"] == sym and t["type"] == "STK") + 1
+        asset_class = "ETF" if sym in _etf_set else "STK"
+        trade_idx = sum(1 for t in completed_trades if t["symbol"] == sym and t["type"] == asset_class) + 1
         return {
             "id": f"{sym}_{entry_date}_{trade_idx}",
-            "symbol": sym, "type": "STK", "option_detail": None,
+            "symbol": sym, "type": asset_class, "option_detail": None,
             "entry_date": entry_date, "exit_date": exit_date,
             "entry_price": round(avg_entry, 2), "exit_price": round(avg_exit, 2),
             "quantity": closed_qty, "invested": round(invested, 2),
@@ -7259,6 +7330,31 @@ def build_trades_history(trades_file=None):
     worst = min(completed_trades, key=lambda x: x["pnl"]) if completed_trades else None
     durations = [t["duration_days"] for t in completed_trades if t["duration_days"] > 0]
 
+    def _class_summary(subset):
+        if not subset:
+            return None
+        sw = [t for t in subset if t["result"] == "WIN"]
+        sd = [t["duration_days"] for t in subset if t["duration_days"] > 0]
+        sp = sum(t["pnl"] for t in subset)
+        sb = max(subset, key=lambda x: x["pnl"])
+        sw2 = min(subset, key=lambda x: x["pnl"])
+        return {
+            "total_trades": len(subset),
+            "wins": len(sw),
+            "losses": len(subset) - len(sw),
+            "win_rate": round(len(sw) / len(subset) * 100, 1),
+            "total_pnl": round(sp, 2),
+            "best_trade": {"symbol": sb["symbol"], "pnl": sb["pnl"], "pnl_pct": sb["pnl_pct"]},
+            "worst_trade": {"symbol": sw2["symbol"], "pnl": sw2["pnl"], "pnl_pct": sw2["pnl_pct"]},
+            "avg_duration_days": round(sum(sd) / len(sd), 0) if sd else 0,
+            "avg_return_pct": round(sum(t["pnl_pct"] for t in subset) / len(subset), 2),
+            "total_commissions": round(sum(t["commissions"] for t in subset), 2),
+        }
+
+    stk_list = [t for t in completed_trades if t["type"] == "STK"]
+    etf_list = [t for t in completed_trades if t["type"] == "ETF"]
+    opt_list = [t for t in completed_trades if t["type"] in ("OPT", "SPREAD")]
+
     summary = {
         "total_trades": len(completed_trades),
         "wins": len(wins),
@@ -7270,8 +7366,14 @@ def build_trades_history(trades_file=None):
         "avg_duration_days": round(sum(durations) / len(durations), 0) if durations else 0,
         "avg_return_pct": round(sum(t["pnl_pct"] for t in completed_trades) / len(completed_trades), 2) if completed_trades else 0,
         "total_commissions": round(sum(t["commissions"] for t in completed_trades), 2),
-        "stocks_count": len([t for t in completed_trades if t["type"] == "STK"]),
-        "options_count": len([t for t in completed_trades if t["type"] in ("OPT", "SPREAD")]),
+        "stocks_count": len(stk_list),
+        "etfs_count": len(etf_list),
+        "options_count": len(opt_list),
+        "by_class": {
+            "STK": _class_summary(stk_list),
+            "ETF": _class_summary(etf_list),
+            "OPT": _class_summary(opt_list),
+        },
     }
 
     return {"trades": completed_trades, "summary": summary}

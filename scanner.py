@@ -222,6 +222,8 @@ FALLBACK_ETFS = [
     "EWJ", "EWZ", "FXI", "INDA", "KWEB", "EWT", "EWY",
     "JETS", "XOP", "OIH", "IGV", "VGT", "GDXJ", "ICLN", "TAN", "LIT",
     "DBC", "DBA",
+    # Crypto/thematic ETFs
+    "IBIT", "BITO", "BITB", "FBTC", "ETHE",
 ]
 
 

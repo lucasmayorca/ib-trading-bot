@@ -1258,9 +1258,18 @@ def _merged_trades_file_path(user_id):
 @login_required
 def api_trades_history():
     from vista_web import build_trades_history
+    from cloud import db as _db
     try:
         trades_file = _merged_trades_file_path(request.user_id)
         result = build_trades_history(trades_file=trades_file)
+        flex_token, flex_query_id = _db.get_flex_config(request.user_id)
+        result["flex_configured"] = bool(flex_token and flex_query_id)
+        cached = flex_cache.get(request.user_id)
+        if cached:
+            import datetime
+            result["flex_last_update"] = datetime.datetime.fromtimestamp(cached["ts"]).strftime("%Y-%m-%d %H:%M")
+            if cached.get("error"):
+                result["flex_error"] = cached["error"]
         return Response(to_json(result), mimetype="application/json")
     except Exception as e:
         import traceback
@@ -1296,6 +1305,30 @@ def api_trades_history_chart(trade_id):
     chart["exit_thesis"] = exit_thesis
 
     return Response(to_json(chart), mimetype="application/json")
+
+
+@app.route("/api/trades-history/refresh", methods=["POST"])
+@login_required
+def api_trades_history_refresh():
+    from cloud import flex as _flex, db as _db
+    flex_token, flex_query_id = _db.get_flex_config(request.user_id)
+    if not flex_token or not flex_query_id:
+        return Response(
+            to_json({"error": "Flex no configurado. Configuralo en la pestana Conectar TWS."}),
+            mimetype="application/json", status=400,
+        )
+    try:
+        trades = _flex.fetch_flex_trades(flex_token, flex_query_id)
+        flex_cache[request.user_id] = {"trades": trades, "error": None, "ts": time.time()}
+        return Response(
+            to_json({"ok": True, "trades_count": len(trades)}),
+            mimetype="application/json",
+        )
+    except _flex.FlexError as e:
+        return Response(
+            to_json({"error": str(e)}),
+            mimetype="application/json", status=502,
+        )
 
 
 @app.route("/install.sh")
