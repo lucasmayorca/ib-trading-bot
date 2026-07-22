@@ -679,6 +679,34 @@ def _find_sr_levels(ohlc, atr, price, lookback=252, window=3):
     return techos, pisos
 
 
+def _regression_channel(ohlc, lookback=120):
+    """Canal de tendencia por regresión lineal sobre los últimos `lookback` cierres.
+
+    Ajusta una recta por mínimos cuadrados y traza bandas paralelas a ±2σ de los
+    residuos. Devuelve (upper, lower, slope_pct_per_day) evaluados en la última
+    barra, o (None, None, 0) si no hay datos suficientes. El techo del canal actúa
+    como resistencia dinámica y el piso como soporte dinámico."""
+    closes = [b.get("close") for b in ohlc[-lookback:] if b.get("close") is not None]
+    n = len(closes)
+    if n < 30:
+        return None, None, 0.0
+    xs = list(range(n))
+    mx = sum(xs) / n
+    my = sum(closes) / n
+    denom = sum((x - mx) ** 2 for x in xs)
+    if denom <= 0:
+        return None, None, 0.0
+    slope = sum((xs[i] - mx) * (closes[i] - my) for i in range(n)) / denom
+    intercept = my - slope * mx
+    resid = [closes[i] - (intercept + slope * xs[i]) for i in range(n)]
+    std = (sum(r * r for r in resid) / n) ** 0.5
+    mid_now = intercept + slope * (n - 1)
+    upper = mid_now + 2 * std
+    lower = mid_now - 2 * std
+    slope_pct = (slope / my * 100) if my else 0.0
+    return upper, lower, slope_pct
+
+
 def _estimate_expected_move(price, atr, data, is_bearish):
     """Movimiento anticipado (fracción del precio) para el objetivo, POR ACCIÓN.
 
@@ -708,7 +736,7 @@ def _estimate_expected_move(price, atr, data, is_bearish):
 
 
 def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
-                             expected_dist, is_bearish, sr_levels=None):
+                             expected_dist, is_bearish, sr_levels=None, channel=None):
     """Elige el objetivo: el primer nivel técnico (piso/techo horizontal, MA o
     swing) que esté al menos a `0.6·movimiento_esperado` y no más allá de
     `1.8·movimiento_esperado`. Si el nivel más cercano queda demasiado lejos (o
@@ -735,6 +763,13 @@ def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
             cands.append((1, "Swing high", swing_h))
         if not direction_up and swing_l < price:
             cands.append((1, "Swing low", swing_l))
+        # Canal de tendencia: techo del canal como resistencia dinamica, piso como soporte
+        if channel:
+            up, lo = channel[0], channel[1]
+            if direction_up and up is not None and up > price:
+                cands.append((1, "Canal superior de tendencia", up))
+            if not direction_up and lo is not None and lo < price:
+                cands.append((1, "Canal inferior de tendencia", lo))
         return cands
 
     if is_bearish:
@@ -744,7 +779,12 @@ def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
         if in_window:
             in_window.sort(key=lambda x: (x[0], -x[2]))
             _, name, v = in_window[0]
-            basis = name if name.startswith("Piso") else f"Soporte {name} en ${v:.2f}"
+            if name.startswith("Piso"):
+                basis = name
+            elif name.startswith("Canal"):
+                basis = f"{name} en ${v:.2f}"
+            else:
+                basis = f"Soporte {name} en ${v:.2f}"
             return v, basis
         return price - expected_dist, None          # basis lo pone el caller (movimiento esperado)
     else:
@@ -753,7 +793,12 @@ def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
         if in_window:
             in_window.sort(key=lambda x: (x[0], x[2]))
             _, name, v = in_window[0]
-            basis = name if name.startswith("Techo") else f"Resistencia {name} en ${v:.2f}"
+            if name.startswith("Techo"):
+                basis = name
+            elif name.startswith("Canal"):
+                basis = f"{name} en ${v:.2f}"
+            else:
+                basis = f"Resistencia {name} en ${v:.2f}"
             return v, basis
         return price + expected_dist, None
 
@@ -788,23 +833,27 @@ def _compute_price_levels(data):
 
     # Pisos y techos horizontales reales (pivotes con toques) del último año
     techos, pisos = _find_sr_levels(ohlc, atr, price)
+    # Canal de tendencia (regresión ±2σ): resistencia/soporte dinámicos
+    chan_up, chan_lo, chan_slope = _regression_channel(ohlc)
     # El piso/techo FUERTE (2+ toques) más cercano, para anclar entrada y stop
     piso_fuerte = next((c for c in pisos if c["touches"] >= 2), None)
     techo_fuerte = next((c for c in techos if c["touches"] >= 2), None)
     stop_basis = ""
 
     if is_bearish:
-        # Techo por encima como techo de entrada (resistencia horizontal o MA)
+        # Techo por encima como techo de entrada (resistencia horizontal, canal o MA)
         res_above = sorted([v for v in ma_vals.values() if v > price])
         if techo_fuerte:
             res_above = sorted(res_above + [techo_fuerte["level"]])
+        if chan_up is not None and chan_up > price:
+            res_above = sorted(res_above + [chan_up])
         entry_high = min(res_above[0], price + 1.5 * atr) if res_above else price + atr
         entry_low = price
 
-        # Objetivo: pisos (soportes) + MAs + swing, filtrados por movimiento esperado
+        # Objetivo: pisos (soportes) + MAs + swing + canal, filtrados por movimiento esperado
         target, target_basis = _pick_directional_target(
             price, ma_vals, ma_names, swing_h, swing_l, expected_dist,
-            is_bearish=True, sr_levels=pisos)
+            is_bearish=True, sr_levels=pisos, channel=(chan_up, chan_lo))
         if target_basis is None:
             target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
@@ -823,17 +872,19 @@ def _compute_price_levels(data):
         risk = stop - price
         reward = price - target
     else:
-        # Piso por debajo como piso de entrada (soporte horizontal o MA)
+        # Piso por debajo como piso de entrada (soporte horizontal, canal o MA)
         sup_below = sorted([v for v in ma_vals.values() if v < price], reverse=True)
         if piso_fuerte:
             sup_below = sorted(sup_below + [piso_fuerte["level"]], reverse=True)
+        if chan_lo is not None and chan_lo < price:
+            sup_below = sorted(sup_below + [chan_lo], reverse=True)
         entry_low = max(sup_below[0], price - 1.5 * atr) if sup_below else price - atr
         entry_high = price
 
-        # Objetivo: techos (resistencias) + MAs + swing, filtrados por movimiento esperado
+        # Objetivo: techos (resistencias) + MAs + swing + canal, filtrados por movimiento esperado
         target, target_basis = _pick_directional_target(
             price, ma_vals, ma_names, swing_h, swing_l, expected_dist,
-            is_bearish=False, sr_levels=techos)
+            is_bearish=False, sr_levels=techos, channel=(chan_up, chan_lo))
         if target_basis is None:
             target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
@@ -1107,6 +1158,89 @@ def _generate_rationale(sym, data, levels=None):
     return parts
 
 
+def _system_status(data, is_bearish):
+    """Estado explícito de las 3 condiciones del sistema en la dirección del label.
+
+    Devuelve (cumplidas, faltantes): listas de textos. Cada faltante dice el
+    umbral requerido, el valor actual y si se está ACERCANDO (usando la pendiente
+    de las series del chart), para que la tesis refleje la situación real."""
+    chart = data.get("chart") or {}
+    vals = data.get("values", {}) or {}
+    rsi_series = chart.get("rsi") or []
+    hist_series = (chart.get("macd") or {}).get("hist") or []
+    konc_chart = chart.get("koncorde") or {}
+    marron_series = konc_chart.get("marron") or []
+
+    def _slope(series):
+        pts = [x for x in series[-3:] if x is not None]
+        return (pts[-1] - pts[0]) if len(pts) >= 2 else 0.0
+
+    met, missing = [], []
+
+    # --- MACD: histograma del lado correcto Y girando ---
+    hist = (vals.get("macd") or {}).get("hist")
+    if data.get("macd_ok"):
+        met.append("MACD girando " + ("a la baja" if is_bearish else "al alza"))
+    else:
+        h_txt = f" (hist {hist:+.2f})" if hist is not None else ""
+        if hist is None:
+            missing.append("MACD" + h_txt)
+        elif is_bearish:
+            if hist > 0:
+                missing.append(f"MACD positivo{h_txt} pero aun sin girar a la baja")
+            else:
+                missing.append(f"MACD ya negativo{h_txt} — fuera de zona de venta")
+        else:
+            if hist < 0:
+                missing.append(f"MACD negativo{h_txt} pero aun sin girar al alza")
+            else:
+                missing.append(f"MACD todavia positivo{h_txt} — sin zona de compra")
+
+    # --- RSI: extremo requerido ---
+    rsi_v = vals.get("rsi")
+    if data.get("rsi_ok"):
+        met.append(f"RSI en {'sobrecompra' if is_bearish else 'sobreventa'} ({rsi_v:.0f})" if rsi_v is not None else "RSI en zona")
+    else:
+        thr = ">70" if is_bearish else "<30"
+        if rsi_v is None:
+            missing.append(f"RSI {thr}")
+        else:
+            sl = _slope(rsi_series)
+            approaching = (is_bearish and rsi_v > 60 and sl > 0) or ((not is_bearish) and rsi_v < 40 and sl < 0)
+            moving = (is_bearish and sl > 0) or ((not is_bearish) and sl < 0)
+            if approaching:
+                missing.append(f"RSI {rsi_v:.0f} ACERCANDOSE a {thr}")
+            elif moving:
+                missing.append(f"RSI {rsi_v:.0f} moviendose hacia {thr}, aun lejos")
+            else:
+                missing.append(f"RSI {rsi_v:.0f} (necesita {thr})")
+
+    # --- Koncorde: marron del lado correcto de la media Y girando ---
+    konc = vals.get("koncorde", {}) or {}
+    marron, media = konc.get("marron"), konc.get("media")
+    if data.get("konc_ok"):
+        met.append("Koncorde girando " + ("bajo techo" if is_bearish else "desde piso"))
+    else:
+        if marron is None or media is None:
+            missing.append("Koncorde")
+        elif is_bearish:
+            if marron > media:
+                missing.append("Koncorde sobre la media pero aun sin girar a la baja")
+            else:
+                missing.append("Koncorde bajo la media — fuera de zona de venta")
+        else:
+            if marron < media:
+                sl = _slope(marron_series)
+                if sl > 0:
+                    missing.append("Koncorde bajo la media, empezando a girar")
+                else:
+                    missing.append("Koncorde bajo la media pero aun cayendo")
+            else:
+                missing.append("Koncorde sobre la media — sin zona de compra")
+
+    return met, missing
+
+
 def _generate_thesis(sym, data, levels, fund):
     """Generate investment thesis in Spanish, consistent with signal_label."""
     sig = data.get("signal", "HOLD")
@@ -1124,23 +1258,38 @@ def _generate_thesis(sym, data, levels, fund):
     is_bearish = _label_is_bearish(label)
 
     if sig == "BUY":
-        lines.append(f"{sym} presenta senal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados al alza.")
+        lines.append(f"{sym} presenta senal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados al alza. Senal COMPLETA del sistema MACD+RSI+Koncorde.")
     elif sig == "SELL":
-        lines.append(f"{sym} presenta senal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados a la baja.")
-    elif "INMINENTE" in label and "COMPRA" in label:
-        lines.append(f"{sym} esta en {label}: {conds}/3 indicadores alineados al alza, a punto de confirmar senal de compra.")
-    elif "INMINENTE" in label and "VENTA" in label:
-        lines.append(f"{sym} esta en {label}: {conds}/3 indicadores alineados a la baja, a punto de confirmar senal de venta.")
-    elif "VIRANDO" in label and "COMPRA" in label:
-        lines.append(f"{sym} muestra indicadores {label.lower()}: los tecnicos empiezan a girar al alza.")
-    elif "VIRANDO" in label and "VENTA" in label:
-        lines.append(f"{sym} muestra indicadores {label.lower()}: los tecnicos empiezan a girar a la baja.")
-    elif "SOBREVENTA" in label:
-        lines.append(f"{sym} se encuentra en {label.lower()}, lo que podria anticipar un rebote alcista si los indicadores confirman.")
-    elif "SOBRECOMPRA" in label:
-        lines.append(f"{sym} se encuentra en {label.lower()}, lo que podria anticipar una correccion si los indicadores confirman.")
+        lines.append(f"{sym} presenta senal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados a la baja. Senal COMPLETA del sistema MACD+RSI+Koncorde.")
     else:
-        lines.append(f"{sym} se mantiene NEUTRAL — {conds}/3 indicadores activos, sin tendencia definida.")
+        # Estados PRE-senal: la tesis dice exactamente que condiciones del sistema
+        # se cumplen, cuales faltan (con umbral y valor actual) y si se acercan.
+        met, missing = _system_status(data, is_bearish)
+        met_txt = " y ".join(met) if met else "ninguna condicion del sistema"
+        miss_txt = "; ".join(missing) if missing else ""
+        dir_word = "venta" if is_bearish else "compra"
+        if "INMINENTE" in label:
+            l1 = f"{sym} en {label} ({conds}/3): ya cumple {met_txt}."
+            if miss_txt:
+                l1 += f" Para confirmar la senal de {dir_word} del sistema falta: {miss_txt}."
+            lines.append(l1)
+        elif "VIRANDO" in label:
+            l1 = f"{sym} {label.lower()} ({conds}/3): {('cumple ' + met_txt + '.') if met else 'los tecnicos empiezan a girar.'}"
+            if miss_txt:
+                l1 += f" Aun falta: {miss_txt}."
+            l1 += " Estado temprano — no es senal ejecutable."
+            lines.append(l1)
+        elif "SOBREVENTA" in label or "SOBRECOMPRA" in label:
+            zona = "sobreventa" if "SOBREVENTA" in label else "sobrecompra"
+            l1 = f"{sym} en zona de {zona} por RSI, pero el sistema no confirma."
+            if miss_txt:
+                l1 += f" Falta: {miss_txt}."
+            lines.append(l1)
+        else:
+            l1 = f"{sym} NEUTRAL — {conds}/3 condiciones del sistema."
+            if miss_txt:
+                l1 += f" Estado: {miss_txt}."
+            lines.append(l1)
 
     # --- Line 2: Indicator status (MACD, RSI, Koncorde) ---
     ind_parts = []

@@ -152,11 +152,18 @@ labels can be directional while `signal` is still HOLD.
   se ancla al piso/techo fuerte más cercano, y el **stop va bajo el piso / sobre el techo fuerte**
   (±0.5·ATR) si está a ≤3·ATR — si no, fórmula ATR/swing con tope de riesgo 3.5·ATR. Se expone
   `stop_basis` y el racional lo muestra ("Stop: $X — bajo piso $Y (n toques)").
-- **Transparencia del sistema en el racional (`_generate_rationale`)**: para estados pre-señal
-  (INMINENTE/VIRANDO), el primer bullet dice qué condiciones cumple y **qué FALTA con umbral**
-  ("FALTA para senal completa: RSI <30 — hoy 55"). Importante: COMPRA/VENTA INMINENTE = 2/3
-  condiciones (el RSI puede estar lejos del extremo si es la condición faltante); la señal
-  ejecutable del bot sigue siendo estrictamente 3/3 (`signal` BUY/SELL).
+- **Transparencia del sistema en tesis y racional**: `_system_status(data, is_bearish)` evalúa
+  las 3 condiciones en la dirección del label y devuelve (cumplidas, faltantes) con umbral,
+  valor actual y detección de "ACERCANDOSE" (pendiente de las series del chart — ej. "RSI 36
+  ACERCANDOSE a <30"). La **tesis** (`_generate_thesis`) lo usa en la línea 1 para estados
+  pre-señal ("ya cumple MACD girando al alza y Koncorde girando desde piso. Para confirmar la
+  senal de compra falta: RSI 43 (necesita <30)") y el **racional** (`_generate_rationale`)
+  muestra lo mismo en bullets. Importante: COMPRA/VENTA INMINENTE = 2/3 condiciones (el RSI
+  puede estar lejos del extremo si es la faltante); la señal ejecutable del bot sigue siendo
+  estrictamente 3/3 (`signal` BUY/SELL).
+- **Canal de tendencia (`_regression_channel`)**: regresión lineal ±2σ sobre ~120 cierres;
+  el techo/piso del canal entra como candidato de objetivo ("Canal superior de tendencia en
+  $X") y como ancla de zona de entrada, junto a pisos/techos horizontales y MAs.
 - **Objetivo de precio por acción (`_compute_price_levels`)**: NO usa un piso fijo del 10%
   (eso hacía que casi todo mostrara "objetivo 10%"). El **movimiento esperado** se estima por
   acción vía `_estimate_expected_move`: volatilidad (ATR·√días_de_hold) combinada con el
