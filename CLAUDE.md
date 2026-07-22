@@ -145,6 +145,18 @@ labels can be directional while `signal` is still HOLD.
   0 en rojo. `fconf(val, nSignals)` reserva "---" SOLO para `nSignals<=0` (ningún setup histórico
   en 5A — nada que backtestear). No volver a colapsar ambos casos en "---": hace parecer que el
   backtest no corrió cuando sí corrió. El resumen de cada recomendación muestra el chip Conf.
+- **Pisos y techos horizontales (`_find_sr_levels`)**: pivotes fractales (ventana ±3) del último
+  año, agrupados por tolerancia max(0.5·ATR, 0.5%); 2+ toques = nivel fuerte. Se COMBINAN con
+  MAs/ATR/swing en `_compute_price_levels`: el objetivo prioriza techos/pisos fuertes dentro de
+  la ventana de movimiento esperado (via `_pick_directional_target(sr_levels=...)`), la entrada
+  se ancla al piso/techo fuerte más cercano, y el **stop va bajo el piso / sobre el techo fuerte**
+  (±0.5·ATR) si está a ≤3·ATR — si no, fórmula ATR/swing con tope de riesgo 3.5·ATR. Se expone
+  `stop_basis` y el racional lo muestra ("Stop: $X — bajo piso $Y (n toques)").
+- **Transparencia del sistema en el racional (`_generate_rationale`)**: para estados pre-señal
+  (INMINENTE/VIRANDO), el primer bullet dice qué condiciones cumple y **qué FALTA con umbral**
+  ("FALTA para senal completa: RSI <30 — hoy 55"). Importante: COMPRA/VENTA INMINENTE = 2/3
+  condiciones (el RSI puede estar lejos del extremo si es la condición faltante); la señal
+  ejecutable del bot sigue siendo estrictamente 3/3 (`signal` BUY/SELL).
 - **Objetivo de precio por acción (`_compute_price_levels`)**: NO usa un piso fijo del 10%
   (eso hacía que casi todo mostrara "objetivo 10%"). El **movimiento esperado** se estima por
   acción vía `_estimate_expected_move`: volatilidad (ATR·√días_de_hold) combinada con el

@@ -632,6 +632,53 @@ def _score_stock(sym, data, min_target_pct=None):
     return max(0.0, min(100.0, score))
 
 
+def _find_sr_levels(ohlc, atr, price, lookback=252, window=3):
+    """Pisos y techos horizontales REALES desde la accion del precio.
+
+    Detecta pivotes fractales (maximo/minimo local en ventana de ±`window`
+    barras) sobre el ultimo año y los agrupa en niveles: pivotes a menos de
+    max(0.5·ATR, 0.5% del precio) entre si son el mismo nivel, y cada toque
+    adicional lo refuerza. Un nivel con 2+ toques es un piso/techo genuino.
+
+    Returns (techos, pisos): listas de {"level": float, "touches": int},
+    techos ordenados del mas cercano por encima, pisos del mas cercano por debajo.
+    """
+    bars = ohlc[-lookback:]
+    n = len(bars)
+    if n < 2 * window + 5 or price <= 0:
+        return [], []
+    highs = [b.get("high") for b in bars]
+    lows = [b.get("low") for b in bars]
+
+    piv_h, piv_l = [], []
+    for i in range(window, n - window):
+        seg_h = highs[i - window:i + window + 1]
+        seg_l = lows[i - window:i + window + 1]
+        if highs[i] is not None and highs[i] == max(x for x in seg_h if x is not None):
+            piv_h.append(highs[i])
+        if lows[i] is not None and lows[i] == min(x for x in seg_l if x is not None):
+            piv_l.append(lows[i])
+
+    tol = max(0.5 * atr, price * 0.005)
+
+    def _cluster(vals):
+        out = []
+        for v in sorted(vals):
+            if out and abs(v - out[-1]["level"]) <= tol:
+                c = out[-1]
+                c["level"] = (c["level"] * c["touches"] + v) / (c["touches"] + 1)
+                c["touches"] += 1
+            else:
+                out.append({"level": v, "touches": 1})
+        return out
+
+    techos = [c for c in _cluster(piv_h) if c["level"] > price]
+    pisos = [c for c in _cluster(piv_l) if c["level"] < price]
+    techos.sort(key=lambda c: c["level"])            # mas cercano por encima primero
+    pisos.sort(key=lambda c: -c["level"])            # mas cercano por debajo primero
+    return techos, pisos
+
+
 def _estimate_expected_move(price, atr, data, is_bearish):
     """Movimiento anticipado (fracción del precio) para el objetivo, POR ACCIÓN.
 
@@ -661,38 +708,54 @@ def _estimate_expected_move(price, atr, data, is_bearish):
 
 
 def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
-                             expected_dist, is_bearish):
-    """Elige el objetivo: el primer nivel técnico (MA/swing) que esté al menos a
-    `0.6·movimiento_esperado` y no más allá de `1.8·movimiento_esperado`. Si el
-    nivel más cercano queda demasiado lejos (o no hay), usa el movimiento esperado
-    directo. Reemplaza el viejo 'nivel más cercano, con piso fijo de 10%'."""
+                             expected_dist, is_bearish, sr_levels=None):
+    """Elige el objetivo: el primer nivel técnico (piso/techo horizontal, MA o
+    swing) que esté al menos a `0.6·movimiento_esperado` y no más allá de
+    `1.8·movimiento_esperado`. Si el nivel más cercano queda demasiado lejos (o
+    no hay), usa el movimiento esperado directo.
+
+    `sr_levels`: lista de {"level","touches"} de _find_sr_levels en la dirección
+    del objetivo (techos para alcista, pisos para bajista). Los pisos/techos con
+    2+ toques tienen prioridad sobre las MAs a igual distancia (son estructura
+    real del precio, no un promedio)."""
     min_dist = 0.6 * expected_dist
     max_dist = 1.8 * expected_dist
 
+    def _candidates(direction_up):
+        # (prioridad, nombre, valor): prioridad 0 = piso/techo fuerte, 1 = MA/swing, 2 = S/R débil
+        cands = []
+        for c in (sr_levels or []):
+            name = ("Techo" if direction_up else "Piso") + f" ${c['level']:.2f} ({c['touches']} toques)"
+            prio = 0 if c["touches"] >= 2 else 2
+            cands.append((prio, name, c["level"]))
+        for k, v in ma_vals.items():
+            if (v > price) == direction_up and v != price:
+                cands.append((1, ma_names.get(k, k), v))
+        if direction_up and swing_h > price:
+            cands.append((1, "Swing high", swing_h))
+        if not direction_up and swing_l < price:
+            cands.append((1, "Swing low", swing_l))
+        return cands
+
     if is_bearish:
-        levels = [(ma_names.get(k, k), v) for k, v in ma_vals.items() if v < price]
-        if swing_l < price:
-            levels.append(("Swing low", swing_l))
-        levels.sort(key=lambda x: -x[1])           # más cercano primero (soporte más alto)
-        for name, v in levels:
-            if (price - v) >= min_dist:
-                if (price - v) <= max_dist:
-                    return v, f"Soporte {name} en ${v:.2f}"
-                break                               # el más cercano ya está muy lejos
-        target = price - expected_dist
-        return target, None                         # basis lo pone el caller (movimiento esperado)
+        cands = _candidates(direction_up=False)
+        # En ventana [min,max]: primero por prioridad, después el más cercano (soporte más alto)
+        in_window = [(p, n, v) for p, n, v in cands if min_dist <= (price - v) <= max_dist]
+        if in_window:
+            in_window.sort(key=lambda x: (x[0], -x[2]))
+            _, name, v = in_window[0]
+            basis = name if name.startswith("Piso") else f"Soporte {name} en ${v:.2f}"
+            return v, basis
+        return price - expected_dist, None          # basis lo pone el caller (movimiento esperado)
     else:
-        levels = [(ma_names.get(k, k), v) for k, v in ma_vals.items() if v > price]
-        if swing_h > price:
-            levels.append(("Swing high", swing_h))
-        levels.sort(key=lambda x: x[1])            # más cercano primero (resistencia más baja)
-        for name, v in levels:
-            if (v - price) >= min_dist:
-                if (v - price) <= max_dist:
-                    return v, f"Resistencia {name} en ${v:.2f}"
-                break
-        target = price + expected_dist
-        return target, None
+        cands = _candidates(direction_up=True)
+        in_window = [(p, n, v) for p, n, v in cands if min_dist <= (v - price) <= max_dist]
+        if in_window:
+            in_window.sort(key=lambda x: (x[0], x[2]))
+            _, name, v = in_window[0]
+            basis = name if name.startswith("Techo") else f"Resistencia {name} en ${v:.2f}"
+            return v, basis
+        return price + expected_dist, None
 
 
 def _compute_price_levels(data):
@@ -723,32 +786,69 @@ def _compute_price_levels(data):
     expected_pct, emove_basis = _estimate_expected_move(price, atr, data, is_bearish)
     expected_dist = price * expected_pct
 
+    # Pisos y techos horizontales reales (pivotes con toques) del último año
+    techos, pisos = _find_sr_levels(ohlc, atr, price)
+    # El piso/techo FUERTE (2+ toques) más cercano, para anclar entrada y stop
+    piso_fuerte = next((c for c in pisos if c["touches"] >= 2), None)
+    techo_fuerte = next((c for c in techos if c["touches"] >= 2), None)
+    stop_basis = ""
+
     if is_bearish:
-        # Resistances above for entry ceiling
+        # Techo por encima como techo de entrada (resistencia horizontal o MA)
         res_above = sorted([v for v in ma_vals.values() if v > price])
+        if techo_fuerte:
+            res_above = sorted(res_above + [techo_fuerte["level"]])
         entry_high = min(res_above[0], price + 1.5 * atr) if res_above else price + atr
         entry_low = price
 
+        # Objetivo: pisos (soportes) + MAs + swing, filtrados por movimiento esperado
         target, target_basis = _pick_directional_target(
-            price, ma_vals, ma_names, swing_h, swing_l, expected_dist, is_bearish=True)
+            price, ma_vals, ma_names, swing_h, swing_l, expected_dist,
+            is_bearish=True, sr_levels=pisos)
         if target_basis is None:
             target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
-        stop = max(entry_high + atr, swing_h + 0.5 * atr)
+        # Stop: por ENCIMA del techo fuerte más cercano si existe y está a distancia
+        # razonable (la estructura invalida el corto si lo supera); si no, ATR/swing
+        if techo_fuerte and (techo_fuerte["level"] - price) <= 3 * atr:
+            stop = techo_fuerte["level"] + 0.5 * atr
+            stop_basis = f"sobre techo ${techo_fuerte['level']:.2f} ({techo_fuerte['touches']} toques)"
+        else:
+            stop = max(entry_high + atr, swing_h + 0.5 * atr)
+            stop_basis = "ATR sobre zona de entrada / swing high"
+        # Tope de riesgo: sin estructura cercana, no alejar el stop mas de 3.5·ATR
+        if stop - price > 3.5 * atr:
+            stop = price + 3.5 * atr
+            stop_basis = "riesgo maximo 3.5x ATR (sin techo cercano)"
         risk = stop - price
         reward = price - target
     else:
-        # Supports below for entry floor
+        # Piso por debajo como piso de entrada (soporte horizontal o MA)
         sup_below = sorted([v for v in ma_vals.values() if v < price], reverse=True)
+        if piso_fuerte:
+            sup_below = sorted(sup_below + [piso_fuerte["level"]], reverse=True)
         entry_low = max(sup_below[0], price - 1.5 * atr) if sup_below else price - atr
         entry_high = price
 
+        # Objetivo: techos (resistencias) + MAs + swing, filtrados por movimiento esperado
         target, target_basis = _pick_directional_target(
-            price, ma_vals, ma_names, swing_h, swing_l, expected_dist, is_bearish=False)
+            price, ma_vals, ma_names, swing_h, swing_l, expected_dist,
+            is_bearish=False, sr_levels=techos)
         if target_basis is None:
             target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
-        stop = min(entry_low - atr, swing_l - 0.5 * atr)
+        # Stop: por DEBAJO del piso fuerte más cercano si existe y está a distancia
+        # razonable (si el precio pierde el piso, la tesis se invalida); si no, ATR/swing
+        if piso_fuerte and (price - piso_fuerte["level"]) <= 3 * atr:
+            stop = piso_fuerte["level"] - 0.5 * atr
+            stop_basis = f"bajo piso ${piso_fuerte['level']:.2f} ({piso_fuerte['touches']} toques)"
+        else:
+            stop = min(entry_low - atr, swing_l - 0.5 * atr)
+            stop_basis = "ATR bajo zona de entrada / swing low"
+        # Tope de riesgo: sin estructura cercana, no alejar el stop mas de 3.5·ATR
+        if price - stop > 3.5 * atr:
+            stop = price - 3.5 * atr
+            stop_basis = "riesgo maximo 3.5x ATR (sin piso cercano)"
         risk = price - stop
         reward = target - price
 
@@ -785,6 +885,7 @@ def _compute_price_levels(data):
         "risk_reward": rr,
         "target_pct": round(target_pct, 1),
         "target_basis": target_basis,
+        "stop_basis": stop_basis,
         "horizon_weeks": horizon_weeks,
         "expected_move_pct": round(expected_pct * 100, 1),
     }
@@ -822,15 +923,31 @@ def _generate_rationale(sym, data, levels=None):
     # 1. Signal summary (consistent with signal_label)
     label = data.get("signal_label", sig)
     conds = data.get("conditions_met", 0)
+    is_bearish = _label_is_bearish(label)
     if sig == "BUY":
         parts.append(f"Senal de {label}: 3/3 indicadores alineados al alza (fuerza {data.get('strength', 0):.1f})")
     elif sig == "SELL":
         parts.append(f"Senal de {label}: 3/3 indicadores alineados a la baja (fuerza {data.get('strength', 0):.1f})")
     else:
-        parts.append(f"{label} — {conds}/3 indicadores activos")
+        # Estado PRE-senal: decir explicitamente que cumple y que FALTA (con umbral).
+        # El sistema completo exige MACD girando + RSI extremo + Koncorde girando;
+        # INMINENTE (2/3) y VIRANDO (1/3) son grados de cercania, no senal ejecutable.
+        rsi_v = vals.get("rsi")
+        rsi_thr = ">70" if is_bearish else "<30"
+        missing = []
+        if not data.get("macd_ok"):
+            missing.append("MACD (histograma girando)")
+        if not data.get("rsi_ok"):
+            rv_txt = f" — hoy {rsi_v:.0f}" if rsi_v is not None else ""
+            missing.append(f"RSI {rsi_thr}{rv_txt}")
+        if not data.get("konc_ok"):
+            missing.append("Koncorde (marron girando vs media)")
+        txt = f"{label} — {conds}/3 condiciones del sistema cumplidas"
+        if missing:
+            txt += ". FALTA para senal completa: " + " · ".join(missing)
+        parts.append(txt)
 
     # 2. Target justification (from levels)
-    is_bearish = _label_is_bearish(label)
     if levels:
         tp = levels.get("target_pct", 0)
         tb = levels.get("target_basis", "")
@@ -843,6 +960,10 @@ def _generate_rationale(sym, data, levels=None):
         if hz:
             target_text += f". Horizonte estimado: {hz}"
         parts.append(target_text)
+        sb = levels.get("stop_basis", "")
+        stp = levels.get("stop_loss")
+        if sb and stp:
+            parts.append(f"Stop: ${stp:.2f} — {sb}")
 
     # 2. Indicator details
     md = data.get("macd_detail", "")
