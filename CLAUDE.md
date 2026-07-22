@@ -53,8 +53,15 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 `generate_signal()` returns `signal` (BUY/SELL/HOLD for order logic) and `signal_label` (descriptive trend):
 - **COMPRA / COMPRA FUERTE**: 3/3 buy conditions (fuerte = strength >= 4)
 - **VENTA / VENTA FUERTE**: 3/3 sell conditions (fuerte = strength >= 4)
-- **COMPRA INMINENTE**: 2/3 buy conditions met
-- **VENTA INMINENTE**: 2/3 sell conditions met
+- **COMPRA INMINENTE**: 2/3 buy conditions met **+ zonas coherentes** (`_zones_coherent_buy`:
+  hist MACD ≤ 0, RSI < 45, marrón < media — el cuadro debe verse sobrevendido, patrón "SNPS").
+  2/3 sin coherencia de zona se degrada a VIRANDO A COMPRA (evita "compra" con MACD/RSI por
+  las nubes y un solo giro técnico acompañando).
+- **VENTA INMINENTE**: 2/3 sell conditions met **+ zonas coherentes** (`_zones_coherent_sell`:
+  hist ≥ 0, RSI > 55, marrón > media). Espejo en `bridge/signals.py` — mantener paridad.
+- **Top Recomendaciones solo lista** señales completas (BUY/SELL 3/3) o INMINENTE coherente;
+  VIRANDO/ZONA/NEUTRAL no se recomiendan (gate en `_score_stock` y en el fallback de
+  `compute_top3`) — calidad antes que cantidad: si no hay 5 setups reales, se muestran menos.
 - **VIRANDO A COMPRA**: 1/3 buy or multiple bullish hints (RSI < 40, MACD/Koncorde turning)
 - **VIRANDO A VENTA**: 1/3 sell or multiple bearish hints (RSI > 60, MACD/Koncorde turning)
 - **ZONA DE SOBREVENTA**: RSI < 35, no conditions met

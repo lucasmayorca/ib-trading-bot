@@ -561,8 +561,12 @@ def _score_stock(sym, data, min_target_pct=None):
     bt = data.get("backtest", {}) or {}
     confidence = bt.get("confidence", 0) or 0
 
-    # Eligibility: an active order signal, or at least 2/3 conditions aligning.
-    if sig == "HOLD" and conditions < 2:
+    # Eligibility: an active order signal, or a coherent INMINENTE setup.
+    # Tras la regla de coherencia de zonas (signals._zones_coherent_*), un 2/3
+    # con RSI/MACD del lado equivocado queda como VIRANDO y NO se recomienda:
+    # las recomendaciones deben verse como el sistema (todo abajo para compra,
+    # todo arriba para venta), no como giros tecnicos aislados.
+    if sig == "HOLD" and ("INMINENTE" not in label or conditions < 2):
         return None
     ohlc = (data.get("chart") or {}).get("ohlc", [])
     if len(ohlc) < 20:
@@ -1546,7 +1550,12 @@ def compute_top3(cache, min_target_pct=None):
             ohlc = (data.get("chart") or {}).get("ohlc", [])
             if len(ohlc) < 20:
                 continue
-            # El fallback relajado tambien respeta el objetivo minimo.
+            # El fallback relajado tambien exige un setup coherente (INMINENTE o
+            # senal activa) y el objetivo minimo — calidad antes que cantidad:
+            # si no hay 5 oportunidades reales, se muestran menos.
+            lbl = data.get("signal_label", "") or ""
+            if data.get("signal", "HOLD") == "HOLD" and "INMINENTE" not in lbl:
+                continue
             if not _meets_min_target(data, min_target_pct):
                 continue
             strength = data.get("strength", 0) or 0
@@ -2623,7 +2632,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <!-- TAB: TRADES HISTORICOS -->
 <div id="tab-trades" class="tab-content">
 <div class="th-section" id="trades-section">
-  <div class="th-title"><em>TRADES HISTORICOS</em> &mdash; Analisis de Operaciones Cerradas</div>
+  <div class="th-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span><em>TRADES HISTORICOS</em> &mdash; Analisis de Operaciones Cerradas</span><button id="th-refresh-btn" onclick="refreshTradesFromFlex()" style="font-size:12px;padding:4px 14px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:5px" title="Actualizar desde IB Flex Query">&#x21bb; Actualizar desde IB</button><span id="th-refresh-status" style="font-size:11px;color:var(--muted)"></span></div>
   <div id="th-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Cargando trades historicos...</div></div>
   <div id="th-content" style="display:none">
     <div class="th-summary" id="th-summary"></div>
@@ -5688,8 +5697,28 @@ function loadTradesHistory(){
     document.getElementById('th-content').style.display='';
     renderThSummary(data.summary);
     renderThList(data.trades);
+    let st=document.getElementById('th-refresh-status');
+    if(data.flex_last_update)st.textContent='Ultima sync: '+data.flex_last_update;
+    else if(data.flex_configured===false)st.textContent='Flex no configurado';
   }).catch(e=>{
     document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">Error cargando trades: '+e.message+'</span>';
+  });
+}
+
+function refreshTradesFromFlex(){
+  let btn=document.getElementById('th-refresh-btn');
+  let st=document.getElementById('th-refresh-status');
+  btn.disabled=true;btn.style.opacity='0.5';
+  st.textContent='Conectando con IB Flex...';st.style.color='var(--accent)';
+  fetch('/api/trades-history/refresh',{method:'POST'}).then(r=>r.json()).then(data=>{
+    btn.disabled=false;btn.style.opacity='1';
+    if(data.error){st.textContent=data.error;st.style.color='var(--sell)';return;}
+    st.textContent='Actualizado: '+data.trades_count+' fills importados';st.style.color='var(--buy)';
+    _thCharts={};_thLoaded=false;_thData=null;
+    loadTradesHistory();
+  }).catch(e=>{
+    btn.disabled=false;btn.style.opacity='1';
+    st.textContent='Error: '+e.message;st.style.color='var(--sell)';
   });
 }
 
@@ -7519,12 +7548,47 @@ def api_trades_history():
             return Response(to_json(trades_history_cache["data"]), mimetype="application/json")
 
     result = build_trades_history()
+    import os as _os
+    result["flex_configured"] = bool(config.FLEX_TOKEN and config.FLEX_QUERY_ID)
+    trades_file = _os.path.join(_os.path.dirname(__file__), "trades_imported.json")
+    if _os.path.exists(trades_file):
+        result["flex_last_update"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(_os.path.getmtime(trades_file)))
 
     with trades_history_lock:
         trades_history_cache["data"] = result
         trades_history_cache["ts"] = time.time()
 
     return Response(to_json(result), mimetype="application/json")
+
+
+@flask_app.route("/api/trades-history/refresh", methods=["POST"])
+def api_trades_refresh():
+    """Fetch latest trades from IB Flex Web Service and update trades_imported.json."""
+    if not config.FLEX_TOKEN or not config.FLEX_QUERY_ID:
+        return Response(to_json({"error": "FLEX_TOKEN y FLEX_QUERY_ID no configurados en config.py"}),
+                        mimetype="application/json")
+    try:
+        from cloud.flex import fetch_flex_trades, FlexError
+    except ImportError:
+        return Response(to_json({"error": "Modulo cloud/flex.py no encontrado"}),
+                        mimetype="application/json")
+    try:
+        new_trades = fetch_flex_trades(config.FLEX_TOKEN, config.FLEX_QUERY_ID)
+    except FlexError as e:
+        return Response(to_json({"error": str(e)}), mimetype="application/json")
+    except Exception as e:
+        return Response(to_json({"error": f"Error de conexion: {e}"}), mimetype="application/json")
+
+    import os as _os
+    trades_file = _os.path.join(_os.path.dirname(__file__), "trades_imported.json")
+    with open(trades_file, "w") as f:
+        json.dump({"trades": new_trades}, f, indent=2)
+
+    with trades_history_lock:
+        trades_history_cache["data"] = None
+        trades_history_cache["ts"] = 0
+
+    return Response(to_json({"ok": True, "trades_count": len(new_trades)}), mimetype="application/json")
 
 
 @flask_app.route("/api/trades-history/chart/<trade_id>")

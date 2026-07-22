@@ -17,9 +17,16 @@ trades_imported.json seed file was.
 """
 
 import time
+import ssl
 import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.parse
+
+try:
+    import certifi
+    _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _ssl_ctx = None
 
 SEND_REQUEST_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/SendRequest"
 GET_STATEMENT_URL = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService/GetStatement"
@@ -31,7 +38,7 @@ class FlexError(Exception):
 
 def _http_get(url, params, timeout=20):
     qs = urllib.parse.urlencode(params)
-    with urllib.request.urlopen(f"{url}?{qs}", timeout=timeout) as resp:
+    with urllib.request.urlopen(f"{url}?{qs}", timeout=timeout, context=_ssl_ctx) as resp:
         return resp.read()
 
 

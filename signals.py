@@ -206,6 +206,35 @@ def check_sell_conditions(koncorde_df, macd_df, rsi_df):
     }
 
 
+def _zones_coherent_buy(rsi, macd_hist, marron, media):
+    """Coherencia de ZONA para un setup de compra: ademas de los giros (2/3),
+    el cuadro general debe verse sobrevendido — histograma MACD en zona
+    negativa, RSI bajo (<45) y Koncorde bajo su media. Evita etiquetar
+    "COMPRA INMINENTE" cuando MACD/RSI estan por las nubes y solo un
+    indicador acompana (el patron correcto es tipo SNPS: todo abajo)."""
+    checks = []
+    if macd_hist is not None:
+        checks.append(macd_hist <= 0)
+    if rsi is not None:
+        checks.append(rsi < 45)
+    if marron is not None and media is not None:
+        checks.append(marron < media)
+    return bool(checks) and all(checks)
+
+
+def _zones_coherent_sell(rsi, macd_hist, marron, media):
+    """Coherencia de ZONA para un setup de venta: cuadro sobrecomprado —
+    histograma positivo, RSI alto (>55) y Koncorde sobre su media."""
+    checks = []
+    if macd_hist is not None:
+        checks.append(macd_hist >= 0)
+    if rsi is not None:
+        checks.append(rsi > 55)
+    if marron is not None and media is not None:
+        checks.append(marron > media)
+    return bool(checks) and all(checks)
+
+
 def _classify_trend(signal, buy_details, sell_details, vals):
     """
     Genera una etiqueta descriptiva de tendencia basada en los 3 indicadores.
@@ -231,12 +260,18 @@ def _classify_trend(signal, buy_details, sell_details, vals):
     marron = konc.get("marron")
     media = konc.get("media")
 
-    # 2 de 3 condiciones de compra cumplidas
+    # 2 de 3 condiciones de compra cumplidas + zonas coherentes (cuadro sobrevendido).
+    # Sin coherencia de zona se degrada a VIRANDO: un giro tecnico con RSI/MACD
+    # elevados no es un setup de compra del sistema.
     if buy_met == 2:
-        return "COMPRA INMINENTE"
-    # 2 de 3 condiciones de venta cumplidas
+        if _zones_coherent_buy(rsi, macd_hist, marron, media):
+            return "COMPRA INMINENTE"
+        return "VIRANDO A COMPRA"
+    # 2 de 3 condiciones de venta cumplidas + zonas coherentes (cuadro sobrecomprado)
     if sell_met == 2:
-        return "VENTA INMINENTE"
+        if _zones_coherent_sell(rsi, macd_hist, marron, media):
+            return "VENTA INMINENTE"
+        return "VIRANDO A VENTA"
 
     # 1 condicion: detectar hacia donde vira
     # Analizar la direccion predominante de los indicadores
