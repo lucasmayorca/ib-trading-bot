@@ -292,6 +292,11 @@ User's machine                          Railway (shared)
   status header via targeted string `.replace()` — the local template has no concept of "connect a
   bridge" since the local bot already IS the TWS connection. Never edit `vista_web.py` to add
   cloud-only UI; add it via that injection function instead so local stays untouched.
+- **Feedback tab ("Tu Opinion", cloud-only)**: injected right after "Conectar TWS" by the same
+  `_inject_cloud_setup_tab()`. Star rating (1-5) + category + comentario → `POST /api/feedback`,
+  stored in the `feedback` table (`cloud/db.py`: `save_feedback`/`get_all_feedback`). `GET /api/feedback`
+  is **owner-only** (email == `ADMIN_EMAIL`, default lucas.mayorca@gmail.com, env-overridable) and
+  powers the "Comentarios recibidos" review panel that stays hidden (403) for everyone else.
 
 ### Known gotchas (each cost real debugging time — don't reintroduce)
 - **`max_http_buffer_size`**: default is 1MB. A single `analysis_batch` of 10 stocks × 5 years of

@@ -57,6 +57,10 @@ socketio = SocketIO(
     ping_timeout=40,
 )
 
+# Owner account — sees the collected-feedback review panel in the "Tu Opinion"
+# tab. Override with ADMIN_EMAIL env var if the owner account changes.
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "lucas.mayorca@gmail.com").strip().lower()
+
 # Per-user live data store: { user_id: { ... } }
 user_data = {}
 user_data_lock = threading.Lock()
@@ -290,6 +294,46 @@ def test_flex_config_route():
     if error:
         return jsonify({"ok": False, "error": error}), 400
     return jsonify({"ok": True, "trades_found": len(trades)})
+
+
+@app.route("/api/feedback", methods=["POST"])
+@login_required
+def submit_feedback():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        rating = int(data.get("rating") or 0)
+    except (TypeError, ValueError):
+        rating = 0
+    category = (data.get("category") or "").strip()[:40]
+    message = (data.get("message") or "").strip()[:4000]
+    if rating < 1 or rating > 5:
+        return jsonify({"error": "Elegi una valoracion de 1 a 5 estrellas"}), 400
+    if not message:
+        return jsonify({"error": "Escribi un comentario"}), 400
+    db.save_feedback(request.user_id, request.user_email, rating, category, message)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/feedback", methods=["GET"])
+@login_required
+def list_feedback():
+    # Owner-only review panel. Regular users get 403 and the front-end simply
+    # keeps the review section hidden.
+    if (request.user_email or "").strip().lower() != ADMIN_EMAIL:
+        return jsonify({"error": "No autorizado"}), 403
+    rows = db.get_all_feedback()
+    items, total = [], 0
+    for r in rows:
+        total += r["rating"] or 0
+        items.append({
+            "email": r["email"],
+            "rating": r["rating"],
+            "category": r["category"],
+            "message": r["message"],
+            "created_at": r["created_at"].strftime("%Y-%m-%d %H:%M") if r["created_at"] else "",
+        })
+    avg = round(total / len(items), 2) if items else 0
+    return jsonify({"items": items, "count": len(items), "avg_rating": avg})
 
 
 @app.route("/logout")
@@ -1608,42 +1652,236 @@ def _auth_page(mode):
     title = "Crear Cuenta" if mode == "register" else "Iniciar Sesión"
     alt_link = "/login" if mode == "register" else "/register"
     alt_text = "¿Ya tienes cuenta? Inicia sesión" if mode == "register" else "¿No tienes cuenta? Regístrate"
+    cta_hint = ("Crea tu cuenta gratis y conecta tu TWS en 3 pasos."
+                if mode == "register" else
+                "Entra a tu dashboard. ¿Primera vez? Crear la cuenta toma 30 segundos.")
     endpoint = f"/api/{mode}"
     return f"""<!DOCTYPE html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title} — IB Trading Dashboard</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
+:root{{--bg:#f4f4f1;--surface:#fff;--border:#e3e2dc;--border-subtle:#ecebe6;--text:#16181d;
+--muted:#6d7480;--dim:#9aa0aa;--accent:#2456e6;--buy:#0b7a4b;--sell:#c22436;--hold:#b45309}}
 body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-background:#f4f4f1;color:#16181d;display:flex;justify-content:center;align-items:center;min-height:100vh}}
-.card{{background:#ffffff;border:1px solid #e3e2dc;border-radius:12px;padding:40px;width:400px;max-width:90vw;box-shadow:0 4px 12px rgba(30,33,38,.07)}}
-h1{{font-size:24px;margin-bottom:8px;color:#16181d}}
-.subtitle{{color:#6d7480;margin-bottom:24px;font-size:14px}}
-label{{display:block;font-size:13px;color:#6d7480;margin-bottom:4px;margin-top:16px}}
-input{{width:100%;padding:10px 12px;background:#fbfbf9;border:1px solid #e3e2dc;border-radius:6px;
-color:#16181d;font-size:14px;outline:none}}
-input:focus{{border-color:#2456e6;box-shadow:0 0 0 3px rgba(36,86,230,.1)}}
-button{{width:100%;padding:12px;background:#2456e6;color:#fff;border:none;border-radius:6px;
-font-size:15px;font-weight:600;cursor:pointer;margin-top:24px}}
-button:hover{{background:#1d47c4}}
+background:var(--bg);color:var(--text);min-height:100vh}}
+.wrap{{max-width:1120px;margin:0 auto;padding:0 24px}}
+/* ── top bar ── */
+.topbar{{display:flex;justify-content:space-between;align-items:center;padding:22px 0}}
+.logo{{font-size:15px;font-weight:800;letter-spacing:.5px}}
+.logo em{{font-style:normal;color:var(--accent)}}
+.logo small{{display:block;font-weight:500;font-size:10px;color:var(--muted);letter-spacing:1.5px;margin-top:2px}}
+/* ── hero: pitch + login card ── */
+.hero{{display:grid;grid-template-columns:1fr 400px;gap:56px;align-items:start;padding:36px 0 20px}}
+.eyebrow{{display:inline-block;font-size:11px;font-weight:700;letter-spacing:1.5px;color:var(--accent);
+background:rgba(36,86,230,.08);border:1px solid rgba(36,86,230,.18);border-radius:999px;padding:5px 14px;margin-bottom:18px}}
+h1.head{{font-size:38px;line-height:1.15;font-weight:800;letter-spacing:-.5px;margin-bottom:16px}}
+h1.head em{{font-style:normal;color:var(--accent)}}
+.lead{{font-size:16px;color:var(--muted);line-height:1.65;margin-bottom:26px;max-width:540px}}
+.chips{{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:30px}}
+.chip{{font-size:11px;font-weight:700;letter-spacing:.5px;padding:5px 12px;border-radius:999px;border:1px solid}}
+.chip.b{{color:var(--buy);background:#effaf4;border-color:#bfe5d2}}
+.chip.s{{color:var(--sell);background:#fdf1f2;border-color:#f2c8cd}}
+.chip.h{{color:var(--hold);background:#fdf6ec;border-color:#eed9b8}}
+.feats{{display:flex;flex-direction:column;gap:14px}}
+.feat{{display:flex;gap:14px;align-items:flex-start}}
+.feat .ic{{flex:none;width:34px;height:34px;border-radius:9px;background:var(--surface);border:1px solid var(--border);
+display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(30,33,38,.05)}}
+.feat .ic svg{{width:17px;height:17px;stroke:var(--accent);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}}
+.feat b{{display:block;font-size:14px;margin-bottom:2px}}
+.feat p{{font-size:13px;color:var(--muted);line-height:1.55}}
+/* ── login card ── */
+.card{{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:34px;
+box-shadow:0 10px 30px rgba(30,33,38,.09);position:sticky;top:24px;
+animation:slideIn .8s .3s cubic-bezier(.22,1,.36,1) backwards}}
+.card h2{{font-size:21px;margin-bottom:6px}}
+.subtitle{{color:var(--muted);margin-bottom:20px;font-size:13px;line-height:1.55}}
+label{{display:block;font-size:13px;color:var(--muted);margin-bottom:4px;margin-top:16px}}
+input{{width:100%;padding:10px 12px;background:#fbfbf9;border:1px solid var(--border);border-radius:6px;
+color:var(--text);font-size:14px;outline:none}}
+input:focus{{border-color:var(--accent);box-shadow:0 0 0 3px rgba(36,86,230,.1)}}
+button{{width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:6px;
+font-size:15px;font-weight:600;cursor:pointer;margin-top:24px;
+transition:background .2s,transform .15s,box-shadow .2s}}
+button:hover{{background:#1d47c4;transform:translateY(-1px);box-shadow:0 6px 16px rgba(36,86,230,.32)}}
 .alt{{text-align:center;margin-top:16px}}
-.alt a{{color:#2456e6;text-decoration:none;font-size:13px}}
-.error{{background:#fdf1f2;border:1px solid #f2c8cd;color:#c22436;padding:8px 12px;border-radius:6px;
+.alt a{{color:var(--accent);text-decoration:none;font-size:13px}}
+.error{{background:#fdf1f2;border:1px solid #f2c8cd;color:var(--sell);padding:8px 12px;border-radius:6px;
 margin-top:12px;font-size:13px;display:none}}
-.success{{background:#effaf4;border:1px solid #bfe5d2;color:#0b7a4b;padding:12px;border-radius:6px;
+.success{{background:#effaf4;border:1px solid #bfe5d2;color:var(--buy);padding:12px;border-radius:6px;
 margin-top:12px;font-size:13px;display:none}}
+.priv{{margin-top:18px;padding-top:14px;border-top:1px solid var(--border-subtle);font-size:11px;
+color:var(--dim);line-height:1.6}}
+.priv b{{color:var(--muted)}}
+/* ── tabs grid ── */
+.sect{{padding:34px 0 8px}}
+.sect h3{{font-size:12px;font-weight:700;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:16px}}
+.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}}
+.tile{{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 18px 16px;
+box-shadow:0 1px 3px rgba(30,33,38,.05)}}
+.tile .tag{{font-size:10px;font-weight:800;letter-spacing:1px;color:var(--accent);margin-bottom:8px}}
+.tile b{{display:block;font-size:14px;margin-bottom:5px}}
+.tile p{{font-size:12px;color:var(--muted);line-height:1.55}}
+/* ── how it works ── */
+.steps{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;counter-reset:st}}
+.step{{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;position:relative}}
+.step .n{{width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:800;
+display:flex;align-items:center;justify-content:center;margin-bottom:10px}}
+.step b{{display:block;font-size:14px;margin-bottom:4px}}
+.step p{{font-size:12px;color:var(--muted);line-height:1.55}}
+footer{{padding:36px 0 28px;font-size:11px;color:var(--dim);text-align:center;line-height:1.7}}
+/* ── motion ── */
+@keyframes fadeUp{{from{{opacity:0;transform:translateY(18px)}}to{{opacity:1;transform:none}}}}
+@keyframes popIn{{from{{opacity:0;transform:scale(.8)}}to{{opacity:1;transform:scale(1)}}}}
+@keyframes slideIn{{from{{opacity:0;transform:translateX(28px)}}to{{opacity:1;transform:none}}}}
+@keyframes pulse{{0%{{box-shadow:0 0 0 0 rgba(11,122,75,.45)}}70%{{box-shadow:0 0 0 7px rgba(11,122,75,0)}}100%{{box-shadow:0 0 0 0 rgba(11,122,75,0)}}}}
+@keyframes marquee{{from{{transform:translateX(0)}}to{{transform:translateX(-50%)}}}}
+@keyframes draw{{to{{stroke-dashoffset:0}}}}
+.au{{opacity:0;animation:fadeUp .7s cubic-bezier(.22,1,.36,1) forwards}}
+.chips .chip{{opacity:0;animation:popIn .45s cubic-bezier(.34,1.56,.64,1) forwards}}
+.chips .chip:nth-child(1){{animation-delay:.30s}} .chips .chip:nth-child(2){{animation-delay:.38s}}
+.chips .chip:nth-child(3){{animation-delay:.46s}} .chips .chip:nth-child(4){{animation-delay:.54s}}
+.chips .chip:nth-child(5){{animation-delay:.62s}} .chips .chip:nth-child(6){{animation-delay:.70s}}
+/* ── ticker ── */
+.ticker{{overflow:hidden;background:var(--surface);border-bottom:1px solid var(--border);
+white-space:nowrap;padding:8px 0;font-size:12px;color:var(--muted)}}
+.tk{{display:inline-flex;gap:30px;padding-right:30px;animation:marquee 38s linear infinite;will-change:transform}}
+.tk span b{{color:var(--text);font-weight:700;margin-right:6px}}
+.up{{color:var(--buy);font-weight:600}} .dn{{color:var(--sell);font-weight:600}}
+/* ── live mock panel ── */
+.livedot{{width:7px;height:7px;border-radius:50%;background:var(--buy);display:inline-block;
+margin-right:8px;animation:pulse 1.8s infinite;vertical-align:1px}}
+.mock{{display:flex;align-items:center;gap:18px;background:var(--surface);border:1px solid var(--border);
+border-radius:12px;padding:14px 18px;margin-bottom:28px;box-shadow:0 4px 14px rgba(30,33,38,.06);max-width:540px}}
+.mock svg{{flex:none}}
+.mock .sym{{font-weight:800;font-size:15px;margin-right:10px}}
+.mock .lbl{{font-size:10px;font-weight:800;letter-spacing:.6px;padding:3px 10px;border-radius:999px;border:1px solid}}
+.mock .meta{{font-size:11px;color:var(--muted);margin-top:5px}}
+.pb{{color:var(--buy);background:#effaf4;border-color:#bfe5d2}}
+.ps{{color:var(--sell);background:#fdf1f2;border-color:#f2c8cd}}
+.ph{{color:var(--hold);background:#fdf6ec;border-color:#eed9b8}}
+.spark{{stroke-dasharray:280;stroke-dashoffset:280;animation:draw 2s ease forwards}}
+/* ── scroll reveal + hover ── */
+.rv{{opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s cubic-bezier(.22,1,.36,1)}}
+.rv.in{{opacity:1;transform:none}}
+.grid .rv:nth-child(2),.steps .rv:nth-child(2){{transition-delay:.08s}}
+.grid .rv:nth-child(3),.steps .rv:nth-child(3){{transition-delay:.16s}}
+.grid .rv:nth-child(4){{transition-delay:.24s}}
+.tile,.step{{transition:transform .25s ease,box-shadow .25s ease}}
+.tile:hover,.step:hover{{transform:translateY(-4px);box-shadow:0 10px 24px rgba(30,33,38,.10)}}
+@media(prefers-reduced-motion:reduce){{
+  *{{animation:none!important;transition:none!important}}
+  .au,.chips .chip,.rv,.card{{opacity:1;transform:none}}
+  .spark{{stroke-dashoffset:0}}
+}}
+@media(max-width:900px){{
+  .hero{{grid-template-columns:1fr;gap:32px}}
+  .card{{position:static;max-width:440px}}
+  h1.head{{font-size:30px}}
+  .grid,.steps{{grid-template-columns:1fr 1fr}}
+}}
+@media(max-width:540px){{ .grid,.steps{{grid-template-columns:1fr}} }}
 </style></head><body>
-<div class="card">
-<h1>{title}</h1>
-<p class="subtitle">IB Trading Dashboard — Multi-tenant</p>
-<form id="form">
-<label>Email</label><input type="email" id="email" required>
-<label>Contraseña</label><input type="password" id="password" required minlength="8">
-<div class="error" id="error"></div>
-<div class="success" id="success"></div>
-<button type="submit">{title}</button>
-</form>
-<div class="alt"><a href="{alt_link}">{alt_text}</a></div>
+<div class="ticker"><div class="tk" id="tk">
+<span><b>AAPL</b><i class="up">+0.8%</i></span><span><b>NVDA</b><i class="up">+1.6%</i></span>
+<span><b>MSFT</b><i class="dn">-0.4%</i></span><span><b>TSLA</b><i class="up">+2.1%</i></span>
+<span><b>AMZN</b><i class="up">+0.5%</i></span><span><b>SPY</b><i class="up">+0.3%</i></span>
+<span><b>QQQ</b><i class="up">+0.6%</i></span><span><b>META</b><i class="dn">-1.1%</i></span>
+<span><b>GOOGL</b><i class="up">+0.9%</i></span><span><b>AMD</b><i class="up">+1.8%</i></span>
+<span><b>JPM</b><i class="dn">-0.2%</i></span><span><b>XOM</b><i class="up">+0.4%</i></span>
+</div></div>
+<div class="wrap">
+
+<div class="topbar">
+  <div class="logo">IB TRADING <em>DASHBOARD</em><small>MACD &middot; RSI &middot; KONCORDE</small></div>
+</div>
+
+<div class="hero">
+  <div>
+    <span class="eyebrow au"><span class="livedot"></span>CONECTADO A TU INTERACTIVE BROKERS</span>
+    <h1 class="head au" style="animation-delay:.08s">Señales técnicas claras sobre <em>100 acciones y ETFs</em>, cada 5 minutos</h1>
+    <p class="lead au" style="animation-delay:.16s">El dashboard escanea el mercado, calcula MACD + RSI + Koncorde sobre cada activo
+    y te dice en español qué está pasando: qué comprar, qué vender, a qué precio entrar,
+    dónde está el objetivo y dónde el stop — con backtest de 5 años detrás de cada recomendación.</p>
+    <div class="chips">
+      <span class="chip b">COMPRA</span><span class="chip b">COMPRA INMINENTE</span>
+      <span class="chip h">VIRANDO A COMPRA</span><span class="chip h">NEUTRAL</span>
+      <span class="chip s">VENTA INMINENTE</span><span class="chip s">VENTA</span>
+    </div>
+    <div class="mock au" style="animation-delay:.4s">
+      <svg width="120" height="38" viewBox="0 0 120 38">
+        <path id="mock-spark" class="spark" d="M2,30 L14,26 L26,28 L38,20 L50,23 L62,15 L74,18 L86,10 L98,13 L110,6 L118,8"
+          fill="none" stroke="#0b7a4b" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div>
+        <span class="sym" id="mock-sym">NVDA</span><span class="lbl pb" id="mock-lbl">COMPRA INMINENTE</span>
+        <div class="meta" id="mock-meta">RSI 33 &middot; MACD girando al alza &middot; 2/3 condiciones</div>
+      </div>
+    </div>
+    <div class="feats">
+      <div class="feat au" style="animation-delay:.5s"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></div><div>
+        <b>Top recomendaciones con objetivo real</b>
+        <p>Solo señales completas o inminentes con zonas coherentes. Cada una trae entrada, objetivo anclado a techos/pisos técnicos, stop y relación riesgo/beneficio.</p>
+      </div></div>
+      <div class="feat au" style="animation-delay:.58s"><div class="ic"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div><div>
+        <b>Backtest de 5 años por activo</b>
+        <p>Win-rate, expectancy y confianza estadística calibrada de cada setup — sabés si el edge es real o ruido antes de operar.</p>
+      </div></div>
+      <div class="feat au" style="animation-delay:.66s"><div class="ic"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div><div>
+        <b>Tesis en español, sin jerga</b>
+        <p>Cada activo explica qué condiciones ya cumple, qué le falta para confirmar señal y por qué el objetivo es ese.</p>
+      </div></div>
+      <div class="feat au" style="animation-delay:.74s"><div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div>
+        <b>Tus datos nunca salen de tu maquina</b>
+        <p>TWS corre en tu computadora; un pequeño bridge le manda los datos al dashboard. Sin claves de IB en la nube.</p>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>{title}</h2>
+    <p class="subtitle">{cta_hint}</p>
+    <form id="form">
+    <label>Email</label><input type="email" id="email" required>
+    <label>Contraseña</label><input type="password" id="password" required minlength="8">
+    <div class="error" id="error"></div>
+    <div class="success" id="success"></div>
+    <button type="submit">{title}</button>
+    </form>
+    <div class="alt"><a href="{alt_link}">{alt_text}</a></div>
+    <div class="priv"><b>Sin riesgo:</b> el dashboard solo lee datos de mercado y tu cartera.
+    No ejecuta órdenes ni pide tus credenciales de Interactive Brokers.</div>
+  </div>
+</div>
+
+<div class="sect">
+  <h3>Lo que vas a ver adentro</h3>
+  <div class="grid">
+    <div class="tile rv"><div class="tag">TAB 1</div><b>Escáner</b>
+      <p>100 acciones y ETFs con señal, fuerza, RSI, condiciones de giro y confianza de backtest. Gráficos de velas de 1D a 5 años.</p></div>
+    <div class="tile rv"><div class="tag">TAB 2</div><b>Mi Cartera</b>
+      <p>Tus posiciones reales de IB con veredicto por posición: mantener, tomar ganancia o salir, con el mismo análisis del escáner.</p></div>
+    <div class="tile rv"><div class="tag">TAB 3</div><b>Options Lab</b>
+      <p>15 estrategias de opciones evaluadas con IV real de mercado, Monte Carlo y valor esperado — ranking de las mejores para cada señal.</p></div>
+    <div class="tile rv"><div class="tag">TAB 4</div><b>Trades Históricos</b>
+      <p>Tus trades cerrados con gráfico e indicadores al momento de entrada y salida: qué hiciste bien y qué no, trade por trade.</p></div>
+  </div>
+</div>
+
+<div class="sect">
+  <h3>Cómo funciona</h3>
+  <div class="steps">
+    <div class="step rv"><div class="n">1</div><b>Crea tu cuenta</b>
+      <p>Email y contraseña. El escáner y las recomendaciones funcionan desde el primer minuto, sin conectar nada.</p></div>
+    <div class="step rv"><div class="n">2</div><b>Conecta tu TWS</b>
+      <p>Un comando en la terminal instala el bridge que enlaza tu Trader Workstation con el dashboard. Tus claves de IB no salen de tu máquina.</p></div>
+    <div class="step rv"><div class="n">3</div><b>Mira tu cartera en vivo</b>
+      <p>Posiciones, señales sobre lo que tenés y análisis de cada oportunidad, actualizado cada 5 minutos.</p></div>
+  </div>
+</div>
+
+<footer>IB Trading Dashboard &middot; MACD + RSI + Koncorde &middot; Herramienta de análisis técnico — no es asesoramiento financiero.<br>
+Requiere cuenta de Interactive Brokers y TWS para datos de cartera en vivo.</footer>
 </div>
 <script>
 document.getElementById('form').onsubmit=async e=>{{
@@ -1663,6 +1901,41 @@ document.getElementById('form').onsubmit=async e=>{{
     setTimeout(()=>window.location='/',500);
   }}catch(ex){{ err.textContent='Error de conexión'; err.style.display='block'; }}
 }};
+
+// duplicar contenido del ticker para loop continuo
+const tk=document.getElementById('tk');
+tk.innerHTML+=tk.innerHTML;
+
+// reveal on scroll
+const io=new IntersectionObserver(es=>es.forEach(en=>{{
+  if(en.isIntersecting){{ en.target.classList.add('in'); io.unobserve(en.target); }}
+}}),{{threshold:.15}});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+
+// panel "señal en vivo": rota entre ejemplos y re-dibuja el sparkline
+const MOCKS=[
+ {{sym:'NVDA',lbl:'COMPRA INMINENTE',cls:'pb',color:'#0b7a4b',
+   meta:'RSI 33 · MACD girando al alza · 2/3 condiciones',
+   path:'M2,30 L14,26 L26,28 L38,20 L50,23 L62,15 L74,18 L86,10 L98,13 L110,6 L118,8'}},
+ {{sym:'MSFT',lbl:'VIRANDO A COMPRA',cls:'ph',color:'#b45309',
+   meta:'RSI 41 · Koncorde girando desde piso · 1/3 condiciones',
+   path:'M2,26 L14,18 L26,24 L38,14 L50,20 L62,10 L74,16 L86,20 L98,14 L110,17 L118,12'}},
+ {{sym:'XLE',lbl:'VENTA',cls:'ps',color:'#c22436',
+   meta:'RSI 74 · MACD cayendo · 3/3 condiciones',
+   path:'M2,8 L14,12 L26,10 L38,17 L50,14 L62,22 L74,19 L86,27 L98,24 L110,30 L118,28'}}
+];
+let _mi=0;
+const _reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function setMock(i){{
+  const m=MOCKS[i], sp=document.getElementById('mock-spark');
+  document.getElementById('mock-sym').textContent=m.sym;
+  const lbl=document.getElementById('mock-lbl');
+  lbl.textContent=m.lbl; lbl.className='lbl '+m.cls;
+  document.getElementById('mock-meta').innerHTML=m.meta.replace(/·/g,'&middot;');
+  sp.setAttribute('d',m.path); sp.setAttribute('stroke',m.color);
+  sp.classList.remove('spark'); void sp.getBoundingClientRect(); sp.classList.add('spark');
+}}
+if(!_reduced) setInterval(()=>{{ _mi=(_mi+1)%MOCKS.length; setMock(_mi); }},4200);
 </script></body></html>"""
 
 
@@ -1677,7 +1950,8 @@ def _inject_cloud_setup_tab(html):
     html = html.replace(
         '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Historicos</button>\n</div>',
         '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Historicos</button>\n'
-        '  <button class="nav-tab" onclick="switchTab(\'setup\')">Conectar TWS</button>\n</div>',
+        '  <button class="nav-tab" onclick="switchTab(\'setup\')">Conectar TWS</button>\n'
+        '  <button class="nav-tab" onclick="switchTab(\'feedback\')">Tu Opinion</button>\n</div>',
     )
 
     # 2. Header: bridge status + user email + logout (right side, stacked under the sub line)
@@ -1799,13 +2073,70 @@ def _inject_cloud_setup_tab(html):
 </div>
 
 '''
-    html = html.replace('\n<div class="footer">', setup_tab_html + '<div class="footer">')
+    # Feedback / rating tab — collect satisfaction + improvement ideas.
+    feedback_tab_html = '''
+<!-- TAB: TU OPINION -->
+<div id="tab-feedback" class="tab-content">
+<div class="setup-section" style="max-width:680px;margin:28px auto 48px;padding:0 20px">
+  <div class="port-title" style="margin-bottom:2px">TU <em>OPINION</em></div>
+  <p style="margin:0 0 18px;color:var(--muted);font-size:13px">Cuentanos que te parece la plataforma y que te gustaria mejorar. Cada comentario nos ayuda a priorizar.</p>
+
+  <div id="fb-form" class="setup-card" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:26px 28px;box-shadow:var(--shadow-sm)">
+    <label style="display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Como valorarias la plataforma?</label>
+    <div id="fb-stars" style="display:flex;gap:6px;margin-bottom:22px;font-size:34px;line-height:1;user-select:none">
+      <span class="fb-star" data-val="1" onclick="setRating(1)" onmouseover="hoverRating(1)" onmouseout="hoverRating(0)" style="cursor:pointer;color:var(--border)">&#9733;</span>
+      <span class="fb-star" data-val="2" onclick="setRating(2)" onmouseover="hoverRating(2)" onmouseout="hoverRating(0)" style="cursor:pointer;color:var(--border)">&#9733;</span>
+      <span class="fb-star" data-val="3" onclick="setRating(3)" onmouseover="hoverRating(3)" onmouseout="hoverRating(0)" style="cursor:pointer;color:var(--border)">&#9733;</span>
+      <span class="fb-star" data-val="4" onclick="setRating(4)" onmouseover="hoverRating(4)" onmouseout="hoverRating(0)" style="cursor:pointer;color:var(--border)">&#9733;</span>
+      <span class="fb-star" data-val="5" onclick="setRating(5)" onmouseover="hoverRating(5)" onmouseout="hoverRating(0)" style="cursor:pointer;color:var(--border)">&#9733;</span>
+      <span id="fb-rating-label" style="align-self:center;margin-left:10px;font-size:13px;color:var(--muted)"></span>
+    </div>
+
+    <label style="display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Tipo de comentario</label>
+    <select id="fb-category" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:8px;font-size:13px;margin-bottom:18px">
+      <option value="Mejora">Mejora sobre algo existente</option>
+      <option value="Idea">Idea o funcionalidad nueva</option>
+      <option value="Problema">Problema / algo no funciona</option>
+      <option value="Elogio">Me gusta / elogio</option>
+      <option value="Otro">Otro</option>
+    </select>
+
+    <label style="display:block;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px">Tu comentario</label>
+    <textarea id="fb-message" rows="5" maxlength="4000" placeholder="Que te gustaria que mejoremos, agreguemos o cambiemos?" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:11px 12px;border-radius:8px;font-size:13px;line-height:1.6;resize:vertical;font-family:inherit"></textarea>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-top:18px">
+      <button id="fb-submit-btn" onclick="submitFeedback()" style="background:var(--accent);color:#fff;border:none;padding:10px 22px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700">Enviar comentario</button>
+      <span id="fb-status" style="font-size:12px"></span>
+    </div>
+  </div>
+
+  <div id="fb-thanks" style="display:none;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:32px 28px;box-shadow:var(--shadow-sm);text-align:center">
+    <div style="font-size:38px;margin-bottom:8px">&#128075;</div>
+    <p style="font-size:16px;font-weight:700;margin:0 0 6px;color:var(--text)">Gracias por tu opinion</p>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 18px">La tuvimos en cuenta. Podes dejar otro comentario cuando quieras.</p>
+    <button onclick="resetFeedback()" style="background:var(--bg);color:var(--accent);border:1px solid var(--border);padding:9px 18px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600">Dejar otro comentario</button>
+  </div>
+
+  <!-- Owner-only: collected feedback review. Hidden unless /api/feedback (GET) returns 200. -->
+  <div id="fb-admin" style="display:none;margin-top:26px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px">
+      <div class="port-title" style="font-size:15px">COMENTARIOS <em>RECIBIDOS</em></div>
+      <span id="fb-admin-stats" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div id="fb-admin-list" style="display:flex;flex-direction:column;gap:10px"></div>
+  </div>
+</div>
+</div>
+
+'''
+    html = html.replace('\n<div class="footer">', setup_tab_html + feedback_tab_html + '<div class="footer">')
 
     # 4. switchTab(): load the setup tab's dynamic content when opened
     html = html.replace(
         "if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}\n}",
         "if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}\n"
-        "  if(tab==='setup')renderSetup();\n}",
+        "  if(tab==='setup')renderSetup();\n"
+        "  if(tab==='feedback')onFeedbackTab();\n}",
     )
 
     # 5. New script block: bridge status polling + setup tab rendering.
@@ -1952,6 +2283,83 @@ function loadTradesHistory(){
     document.getElementById('th-loading').style.display='';
     document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">Error cargando trades: '+e.message+'</span>';
   });
+}
+// ---- Tu Opinion (feedback) tab ----
+let _fbRating=0;
+let _fbAdminLoaded=false;
+const _fbLabels={1:'Muy mala',2:'Mala',3:'Regular',4:'Buena',5:'Excelente'};
+function paintStars(n){
+  document.querySelectorAll('#fb-stars .fb-star').forEach(s=>{
+    s.style.color=(parseInt(s.dataset.val)<=n)?'#f5b301':'var(--border)';
+  });
+}
+function hoverRating(n){paintStars(n||_fbRating);}
+function setRating(n){
+  _fbRating=n;
+  paintStars(n);
+  let lbl=document.getElementById('fb-rating-label');
+  if(lbl)lbl.textContent=_fbLabels[n]||'';
+}
+async function submitFeedback(){
+  let statusEl=document.getElementById('fb-status');
+  let msg=document.getElementById('fb-message').value.trim();
+  let cat=document.getElementById('fb-category').value;
+  if(_fbRating<1){statusEl.innerHTML='<span style="color:var(--sell)">Elegi cuantas estrellas</span>';return;}
+  if(!msg){statusEl.innerHTML='<span style="color:var(--sell)">Escribi un comentario</span>';return;}
+  let btn=document.getElementById('fb-submit-btn');
+  btn.disabled=true;statusEl.textContent='Enviando...';
+  try{
+    let r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rating:_fbRating,category:cat,message:msg})});
+    let d=await r.json();
+    if(!r.ok){statusEl.innerHTML='<span style="color:var(--sell)">'+(d.error||'Error')+'</span>';btn.disabled=false;return;}
+    document.getElementById('fb-form').style.display='none';
+    document.getElementById('fb-thanks').style.display='';
+    statusEl.textContent='';
+    _fbAdminLoaded=false;
+    loadFeedbackAdmin();
+  }catch(e){
+    statusEl.innerHTML='<span style="color:var(--sell)">Error de conexion</span>';
+    btn.disabled=false;
+  }
+}
+function resetFeedback(){
+  _fbRating=0;
+  paintStars(0);
+  document.getElementById('fb-rating-label').textContent='';
+  document.getElementById('fb-message').value='';
+  document.getElementById('fb-category').selectedIndex=0;
+  document.getElementById('fb-status').textContent='';
+  document.getElementById('fb-submit-btn').disabled=false;
+  document.getElementById('fb-thanks').style.display='none';
+  document.getElementById('fb-form').style.display='';
+}
+function _fbEsc(s){let d=document.createElement('div');d.textContent=s==null?'':s;return d.innerHTML;}
+async function loadFeedbackAdmin(){
+  try{
+    let r=await fetch('/api/feedback');
+    if(r.status!==200){return;}  // non-owner: keep panel hidden
+    let d=await r.json();
+    let box=document.getElementById('fb-admin');
+    let list=document.getElementById('fb-admin-list');
+    let stats=document.getElementById('fb-admin-stats');
+    box.style.display='';
+    stats.textContent=d.count+' comentario'+(d.count===1?'':'s')+(d.count?' \\u00b7 promedio '+d.avg_rating+' \\u2605':'');
+    if(!d.items.length){list.innerHTML='<p style="font-size:13px;color:var(--muted)">Todavia no hay comentarios.</p>';return;}
+    list.innerHTML=d.items.map(function(it){
+      let stars='\\u2605'.repeat(it.rating||0)+'\\u2606'.repeat(5-(it.rating||0));
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+        +'<span style="color:#f5b301;font-size:13px;letter-spacing:1px">'+stars+'</span>'
+        +'<span style="font-size:11px;color:var(--dim)">'+_fbEsc(it.created_at)+'</span></div>'
+        +'<p style="margin:0 0 6px;font-size:13px;color:var(--text);line-height:1.55">'+_fbEsc(it.message)+'</p>'
+        +'<div style="font-size:11px;color:var(--muted)"><span style="background:var(--bg);border:1px solid var(--border-subtle);border-radius:5px;padding:1px 7px">'+_fbEsc(it.category||'-')+'</span> &middot; '+_fbEsc(it.email||'')+'</div>'
+        +'</div>';
+    }).join('');
+    _fbAdminLoaded=true;
+  }catch(e){}
+}
+function onFeedbackTab(){
+  if(!_fbAdminLoaded)loadFeedbackAdmin();
 }
 fetchStatus();
 fetchBridgeToken();

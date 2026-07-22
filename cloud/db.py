@@ -60,6 +60,20 @@ def init_db():
             )
         """)
 
+        # User feedback / platform rating. Collected from the "Tu Opinion" tab
+        # so we can gather improvement ideas and satisfaction from real users.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS feedback (
+                id         SERIAL PRIMARY KEY,
+                user_id    INTEGER,
+                email      TEXT,
+                rating     INTEGER,
+                category   TEXT,
+                message    TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
 
 def create_user(email, hashed_password):
     token = secrets.token_urlsafe(32)
@@ -135,6 +149,34 @@ def save_user_store(user_id, data_json):
             """,
             (user_id, data_json),
         )
+
+
+def save_feedback(user_id, email, rating, category, message):
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO feedback (user_id, email, rating, category, message)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, created_at
+            """,
+            (user_id, email, rating, category, message),
+        )
+        return cur.fetchone()
+
+
+def get_all_feedback(limit=300):
+    """Newest first — for the owner-only review panel."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, email, rating, category, message, created_at
+            FROM feedback ORDER BY created_at DESC LIMIT %s
+            """,
+            (limit,),
+        )
+        return cur.fetchall()
 
 
 def load_all_user_stores():
