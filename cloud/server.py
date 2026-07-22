@@ -29,6 +29,7 @@ from cloud import db, auth, flex
 import config
 import options_lab
 import calibration
+import enrichment
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -536,6 +537,9 @@ def api_data():
             "sell_avg_return": bt.get("sell_avg_return"),
             "buy_count": bt.get("buy_count", 0),
             "sell_count": bt.get("sell_count", 0),
+            # Enriquecimiento server-side (beta/RS/RVOL + analistas/insiders/
+            # short) — calculado aca, no en el bridge (cero reinstalls).
+            "ext": enrichment.get_ext(symbol),
         }
 
     try:
@@ -592,6 +596,9 @@ def api_etf_data():
             "sell_avg_return": bt.get("sell_avg_return"),
             "buy_count": bt.get("buy_count", 0),
             "sell_count": bt.get("sell_count", 0),
+            # Enriquecimiento server-side (beta/RS/RVOL + analistas/insiders/
+            # short) — calculado aca, no en el bridge (cero reinstalls).
+            "ext": enrichment.get_ext(symbol),
         }
 
     try:
@@ -2389,6 +2396,26 @@ try:
 except Exception as e:
     print(f"[SERVER] WARNING: Database init failed: {e}")
     print("[SERVER] Server will start but registration/login won't work until DB is available")
+
+
+def _enrichment_symbols():
+    """Universo para el enriquecimiento: union de acciones + ETFs de todos los
+    stores de usuarios (en la practica todos comparten el mismo universo)."""
+    syms = []
+    with user_data_lock:
+        stores = list(user_data.values())
+    for store in stores:
+        syms += list(store.get("stocks", []) or [])
+        syms += list(store.get("etf_stocks", []) or [])
+    return syms
+
+
+try:
+    # Sin persist_path: el filesystem de Railway es efimero, se rellena solo.
+    enrichment.start_background(_enrichment_symbols)
+    print("[SERVER] Enrichment threads started")
+except Exception as e:
+    print(f"[SERVER] WARNING: enrichment no arranco: {e}")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

@@ -28,6 +28,7 @@ import backtester
 import yfinance as yf
 import portfolio
 import options_lab
+import enrichment
 
 CHART_BARS = 252  # ~1 year of trading days
 MA_PERIODS = [200, 100, 50, 20]  # SMA periods
@@ -1826,18 +1827,24 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .content{padding:0 32px 20px;overflow-x:auto}
 .lh-groups,.lh-cols,.stock-row{
   display:grid;
-  grid-template-columns:20px 76px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 92px;
+  grid-template-columns:20px 76px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 56px 44px 78px 52px 46px 92px;
   gap:4px;align-items:center;
 }
-.stock-row{padding:9px 14px;min-width:1036px}
+.stock-row{padding:9px 14px;min-width:1332px}
 .trend-spark{width:100%;height:20px;display:block}
 .tspark-na{color:var(--dim);font-size:10px;text-align:center}
 .list-header{
   background:var(--surface);
   border-bottom:1px solid var(--accent);color:var(--muted);
   position:sticky;top:0;z-index:10;border-radius:8px 8px 0 0;
-  padding:0 14px;min-width:1036px;
+  padding:0 14px;min-width:1332px;
 }
+/* Celdas de enriquecimiento (Mercado / Wall Street): dos lineas, mono */
+.ext2{display:flex;flex-direction:column;align-items:flex-end;line-height:1.25;font-family:'JetBrains Mono',monospace}
+.ext2 b{font-size:11px;font-weight:700}
+.ext2 small{font-size:9px;font-weight:700}
+.ext2 .wst-rec{font-family:'Inter',system-ui,sans-serif;font-size:9.5px;font-weight:800;letter-spacing:.2px;text-transform:uppercase}
+.ext-ins{display:flex;justify-content:flex-end;gap:5px;font-family:'JetBrains Mono',monospace;font-size:10.5px;font-weight:700}
 .lh-groups{padding-top:7px;font-size:8.5px;text-transform:uppercase;letter-spacing:1px;font-weight:800;color:var(--dim)}
 .lh-groups .lh-g{white-space:nowrap;overflow:hidden}
 .lh-groups .sepg{border-left:1px solid var(--border);padding-left:8px}
@@ -2516,6 +2523,8 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <span class="lh-g sepg" style="grid-column:span 5">Precio vs media movil</span>
       <span class="lh-g sepg" style="grid-column:span 4">Momentum</span>
       <span class="lh-g sepg" style="grid-column:span 3">Backtest 5A</span>
+      <span class="lh-g sepg" style="grid-column:span 2">Mercado</span>
+      <span class="lh-g sepg" style="grid-column:span 3">Wall Street</span>
       <span class="lh-g sepg" style="grid-column:span 1">Tend.</span>
     </div>
     <div class="lh-cols">
@@ -2528,6 +2537,11 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span data-col="konc" style="text-align:right" title="Koncorde marron (manos fuertes) · punto = giro vs media cumplido" onclick="sortListBy('konc')">Konc.</span><span data-col="cond" style="text-align:center" title="Condiciones alineadas de 3 (MACD, RSI, Koncorde)" onclick="sortListBy('cond')">Cond</span>
     <span class="sep" data-col="conf" style="text-align:right" title="Confianza calibrada del backtest 5A (0-100): significancia del edge x muestra" onclick="sortListBy('conf')">Conf</span>
     <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)" onclick="sortListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por senal de VENTA (backtest 5A, neto de costes)" onclick="sortListBy('sell_ret')">Ret.V</span>
+    <span class="sep" data-col="beta" style="text-align:right" title="Beta propio (12 meses, retornos diarios vs SPY): cuanto amplifica los movimientos del mercado. 1 = se mueve igual que el SPY, 2 = el doble, 0.5 = la mitad, negativo = inverso. Debajo: fuerza relativa 30d (retorno del activo menos el del SPY, en puntos)" onclick="sortListBy('beta')">Beta/RS</span>
+    <span data-col="rvol" style="text-align:right" title="Volumen relativo: volumen de la ultima rueda vs su promedio de 20 ruedas (el dia en curso se proyecta por la fraccion de sesion transcurrida). 1x = normal, >1.5x = actividad inusual, >2.5x = movimiento con conviccion" onclick="sortListBy('rvol')">RVOL</span>
+    <span class="sep" data-col="analyst" style="text-align:right" title="Consenso de analistas de Wall Street: recomendacion promedio (escala 1 = compra fuerte a 5 = venta). Debajo: % de distancia al precio objetivo medio del consenso. Ordena por ese upside" onclick="sortListBy('analyst')">Analistas</span>
+    <span data-col="insiders" style="text-align:right" title="Transacciones de directivos de la empresa reportadas a la SEC (ultimos 90 dias): compras vs ventas. Compras con plata propia = confianza; las ventas pueden ser por diversificacion o impuestos" onclick="sortListBy('insiders')">Insiders</span>
+    <span data-col="short_int" style="text-align:right" title="Interes corto: % del float vendido en corto. >15% = apuesta bajista fuerte del mercado... y combustible para un short squeeze si aparece senal de compra" onclick="sortListBy('short_int')">Short</span>
     <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortListBy('trend')">30D</span>
     </div>
   </div>
@@ -2545,6 +2559,8 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <span class="lh-g sepg" style="grid-column:span 5">Precio vs media movil</span>
       <span class="lh-g sepg" style="grid-column:span 4">Momentum</span>
       <span class="lh-g sepg" style="grid-column:span 3">Backtest 5A</span>
+      <span class="lh-g sepg" style="grid-column:span 2">Mercado</span>
+      <span class="lh-g sepg" style="grid-column:span 3">Wall Street</span>
       <span class="lh-g sepg" style="grid-column:span 1">Tend.</span>
     </div>
     <div class="lh-cols">
@@ -2557,6 +2573,11 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span data-col="konc" style="text-align:right" title="Koncorde marron (manos fuertes) · punto = giro vs media cumplido" onclick="sortEtfListBy('konc')">Konc.</span><span data-col="cond" style="text-align:center" title="Condiciones alineadas de 3 (MACD, RSI, Koncorde)" onclick="sortEtfListBy('cond')">Cond</span>
     <span class="sep" data-col="conf" style="text-align:right" title="Confianza calibrada del backtest 5A (0-100): significancia del edge x muestra" onclick="sortEtfListBy('conf')">Conf</span>
     <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por senal de VENTA (backtest 5A, neto de costes)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
+    <span class="sep" data-col="beta" style="text-align:right" title="Beta propio (12 meses, retornos diarios vs SPY): cuanto amplifica los movimientos del mercado. 1 = igual que el SPY, ~3 = apalancado x3, negativo = inverso. Clave en ETFs apalancados e inversos. Debajo: fuerza relativa 30d vs SPY" onclick="sortEtfListBy('beta')">Beta/RS</span>
+    <span data-col="rvol" style="text-align:right" title="Volumen relativo: volumen de la ultima rueda vs su promedio de 20 ruedas (el dia en curso se proyecta por la fraccion de sesion transcurrida). 1x = normal, >1.5x = actividad inusual, >2.5x = movimiento con conviccion" onclick="sortEtfListBy('rvol')">RVOL</span>
+    <span class="sep" data-col="analyst" style="text-align:right" title="Consenso de analistas de Wall Street (los ETFs no suelen tener cobertura y muestran ---)" onclick="sortEtfListBy('analyst')">Analistas</span>
+    <span data-col="insiders" style="text-align:right" title="Transacciones de directivos (no aplica a ETFs: muestran ---)" onclick="sortEtfListBy('insiders')">Insiders</span>
+    <span data-col="short_int" style="text-align:right" title="Interes corto: % del float vendido en corto (en ETFs suele no reportarse)" onclick="sortEtfListBy('short_int')">Short</span>
     <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortEtfListBy('trend')">30D</span>
     </div>
   </div>
@@ -3341,6 +3362,81 @@ function fret(val,tip){
   let t=tip?' title="'+tip+'"':'';
   return'<span class="iv '+cls+'"'+t+'>'+s+val.toFixed(1)+'%</span>';
 }
+/* === Enriquecimiento: Mercado (beta/RS/RVOL) + Wall Street (analistas/insiders/short) === */
+function _extNA(tip){return'<span class="iv v-na" title="'+tip.replace(/"/g,'&quot;')+'">---</span>';}
+function fbeta(r){
+  let e=r&&r.ext?r.ext:null;
+  if(!e||e.beta==null)return _extNA('Beta en calculo o sin datos suficientes (minimo 60 ruedas superpuestas con SPY). Se actualiza en segundo plano cada 15 min');
+  let b=e.beta;
+  let col='var(--muted)',regime='acompana al mercado';
+  if(b<0){col='var(--sell)';regime='INVERSO: se mueve al reves del mercado';}
+  else if(b<0.5){col='#2563eb';regime='defensivo: amortigua los movimientos del mercado';}
+  else if(b>=2){col='var(--sell)';regime='muy agresivo / apalancado: amplifica fuerte los movimientos';}
+  else if(b>=1.3){col='var(--hold)';regime='amplifica los movimientos del mercado';}
+  let t='BETA '+b.toFixed(2)+' — '+regime+'.\nPor cada 1% que se mueve el SPY, este activo se mueve ~'+Math.abs(b).toFixed(1)+'% '+(b<0?'en direccion contraria':'en la misma direccion')+' (12 meses, retornos diarios).';
+  let sub='';
+  if(e.rs30!=null){
+    let rc=e.rs30>=0?'var(--buy)':'var(--sell)';
+    sub='<small style="color:'+rc+'">'+(e.rs30>=0?'+':'')+e.rs30.toFixed(1)+'</small>';
+    t+='\n\nFUERZA RELATIVA 30d: '+(e.rs30>=0?'+':'')+e.rs30.toFixed(1)+' pts — le esta '+(e.rs30>=0?'GANANDO':'PERDIENDO')+' al SPY en el ultimo mes.';
+  }
+  return'<span class="ext2" title="'+t.replace(/"/g,'&quot;')+'"><b style="color:'+col+'">'+b.toFixed(2)+'</b>'+sub+'</span>';
+}
+function frvol(r){
+  let e=r&&r.ext?r.ext:null;
+  if(!e||e.rvol==null)return _extNA('Volumen relativo en calculo. Se actualiza en segundo plano cada 15 min');
+  let v=e.rvol;
+  let col='var(--dim)',read='volumen bajo: poca participacion, movimientos menos confiables';
+  if(v>=2.5){col='var(--sell)';read='MUY ALTO: movimiento con conviccion (participacion institucional)';}
+  else if(v>=1.5){col='var(--hold)';read='actividad inusual: mas participacion que lo normal';}
+  else if(v>=0.8){col='var(--muted)';read='volumen normal';}
+  let t='VOLUMEN RELATIVO: '+v.toFixed(1)+'x su promedio de 20 ruedas.\n'+read+'.\nEl dia en curso se proyecta por la fraccion de sesion transcurrida.';
+  return'<span class="iv" style="color:'+col+';font-weight:700" title="'+t.replace(/"/g,'&quot;')+'">'+v.toFixed(1)+'x</span>';
+}
+function fanalyst(r){
+  let e=r&&r.ext?r.ext:null;
+  if(!e||(e.an_mean==null&&e.an_target==null))return _extNA('Sin cobertura de analistas (tipico en ETFs) o dato en carga (se completa en segundo plano, 1 vez al dia)');
+  let rec='',recCol='var(--muted)';
+  if(e.an_mean!=null){
+    if(e.an_mean<=1.5){rec='C.Fuerte';recCol='var(--buy)';}
+    else if(e.an_mean<=2.5){rec='Compra';recCol='var(--buy)';}
+    else if(e.an_mean<=3.5){rec='Neutral';recCol='var(--hold)';}
+    else{rec='Venta';recCol='var(--sell)';}
+  }
+  let sub='',up=null;
+  if(e.an_target!=null&&r.price){
+    up=(e.an_target/r.price-1)*100;
+    let uc=up>=0?'var(--buy)':'var(--sell)';
+    sub='<small style="color:'+uc+'">'+(up>=0?'+':'')+up.toFixed(0)+'%</small>';
+  }
+  let t='CONSENSO DE ANALISTAS'+(e.an_n?' ('+e.an_n+' analistas)':'')+(e.an_mean!=null?': promedio '+e.an_mean.toFixed(1)+' en escala 1 (compra fuerte) a 5 (venta)':'')+'.';
+  if(e.an_target!=null){
+    t+='\nPrecio objetivo medio: $'+e.an_target.toFixed(2);
+    if(e.an_low!=null&&e.an_high!=null)t+=' (rango $'+e.an_low.toFixed(0)+' - $'+e.an_high.toFixed(0)+')';
+    if(up!=null)t+=' — '+(up>=0?'+':'')+up.toFixed(0)+'% desde el precio actual';
+    t+='.';
+  }
+  t+='\nOjo: los objetivos de analistas suelen ajustarse DESPUES de los movimientos, no antes. Usalo como contrapunto de la senal tecnica, no como confirmacion.';
+  return'<span class="ext2" title="'+t.replace(/"/g,'&quot;')+'">'+(rec?'<b class="wst-rec" style="color:'+recCol+'">'+rec+'</b>':'<b>--</b>')+sub+'</span>';
+}
+function fins(r){
+  let e=r&&r.ext?r.ext:null;
+  if(!e||(e.ins_buys==null&&e.ins_sells==null))return _extNA('Sin transacciones de insiders en 90 dias, no aplica (ETFs) o dato en carga (1 vez al dia)');
+  let b=e.ins_buys||0,s=e.ins_sells||0,net=b-s;
+  let read=net>0?'los directivos estan COMPRANDO su propia accion con plata propia: senal de confianza en el negocio':(net<0?'los directivos estan VENDIENDO: una venta aislada puede ser diversificacion o impuestos, pero muchas juntas es senal de cautela':'sin sesgo claro entre compras y ventas');
+  let t='INSIDERS (90 dias): '+b+' compras / '+s+' ventas reportadas a la SEC.\n'+read+'.';
+  if(e.ins_last&&e.ins_last.length){t+='\n\nUltimas:\n- '+e.ins_last.join('\n- ');}
+  return'<span class="ext-ins" title="'+t.replace(/"/g,'&quot;')+'"><span style="color:var(--buy)">&#8593;'+b+'</span><span style="color:var(--sell)">&#8595;'+s+'</span></span>';
+}
+function fshort(r){
+  let e=r&&r.ext?r.ext:null;
+  if(!e||e.short_pct==null)return _extNA('Short interest no reportado (tipico en ETFs) o dato en carga (1 vez al dia)');
+  let v=e.short_pct;
+  let col=v>15?'var(--sell)':(v>=5?'var(--hold)':'var(--muted)');
+  let read=v>15?'MUY ALTO: apuesta bajista fuerte del mercado profesional... pero tambien combustible para un short squeeze si el precio sube':(v>=5?'moderado: hay escepticismo profesional sobre la accion':'bajo: poca apuesta en contra');
+  let t='INTERES CORTO: '+v.toFixed(1)+'% del float esta vendido en corto.\n'+read+'.';
+  return'<span class="iv" style="color:'+col+';font-weight:700" title="'+t.replace(/"/g,'&quot;')+'">'+v.toFixed(1)+'%</span>';
+}
 function fstr(val,sig,r){
   if(val==null||val===0)return'<span class="iv v-na">---</span>';
   let label=(r&&r.signal_label)||sig||'';
@@ -3436,6 +3532,11 @@ function _getSortVal(r,col){
     case 'buy_ret':return r.buy_avg_return!=null?r.buy_avg_return:null;
     case 'sell_ret':return r.sell_avg_return!=null?r.sell_avg_return:null;
     case 'trend':return _trendPct(r);
+    case 'beta':return r.ext&&r.ext.beta!=null?r.ext.beta:null;
+    case 'rvol':return r.ext&&r.ext.rvol!=null?r.ext.rvol:null;
+    case 'analyst':return r.ext&&r.ext.an_target!=null&&r.price?(r.ext.an_target/r.price-1)*100:null;
+    case 'insiders':return r.ext&&(r.ext.ins_buys!=null||r.ext.ins_sells!=null)?(r.ext.ins_buys||0)-(r.ext.ins_sells||0):null;
+    case 'short_int':return r.ext&&r.ext.short_pct!=null?r.ext.short_pct:null;
     case 'vol':return r.dollar_vol||0;
     default:return 0;
   }
@@ -4253,7 +4354,7 @@ function update(){
           '<span class="arrow">&#9654;</span><span class="sym">'+sym+'</span>'+
           '<span class="price" style="color:var(--dim)">---</span><span></span>'+na+
           na+na+na+na+na+na+na+na+
-          '<span class="cond cond-0">--</span>'+na+na+na+na+
+          '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+
           '</div></summary>'+
           '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
         idx++;continue;
@@ -4284,6 +4385,8 @@ function update(){
         fconf(r.confidence,(r.buy_count||0)+(r.sell_count||0))+
         fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
         fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
+        fbeta(r)+frvol(r)+
+        fanalyst(r)+fins(r)+fshort(r)+
         trendSparkCell(r)+
         '</div>';
       html+='</summary>';
@@ -4477,6 +4580,11 @@ function _getEtfSortVal(r,col){
     case 'buy_ret':return r.buy_avg_return!=null?r.buy_avg_return:null;
     case 'sell_ret':return r.sell_avg_return!=null?r.sell_avg_return:null;
     case 'trend':return _trendPct(r);
+    case 'beta':return r.ext&&r.ext.beta!=null?r.ext.beta:null;
+    case 'rvol':return r.ext&&r.ext.rvol!=null?r.ext.rvol:null;
+    case 'analyst':return r.ext&&r.ext.an_target!=null&&r.price?(r.ext.an_target/r.price-1)*100:null;
+    case 'insiders':return r.ext&&(r.ext.ins_buys!=null||r.ext.ins_sells!=null)?(r.ext.ins_buys||0)-(r.ext.ins_sells||0):null;
+    case 'short_int':return r.ext&&r.ext.short_pct!=null?r.ext.short_pct:null;
     case 'vol':return r.dollar_vol||0;
     default:return 0;
   }
@@ -4620,7 +4728,7 @@ function updateEtf(){
           '<span class="arrow">&#9654;</span><span class="sym">'+sym+'</span>'+
           '<span class="price" style="color:var(--dim)">---</span><span></span>'+na+
           na+na+na+na+na+na+na+na+
-          '<span class="cond cond-0">--</span>'+na+na+na+na+
+          '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+
           '</div></summary>'+
           '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
         idx++;continue;
@@ -4651,6 +4759,8 @@ function updateEtf(){
         fconf(r.confidence,(r.buy_count||0)+(r.sell_count||0))+
         fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
         fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
+        fbeta(r)+frvol(r)+
+        fanalyst(r)+fins(r)+fshort(r)+
         trendSparkCell(r)+
         '</div>';
       html+='</summary>';
@@ -6202,6 +6312,9 @@ def api_data():
             entry["buy_count"] = bt.get("buy_count", 0)
             entry["sell_count"] = bt.get("sell_count", 0)
 
+            # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
+            entry["ext"] = enrichment.get_ext(sym)
+
             bid = mkt.get("delayed_bid") or mkt.get("bid")
             ask = mkt.get("delayed_ask") or mkt.get("ask")
             vol = mkt.get("delayed_volume") or mkt.get("volume")
@@ -6256,6 +6369,9 @@ def api_etf_data():
             entry["sell_avg_return"] = bt.get("sell_avg_return")
             entry["buy_count"] = bt.get("buy_count", 0)
             entry["sell_count"] = bt.get("sell_count", 0)
+
+            # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
+            entry["ext"] = enrichment.get_ext(sym)
 
             bid = mkt.get("delayed_bid") or mkt.get("bid")
             ask = mkt.get("delayed_ask") or mkt.get("ask")
@@ -7802,6 +7918,15 @@ def main():
     if etf_list:
         etf_thread = threading.Thread(target=etf_analysis_loop, daemon=True)
         etf_thread.start()
+
+    # Enriquecimiento del escaner (beta/RS/RVOL + analistas/insiders/short):
+    # threads propios, universo = acciones + ETFs escaneados.
+    import os
+    enrichment.start_background(
+        lambda: list(stock_list) + list(etf_list),
+        persist_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "enrichment_cache.json"),
+    )
 
     print(f"\nDashboard en: http://localhost:5050")
     print("Ctrl+C para detener\n")

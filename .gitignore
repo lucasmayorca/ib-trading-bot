@@ -14,3 +14,4 @@ cloud/_tmp_trades/
 .claude/
 *.py.save
 scanner_cache.json
+enrichment_cache.json
