@@ -1793,16 +1793,18 @@ border-radius:12px;padding:14px 18px;margin-bottom:28px;box-shadow:0 4px 14px rg
 <div class="wrap">
 
 <div class="topbar">
-  <div class="logo">IB TRADING <em>DASHBOARD</em><small>MACD &middot; RSI &middot; KONCORDE</small></div>
+  <div class="logo">IB TRADING <em>DASHBOARD</em><small>ESC&Aacute;NER &middot; SE&Ntilde;ALES &middot; CARTERA &middot; OPCIONES</small></div>
 </div>
 
 <div class="hero">
   <div>
     <span class="eyebrow au"><span class="livedot"></span>CONECTADO A TU INTERACTIVE BROKERS</span>
-    <h1 class="head au" style="animation-delay:.08s">Señales técnicas claras sobre <em>100 acciones y ETFs</em>, cada 5 minutos</h1>
-    <p class="lead au" style="animation-delay:.16s">El dashboard escanea el mercado, calcula MACD + RSI + Koncorde sobre cada activo
-    y te dice en español qué está pasando: qué comprar, qué vender, a qué precio entrar,
-    dónde está el objetivo y dónde el stop — con backtest de 5 años detrás de cada recomendación.</p>
+    <h1 class="head au" style="animation-delay:.08s">Escaneá el mercado y decidí con datos: <em>qué comprar, cuándo y a qué precio</em></h1>
+    <p class="lead au" style="animation-delay:.16s">La plataforma escanea 100 acciones y ETFs cada 5 minutos y convierte el análisis
+    técnico en decisiones concretas: señal de compra o venta, precio de entrada, objetivo y stop —
+    con backtest de 5 años detrás de cada recomendación. Y no es solo el escáner: también analiza
+    tu cartera posición por posición, evalúa estrategias de opciones y repasa tus trades cerrados
+    para que aprendas de cada operación.</p>
     <div class="chips">
       <span class="chip b">COMPRA</span><span class="chip b">COMPRA INMINENTE</span>
       <span class="chip h">VIRANDO A COMPRA</span><span class="chip h">NEUTRAL</span>
@@ -1880,7 +1882,7 @@ border-radius:12px;padding:14px 18px;margin-bottom:28px;box-shadow:0 4px 14px rg
   </div>
 </div>
 
-<footer>IB Trading Dashboard &middot; MACD + RSI + Koncorde &middot; Herramienta de análisis técnico — no es asesoramiento financiero.<br>
+<footer>IB Trading Dashboard &middot; Herramienta de análisis técnico — no es asesoramiento financiero.<br>
 Requiere cuenta de Interactive Brokers y TWS para datos de cartera en vivo.</footer>
 </div>
 <script>
@@ -1956,9 +1958,9 @@ def _inject_cloud_setup_tab(html):
 
     # 2. Header: bridge status + user email + logout (right side, stacked under the sub line)
     html = html.replace(
-        '<div class="sub">MACD + RSI + KONCORDE &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n</div>',
+        '<div class="sub">Esc&aacute;ner &middot; Se&ntilde;ales &middot; Cartera &middot; Opciones &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n</div>',
         '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">\n'
-        '    <div class="sub">MACD + RSI + KONCORDE &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n'
+        '    <div class="sub">Esc&aacute;ner &middot; Se&ntilde;ales &middot; Cartera &middot; Opciones &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n'
         '    <div style="display:flex;align-items:center;gap:10px">\n'
         '      <span id="bridge-dot" style="width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block"></span>\n'
         '      <span id="bridge-status-text" style="font-size:12px;color:var(--muted)">Verificando...</span>\n'

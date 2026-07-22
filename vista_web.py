@@ -2495,7 +2495,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <body>
 <div class="header">
   <h1><em>VISTA</em> ANALISIS &mdash; TOP 100 VOLUMEN</h1>
-  <div class="sub">MACD + RSI + KONCORDE &nbsp;&bull;&nbsp; <span id="port-info"></span></div>
+  <div class="sub">Esc&aacute;ner &middot; Se&ntilde;ales &middot; Cartera &middot; Opciones &nbsp;&bull;&nbsp; <span id="port-info"></span></div>
 </div>
 <div class="pulse-bar" id="pulse-bar" style="display:none"></div>
 <div class="nav-tabs">
