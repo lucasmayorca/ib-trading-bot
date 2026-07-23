@@ -1611,7 +1611,7 @@ def _generate_portfolio_alerts(positions, composition, indicators):
         cantidad = p.get("cantidad", 0)
         verdict = deep.get("verdict") or ""
         headline = deep.get("headline") or ""
-        reason = deep.get("verdict_reason") or ""
+        reason = deep.get("verdict_summary") or deep.get("verdict_reason") or ""
         target = deep.get("target") or 0
         stop = deep.get("stop_loss") or 0
 

@@ -668,7 +668,8 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
     from vista_web import (
         _compute_price_levels, _generate_rationale, _generate_thesis,
         _score_stock, _extract_chart_data, _compute_signal_markers,
-        _compute_position_verdict, _fetch_fundamentals, fundamentals_cache,
+        _compute_position_verdict, _generate_position_recommendation,
+        _fetch_fundamentals, fundamentals_cache,
     )
 
     if data is None or not (data.get("chart") or {}).get("ohlc"):
@@ -726,11 +727,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "media": (konc_full.get("media") or [])[start:],
     }
 
-    verdict = _compute_position_verdict(data, position, levels)
-    bt = data.get("backtest", {}) or {}
-    sig = data.get("signal", "HOLD")
-
-    # Entry fills (BUY) del bridge/flex/seed para marcar en el chart
+    # Entry fills (BUY) del bridge/flex/seed — para el chart Y la narrativa
     entry_fills = []
     if live_trades:
         for t in live_trades:
@@ -748,6 +745,17 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
                     "qty": float(qty or 0),
                 })
         entry_fills.sort(key=lambda x: x["time"])
+
+    verdict = _compute_position_verdict(data, position, levels)
+    try:
+        narrative = _generate_position_recommendation(
+            sym, data, position, levels, entry_fills, verdict)
+    except Exception as e:
+        print(f"[PORTFOLIO_DEEP] Narrative error for {sym}: {e}", flush=True)
+        narrative = verdict.get("reason", "")
+
+    bt = data.get("backtest", {}) or {}
+    sig = data.get("signal", "HOLD")
 
     score = 0
     try:
@@ -792,10 +800,8 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "verdict": verdict.get("verdict", "HOLD"),
         "urgency": verdict.get("urgency", "low"),
         "headline": verdict.get("headline", "HOLD"),
-        "verdict_reason": verdict.get("reason", ""),
-        "verdict_factors": verdict.get("factors", []),
-        "bull_score": verdict.get("bull_score", 0),
-        "bear_score": verdict.get("bear_score", 0),
+        "verdict_reason": narrative,
+        "verdict_summary": (narrative.split("\n\n")[-1] if narrative else verdict.get("reason", "")),
         "trend": verdict.get("trend", "flat"),
         "macd_ok": data.get("macd_ok", False),
         "rsi_ok": data.get("rsi_ok", False),

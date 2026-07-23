@@ -2882,7 +2882,7 @@ function renderPortfolio(d){
       let cls=_portVerdictClass(verdict);
       let label=_portVerdictLabel(verdict);
       let head=deep.headline||label;
-      let reason=deep.verdict_reason||'';
+      let reason=deep.verdict_summary||deep.verdict_reason||'';
       let trend=deep.trend||'flat';
       let trendIcon=trend==='up'?'&#9650;':(trend==='down'?'&#9660;':'&#8226;');
       let trendLabel=trend==='up'?'Momentum alcista':(trend==='down'?'Momentum bajista':'Sin momentum claro');
@@ -3215,41 +3215,21 @@ function renderPortAnalysisList(positions){
     html+='</summary>';
     html+='<div class="rec-body">';
 
-    // Veredicto grande (call to action) + factores del scoring multi-indicador
+    // Veredicto grande (call to action) — narrativa integral estilo tesis
     if(rec.verdict_reason){
       let vColor=(verdict==='SELL'?'#c22436':(verdict==='ADD'||verdict==='BUY'?'#0b7a4b':(verdict==='REDUCE'?'#b45309':'#4262d9')));
       html+='<div class="rec-thesis" style="border-left:4px solid '+vColor+'">';
-      html+='<div class="rec-thesis-title">Que hacer con esta posicion</div>';
-      html+='<div class="rec-thesis-text"><b>'+vlabel+'.</b> '+rec.verdict_reason+'</div>';
-      // Scoring bull vs bear
-      let bull=rec.bull_score||0, bear=rec.bear_score||0;
-      let tot=Math.max(bull+bear,1);
-      let bullPct=(bull/tot)*100;
-      html+='<div style="margin-top:10px">';
-      html+='<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">';
-      html+='<span style="color:#0b7a4b;font-weight:700">Alcista '+bull.toFixed(0)+'</span>';
-      html+='<span style="color:#c22436;font-weight:700">Bajista '+bear.toFixed(0)+'</span>';
-      html+='</div>';
-      html+='<div style="height:8px;background:#c2243620;border-radius:4px;overflow:hidden;display:flex">';
-      html+='<div style="width:'+bullPct+'%;background:#0b7a4b"></div>';
-      html+='<div style="flex:1;background:#c22436"></div>';
-      html+='</div></div>';
-      // Factores detectados por el analisis (mismos indicadores del escaner)
-      let facs=rec.verdict_factors||[];
-      if(facs.length>0){
-        html+='<div style="margin-top:12px">';
-        html+='<div class="rec-thesis-title" style="font-size:11px;margin-bottom:6px">Factores tecnicos considerados</div>';
-        html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px 12px">';
-        for(let f of facs){
-          if(!f||!f.name)continue;
-          let dotCol=f.side==='bull'?'#0b7a4b':(f.side==='bear'?'#c22436':'#94a3b8');
-          html+='<div style="display:flex;align-items:flex-start;gap:8px;font-size:11px;line-height:1.4">';
-          html+='<span style="width:8px;height:8px;border-radius:50%;background:'+dotCol+';flex-shrink:0;margin-top:5px"></span>';
-          html+='<div><b style="color:var(--text)">'+f.name+':</b> <span style="color:var(--muted)">'+f.detail+'</span>';
-          if(f.weight>0)html+=' <span style="color:'+dotCol+';font-weight:700;font-size:10px">('+f.weight+' pts)</span>';
-          html+='</div></div>';
+      html+='<div class="rec-thesis-title">Que hacer con esta posicion &mdash; <span style="color:'+vColor+'">'+vlabel+'</span></div>';
+      let paras=rec.verdict_reason.split('\\n\\n');
+      for(let i2=0;i2<paras.length;i2++){
+        let pTxt=paras[i2];
+        if(!pTxt)continue;
+        let isReco=pTxt.indexOf('Recomendacion:')===0;
+        if(isReco){
+          html+='<div class="rec-thesis-text" style="margin-top:10px;padding:10px 12px;background:'+vColor+'12;border-radius:8px;font-weight:600">'+pTxt+'</div>';
+        }else{
+          html+='<div class="rec-thesis-text"'+(i2>0?' style="margin-top:8px"':'')+'>'+pTxt+'</div>';
         }
-        html+='</div></div>';
       }
       html+='</div>';
     }
@@ -6979,6 +6959,188 @@ def _compute_position_verdict(data, position, levels=None):
     }
 
 
+def _generate_position_recommendation(sym, data, position, levels, entry_fills, verdict):
+    """Narrativa integral de la posicion, estilo Tesis de Inversion del escaner.
+
+    4 partes en un solo texto coherente (separadas por \n\n):
+      1. Tu posicion — cuando compraste (del primer fill), a que precio,
+         cuanto tiempo llevas y como viene.
+      2. El cuadro tecnico HOY — signal_label + que cumple / que falta
+         (via _system_status, el mismo motor de la tesis del escaner) +
+         tendencia de fondo.
+      3. Niveles y ventana — techo/piso relevante, target y horizonte.
+      4. Recomendacion condicionada — la accion, atada a niveles concretos.
+    """
+    sig_label = (data.get("signal_label") or data.get("signal") or "NEUTRAL")
+    sig = data.get("signal", "HOLD")
+    is_bearish = _label_is_bearish(sig_label)
+    price = data.get("price") or 0
+    pos = position or {}
+    pnl_pct = pos.get("pnl_pct", 0) or 0
+    avg_cost = pos.get("costo_promedio") or 0
+    cantidad = pos.get("cantidad", 0) or 0
+    sl_ib = pos.get("stop_loss")
+    lv = levels or {}
+    target = lv.get("target") or 0
+    stop_sug = lv.get("stop_loss") or 0
+    target_pct = lv.get("target_pct") or 0
+    horizon = lv.get("horizon_weeks") or ""
+    mas = (data.get("chart") or {}).get("mas") or {}
+
+    action = verdict.get("verdict", "HOLD")
+    parts = []
+
+    # ── 1. TU POSICION ──
+    tenure_txt = ""
+    n_fills = len(entry_fills or [])
+    if entry_fills:
+        try:
+            first = min(f["time"] for f in entry_fills if f.get("time"))
+            d0 = datetime.strptime(first, "%Y-%m-%d")
+            days = (datetime.now() - d0).days
+            if days >= 60:
+                tenure_txt = f"hace ~{days // 30} meses ({first})"
+            elif days >= 14:
+                tenure_txt = f"hace {days // 7} semanas ({first})"
+            elif days >= 0:
+                tenure_txt = f"hace {days} dias ({first})"
+        except Exception:
+            tenure_txt = ""
+    p1 = f"Entraste en {sym}"
+    if tenure_txt:
+        p1 += f" {tenure_txt}"
+        if n_fills > 1:
+            p1 += f", en {n_fills} compras,"
+    if avg_cost > 0:
+        p1 += f" a un costo promedio de ${avg_cost:.2f}"
+    if price > 0:
+        p1 += f"; hoy cotiza ${price:.2f}"
+        if avg_cost > 0:
+            p1 += f", es decir {pnl_pct:+.1f}% sobre tu entrada"
+    p1 += "."
+    if pnl_pct <= -12 and tenure_txt:
+        p1 += " La posicion viene golpeada desde el inicio."
+    elif pnl_pct >= 15:
+        p1 += " Buen recorrido acumulado."
+    parts.append(p1)
+
+    # ── 2. EL CUADRO TECNICO HOY (integrado) ──
+    try:
+        met, missing = _system_status(data, is_bearish)
+    except Exception:
+        met, missing = [], []
+    dir_word = "venta" if is_bearish else "compra"
+    if sig in ("BUY", "SELL"):
+        p2 = (f"El sistema marca senal COMPLETA de {dir_word} ({sig_label}, "
+              f"fuerza {data.get('strength', 0):.1f}/5.1): " + "; ".join(met) + ".")
+    elif met:
+        p2 = f"El cuadro esta en {sig_label}: ya cumple " + " y ".join(met)
+        if missing:
+            p2 += f". Para confirmar la senal de {dir_word} falta: " + "; ".join(missing)
+        p2 += "."
+    else:
+        p2 = f"El cuadro tecnico esta {sig_label.lower()}, sin condiciones del sistema activas en ninguna direccion."
+    # Tendencia de fondo en la misma lectura
+    sma200 = mas.get("sma200_val")
+    sma50 = mas.get("sma50_val")
+    trend_bits = []
+    if sma200 and price:
+        pct200 = (price - sma200) / sma200 * 100
+        trend_bits.append(f"precio {pct200:+.0f}% vs SMA200")
+    if sma50 and sma200:
+        trend_bits.append("golden cross" if sma50 > sma200 else "death cross")
+    if trend_bits:
+        fondo = "alcista" if (sma200 and price and price > sma200) else "bajista"
+        p2 += f" La tendencia de fondo es {fondo} ({', '.join(trend_bits)})."
+    parts.append(p2)
+
+    # ── 3. NIVELES Y VENTANA ──
+    p3_bits = []
+    if target and price:
+        tdir = "abajo" if target < price else "arriba"
+        p3_bits.append(f"el proximo nivel tecnico relevante esta en ${target:.2f} "
+                       f"({abs(target_pct):.0f}% {tdir}" + (f", {lv.get('target_basis')}" if lv.get("target_basis") else "") + ")")
+    if stop_sug:
+        p3_bits.append(f"el piso de invalidacion del analisis en ${stop_sug:.2f}")
+    if sl_ib:
+        p3_bits.append(f"tu stop activo en IB esta en ${sl_ib:.2f}")
+    if p3_bits:
+        p3 = "En cuanto a niveles, " + "; ".join(p3_bits) + "."
+        if horizon:
+            p3 += f" La ventana estimada para este movimiento es de {horizon}."
+        parts.append(p3)
+
+    # ── 4. RECOMENDACION CONDICIONADA ──
+    if action == "SELL":
+        if pnl_pct >= 15:
+            p4 = (f"Recomendacion: VENDER. El mismo sistema que uso el escaner para detectar la entrada "
+                  f"ahora marca venta completa, y estas {pnl_pct:+.0f}% arriba — asegurar la ganancia aca "
+                  f"es coherente con la estrategia.")
+        elif pnl_pct <= -5:
+            p4 = (f"Recomendacion: VENDER. La senal de venta esta completa y la posicion ya pierde "
+                  f"{pnl_pct:.1f}%; sostenerla va contra el sistema. Cortar y esperar el proximo setup.")
+        else:
+            p4 = (f"Recomendacion: VENDER. Senal completa de venta con la posicion casi plana "
+                  f"({pnl_pct:+.1f}%) — salir ahora evita que un retroceso la convierta en perdida.")
+    elif action == "ADD":
+        p4 = (f"Recomendacion: SUMAR. Tu posicion tiene activo hoy el mismo setup 3/3 que el escaner "
+              f"exige para una compra nueva")
+        if pnl_pct < -5:
+            p4 += f", y al estar {pnl_pct:.1f}% abajo permite promediar el costo con senal a favor"
+        p4 += (f". Target ${target:.2f}" if target else ".") + (f", stop sugerido ${stop_sug:.2f}." if stop_sug else ".")
+    elif action == "REDUCE":
+        if pnl_pct >= 10:
+            cond = f"tomar parcial cerca de ${target:.2f}" if (target and target > price) else "tomar una parte ahora"
+            p4 = (f"Recomendacion: PROTEGER. El cuadro se esta dando vuelta con la posicion {pnl_pct:+.0f}% arriba: "
+                  f"{cond} y subir el stop a tu breakeven (${avg_cost:.2f}) mantiene la ganancia si el giro se confirma.")
+        else:
+            floor_ref = stop_sug or sl_ib
+            p4 = (f"Recomendacion: REDUCIR. El peso de los indicadores esta del lado bajista y no hay "
+                  f"senal de compra que respalde aguantar")
+            if floor_ref:
+                p4 += f"; si el precio pierde ${floor_ref:.2f}, cerrar el resto"
+            p4 += "."
+    else:  # HOLD
+        if pnl_pct <= -12:
+            p4 = (f"Recomendacion: MANTENER CON PLAN. La perdida es {pnl_pct:.1f}% pero el cuadro "
+                  f"tecnico no da senal de venta")
+            if not is_bearish and missing:
+                p4 += f" y hay condiciones de compra formandose ({missing[0] if missing else ''})"
+            floor_ref = stop_sug or sl_ib
+            if floor_ref:
+                p4 += f". Definir el limite: si pierde ${floor_ref:.2f} se corta; mientras lo sostenga, se aguanta"
+            p4 += "."
+        elif pnl_pct >= 15:
+            if is_bearish and missing:
+                # Cuadro de venta ARMANDOSE sobre posicion ganadora — el matiz importa
+                p4 = (f"Recomendacion: PREPARAR LA SALIDA. Llevas {pnl_pct:+.0f}% y el cuadro de venta "
+                      f"se esta armando — solo falta {missing[0]}. Subir el stop ya "
+                      f"(breakeven ${avg_cost:.2f}" + (f" o el piso de ${stop_sug:.2f}" if stop_sug else "") + ") "
+                      f"y si la senal se completa, tomar la ganancia sin dudar.")
+            elif stop_sug:
+                p4 = (f"Recomendacion: MANTENER Y PROTEGER. Llevas {pnl_pct:+.0f}% y el cuadro no marca venta; "
+                      f"subir el stop (breakeven ${avg_cost:.2f} o el piso de ${stop_sug:.2f}) deja correr la "
+                      f"ganancia sin regalarla.")
+            else:
+                p4 = (f"Recomendacion: MANTENER Y PROTEGER. Llevas {pnl_pct:+.0f}% y el cuadro no marca venta; "
+                      f"considerar un stop en breakeven (${avg_cost:.2f}).")
+        else:
+            p4 = "Recomendacion: MANTENER. "
+            if missing and not is_bearish:
+                p4 += f"El proximo evento a vigilar es {missing[0]}"
+                if target:
+                    p4 += f"; si se completa la senal con precio cerca de ${target:.2f}, reevaluar tomar ganancias"
+                p4 += "."
+            elif missing and is_bearish:
+                p4 += (f"Ojo: se esta armando un cuadro de venta — falta {missing[0]}. "
+                       f"Si se completa, el sistema va a recomendar salir.")
+            else:
+                p4 += "Sin condiciones tecnicas cerca de activarse; revisar en el proximo ciclo."
+    parts.append(p4)
+
+    return "\n\n".join(parts)
+
+
 def _build_position_deep_analysis(sym, position, n_bars=90):
     """Enriquece una posicion abierta con el analisis completo estilo escaner
     (charts, MACD/RSI/Koncorde, tesis, targets, fundamentales, veredicto).
@@ -7053,10 +7215,7 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "media": (konc_full.get("media") or [])[start:],
     }
 
-    # 5. Verdict (accion recomendada, con contexto de niveles)
-    verdict = _compute_position_verdict(data, position, levels)
-
-    # 5b. Entry fills (BUY) para marcar en el chart cuando compre
+    # 5. Entry fills (BUY) — para el chart Y para la narrativa (cuando compro)
     entry_fills = []
     try:
         from portfolio import get_executions_for_symbol
@@ -7069,6 +7228,15 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
                 })
     except Exception as e:
         print(f"  [Portfolio deep] Fills error para {sym}: {e}")
+
+    # 5b. Verdict (scoring multi-factor decide la ACCION) + narrativa integral
+    verdict = _compute_position_verdict(data, position, levels)
+    try:
+        narrative = _generate_position_recommendation(
+            sym, data, position, levels, entry_fills, verdict)
+    except Exception as e:
+        print(f"  [Portfolio deep] Narrative error para {sym}: {e}")
+        narrative = verdict.get("reason", "")
 
     bt = data.get("backtest", {}) or {}
     sig = data.get("signal", "HOLD")
@@ -7117,10 +7285,8 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "verdict": verdict.get("verdict", "HOLD"),
         "urgency": verdict.get("urgency", "low"),
         "headline": verdict.get("headline", "HOLD"),
-        "verdict_reason": verdict.get("reason", ""),
-        "verdict_factors": verdict.get("factors", []),
-        "bull_score": verdict.get("bull_score", 0),
-        "bear_score": verdict.get("bear_score", 0),
+        "verdict_reason": narrative,
+        "verdict_summary": (narrative.split("\n\n")[-1] if narrative else verdict.get("reason", "")),
         "trend": verdict.get("trend", "flat"),
         "macd_ok": data.get("macd_ok", False),
         "rsi_ok": data.get("rsi_ok", False),
