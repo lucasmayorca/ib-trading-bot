@@ -661,7 +661,7 @@ def api_bars(symbol, period):
     return Response(to_json(result), mimetype="application/json")
 
 
-def _build_cloud_position_analysis(sym, position, data, n_bars=90):
+def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars=90):
     """Cloud equivalent of vista_web._build_position_deep_analysis(), but takes
     the analysis dict explicitly (from this user's bridge-fed store) instead of
     reading vista_web's own module-global analysis_cache."""
@@ -726,9 +726,28 @@ def _build_cloud_position_analysis(sym, position, data, n_bars=90):
         "media": (konc_full.get("media") or [])[start:],
     }
 
-    verdict = _compute_position_verdict(data, position)
+    verdict = _compute_position_verdict(data, position, levels)
     bt = data.get("backtest", {}) or {}
     sig = data.get("signal", "HOLD")
+
+    # Entry fills (BUY) del bridge/flex/seed para marcar en el chart
+    entry_fills = []
+    if live_trades:
+        for t in live_trades:
+            if (t.get("symbol") or "").upper() != sym.upper():
+                continue
+            if (t.get("action") or "").upper() != "BUY":
+                continue
+            date = t.get("date") or ""
+            price_f = t.get("avg_fill_price") or t.get("lmt_price")
+            qty = t.get("filled_qty") or 0
+            if date and price_f:
+                entry_fills.append({
+                    "time": date,
+                    "price": round(float(price_f), 2),
+                    "qty": float(qty or 0),
+                })
+        entry_fills.sort(key=lambda x: x["time"])
 
     score = 0
     try:
@@ -768,6 +787,7 @@ def _build_cloud_position_analysis(sym, position, data, n_bars=90):
         "chart_macd": chart_macd,
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
+        "entry_fills": entry_fills,
         "fundamentals": fund,
         "verdict": verdict.get("verdict", "HOLD"),
         "urgency": verdict.get("urgency", "low"),
@@ -797,6 +817,8 @@ def api_portfolio():
     analysis = store.get("analysis", {})
     acct_vals = store.get("account_values", {})
     open_orders = store.get("open_orders", [])
+    # Fills en vivo del bridge (para marcar en el chart las compras)
+    live_trades = store.get("live_trades", [])
 
     active_positions = [p for p in raw_positions if p.get("position", 0) != 0]
 
@@ -885,7 +907,7 @@ def api_portfolio():
         if sym in indicators_data:
             p["indicadores"] = indicators_data[sym]
         try:
-            deep = _build_cloud_position_analysis(sym, p, analysis.get(sym))
+            deep = _build_cloud_position_analysis(sym, p, analysis.get(sym), live_trades)
             if deep:
                 p["analysis"] = deep
                 ind = p.get("indicadores") or {}

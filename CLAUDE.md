@@ -112,9 +112,22 @@ labels can be directional while `signal` is still HOLD.
   obl/ob`), `fv` (valor + `.okdot` si la condición de giro se cumple, tooltip = detail), `fcond`
   (3 puntos `.cond-dot`), `fconf` (número + micro-barra). Todos con tooltips `title`. Los headers
   están duplicados para acciones (`sortListBy`) y ETFs (`sortEtfListBy`) — cambiar ambos.
-- Columna "30D" en ambos scanners: mini sparkline SVG (`trendSparkCell`) de los últimos 30 cierres
-  de `chart.ohlc`, verde/roja según el cambio; sortable por `_trendPct` (`data-col="trend"`). Las
-  filas "sin datos" llevan una celda vacía extra para cuadrar el grid.
+- Columnas "30D" y "1A" (grupo Tend.) en ambos scanners: mini sparklines SVG (`trendSparkCell(r,
+  nDays,label)`, default 30) de los cierres de `chart.ohlc`, verde/roja según el cambio; sortables
+  por `_trendPct(r,nDays)` (`data-col="trend"` / `"trend1y"`). El 1A usa 252 cierres con downsample
+  a ~60 puntos (252 pts × 200 filas inflan el DOM). Las filas "sin datos" llevan celdas vacías
+  extra para cuadrar el grid.
+- **Enriquecimiento (grupos "Mercado" y "Wall Street", 2026-07)**: módulo `enrichment.py` compartido
+  por local y cloud (server-side; el bridge NO se toca — cero reinstalls). Bloque `ext` por símbolo
+  en `/api/data` y `/api/etf-data`. Mercado (beta propio 12m diario vs SPY vía cov/var + RS 30d +
+  RVOL con proyección de sesión): UNA descarga batcheada `yf.download` del universo + SPY, refresco
+  15 min (`refresh_market_metrics`). Wall Street (consenso analistas `recommendationMean` + precio
+  objetivo, insiders 90d, `shortPercentOfFloat`): fetch por símbolo TTL 24h, thread de fondo con
+  rate-limit 0.6s, persistido en `enrichment_cache.json` (local; cloud sin disco — Railway efímero).
+  Celdas JS: `fbeta/frvol/fanalyst/fins/fshort` (tooltips explicativos); sort cols `beta/rvol/
+  analyst/insiders/short_int`. ETFs muestran `---` en Wall Street (sin cobertura). Arranque:
+  `enrichment.start_background(symbols_getter, persist_path)` en `main()` local y a nivel módulo en
+  `cloud/server.py`.
 - **Top Recomendaciones colapsable**: arranca comprimida (`_top3Collapsed=true`) mostrando solo la
   barra de título + chips `#N SYM ±obj%` (`_t3Chips`); clic en el título expande/colapsa
   (`toggleTop3Sec`/`toggleEtfTop3Sec` re-renderizan desde `_top3Data`/`_etfTop3Data`). El resumen

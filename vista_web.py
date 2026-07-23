@@ -1827,17 +1827,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .content{padding:0 32px 20px;overflow-x:auto}
 .lh-groups,.lh-cols,.stock-row{
   display:grid;
-  grid-template-columns:20px 76px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 56px 44px 78px 52px 46px 92px;
+  grid-template-columns:20px 76px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 56px 44px 78px 52px 46px 92px 84px;
   gap:4px;align-items:center;
 }
-.stock-row{padding:9px 14px;min-width:1332px}
+.stock-row{padding:9px 14px;min-width:1420px}
 .trend-spark{width:100%;height:20px;display:block}
 .tspark-na{color:var(--dim);font-size:10px;text-align:center}
 .list-header{
   background:var(--surface);
   border-bottom:1px solid var(--accent);color:var(--muted);
   position:sticky;top:0;z-index:10;border-radius:8px 8px 0 0;
-  padding:0 14px;min-width:1332px;
+  padding:0 14px;min-width:1420px;
 }
 /* Celdas de enriquecimiento (Mercado / Wall Street): dos lineas, mono */
 .ext2{display:flex;flex-direction:column;align-items:flex-end;line-height:1.25;font-family:'JetBrains Mono',monospace}
@@ -2525,7 +2525,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <span class="lh-g sepg" style="grid-column:span 3">Backtest 5A</span>
       <span class="lh-g sepg" style="grid-column:span 2">Mercado</span>
       <span class="lh-g sepg" style="grid-column:span 3">Wall Street</span>
-      <span class="lh-g sepg" style="grid-column:span 1">Tend.</span>
+      <span class="lh-g sepg" style="grid-column:span 2">Tend.</span>
     </div>
     <div class="lh-cols">
     <span></span><span data-col="sym" title="Simbolo · debajo, volumen promedio en dolares (20d)" onclick="sortListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" title="Ultimo precio · debajo, variacion vs cierre anterior" onclick="sortListBy('price')">Precio</span>
@@ -2543,6 +2543,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span data-col="insiders" style="text-align:right" title="Transacciones de directivos de la empresa reportadas a la SEC (ultimos 90 dias): compras vs ventas. Compras con plata propia = confianza; las ventas pueden ser por diversificacion o impuestos" onclick="sortListBy('insiders')">Insiders</span>
     <span data-col="short_int" style="text-align:right" title="Interes corto: % del float vendido en corto. >15% = apuesta bajista fuerte del mercado... y combustible para un short squeeze si aparece senal de compra" onclick="sortListBy('short_int')">Short</span>
     <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortListBy('trend')">30D</span>
+    <span data-col="trend1y" style="text-align:center" title="Tendencia de precio, ultimos 12 meses (ordena por % de cambio). Es el contexto de fondo del 30D: distingue un rebote dentro de una caida larga de una suba sostenida" onclick="sortListBy('trend1y')">1A</span>
     </div>
   </div>
   <div id="stock-list"><div id="scanner-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div></div>
@@ -2561,7 +2562,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <span class="lh-g sepg" style="grid-column:span 3">Backtest 5A</span>
       <span class="lh-g sepg" style="grid-column:span 2">Mercado</span>
       <span class="lh-g sepg" style="grid-column:span 3">Wall Street</span>
-      <span class="lh-g sepg" style="grid-column:span 1">Tend.</span>
+      <span class="lh-g sepg" style="grid-column:span 2">Tend.</span>
     </div>
     <div class="lh-cols">
     <span></span><span data-col="sym" title="Simbolo · debajo, volumen promedio en dolares (20d)" onclick="sortEtfListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" title="Ultimo precio · debajo, variacion vs cierre anterior" onclick="sortEtfListBy('price')">Precio</span>
@@ -2579,6 +2580,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     <span data-col="insiders" style="text-align:right" title="Transacciones de directivos (no aplica a ETFs: muestran ---)" onclick="sortEtfListBy('insiders')">Insiders</span>
     <span data-col="short_int" style="text-align:right" title="Interes corto: % del float vendido en corto (en ETFs suele no reportarse)" onclick="sortEtfListBy('short_int')">Short</span>
     <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortEtfListBy('trend')">30D</span>
+    <span data-col="trend1y" style="text-align:center" title="Tendencia de precio, ultimos 12 meses (ordena por % de cambio). Es el contexto de fondo del 30D: distingue un rebote dentro de una caida larga de una suba sostenida" onclick="sortEtfListBy('trend1y')">1A</span>
     </div>
   </div>
   <div id="etf-list"><div id="etf-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div></div>
@@ -3033,6 +3035,40 @@ function _portAnalPriceLines(cs,rec,avgCost){
   }catch(e){}
 }
 
+function _portAnalEntryMarkers(cs,rec){
+  // Dibuja una flecha azul debajo de cada vela donde el usuario compro (BUY fill)
+  try{
+    let fills=(rec&&rec.entry_fills)||[];
+    if(!fills.length)return;
+    // Agrupar por dia para evitar apilamiento cuando hay varios fills el mismo dia
+    let byDay={};
+    for(let f of fills){
+      if(!f||!f.time||!f.price)continue;
+      let d=f.time;
+      if(!byDay[d]){byDay[d]={time:d,price:f.price,qty:f.qty||0,n:1};}
+      else{
+        let g=byDay[d];
+        let tot=g.qty+(f.qty||0);
+        g.price=tot>0?((g.price*g.qty)+(f.price*(f.qty||0)))/tot:f.price;
+        g.qty=tot;g.n++;
+      }
+    }
+    let markers=[];
+    for(let d in byDay){
+      let g=byDay[d];
+      markers.push({
+        time:g.time,
+        position:'belowBar',
+        color:'#2563eb',
+        shape:'arrowUp',
+        text:'C '+g.qty.toFixed(0)+' @ $'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':''),
+      });
+    }
+    markers.sort((a,b)=>a.time<b.time?-1:1);
+    cs.setMarkers(markers);
+  }catch(e){}
+}
+
 function _portAnalDestroy(sym){
   let e=_portAnalCharts[sym];
   if(!e)return;
@@ -3083,6 +3119,7 @@ function renderPortAnalCharts(sym,rec,pos,period){
       if(WEEKLY_P[period]){let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);cs.setData(toWeekly(src));}
       else{let o=sl(ch.ohlc,indBars);cs.setData(o);_addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);}
       _portAnalPriceLines(cs,rec,pos.costo_promedio);
+      _portAnalEntryMarkers(cs,rec);
       chart.timeScale().fitContent();e.lw=chart;
     }else if(rec.chart_ohlc&&rec.chart_ohlc.length>=5){
       let chart=_createLW(candleEl,false);chart.applyOptions({height:340});
@@ -3097,6 +3134,7 @@ function renderPortAnalCharts(sym,rec,pos,period){
         if(ld.length>0)line.setData(ld);
       }
       _portAnalPriceLines(cs,rec,pos.costo_promedio);
+      _portAnalEntryMarkers(cs,rec);
       chart.timeScale().fitContent();e.lw=chart;
     }else{
       candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:12px">Sin datos historicos disponibles.</div>';
@@ -3205,6 +3243,7 @@ function renderPortAnalysisList(positions){
     html+='<div class="rec-candle-wrap"><div class="rec-candle-box" id="portanal_candle_'+sym+'"></div>';
     html+='<div class="rec-candle-legend">';
     html+='<span><i style="background:#2563eb"></i>Costo Prom.</span>';
+    html+='<span style="color:#2563eb;font-weight:700">&#9650; Compra</span>';
     html+='<span><i style="background:#0b7a4b"></i>Target</span>';
     html+='<span><i style="background:#c22436"></i>Stop</span>';
     html+='<span><i style="background:#c22436"></i>SMA200</span>';
@@ -3482,9 +3521,16 @@ function _trendCloses(r,n){
   let k=Math.min(n||30,o.length);
   return o.slice(-k).map(b=>b.close).filter(v=>v!=null&&!isNaN(v));
 }
-function trendSparkCell(r){
-  let cl=_trendCloses(r,30);
+function trendSparkCell(r,nDays,label){
+  nDays=nDays||30;label=label||nDays+' dias';
+  let cl=_trendCloses(r,nDays);
   if(!cl||cl.length<2)return '<span class="tspark-na">--</span>';
+  // Downsample: 252 cierres x 200 filas inflan el DOM; ~60 puntos dibujan igual
+  if(cl.length>60){
+    let ds=[],m=60;
+    for(let i=0;i<m;i++)ds.push(cl[Math.round(i*(cl.length-1)/(m-1))]);
+    cl=ds;
+  }
   let min=Math.min(...cl),max=Math.max(...cl),rng=(max-min)||1;
   let W=80,H=20,pad=2,n=cl.length;
   let pts=cl.map((v,i)=>{
@@ -3496,13 +3542,13 @@ function trendSparkCell(r){
   let col=up?'#0b7a4b':'#c22436';
   let pct=((cl[n-1]-cl[0])/cl[0]*100);
   let area='2,'+H+' '+pts.join(' ')+' '+(W-2)+','+H;
-  return '<svg class="trend-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" title="'+(pct>=0?'+':'')+pct.toFixed(1)+'% en 30 dias">'+
+  return '<svg class="trend-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" title="'+(pct>=0?'+':'')+pct.toFixed(1)+'% en '+label+'">'+
     '<polygon points="'+area+'" fill="'+col+'" opacity="0.08"/>'+
     '<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+col+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>'+
     '</svg>';
 }
-function _trendPct(r){
-  let cl=_trendCloses(r,30);
+function _trendPct(r,nDays){
+  let cl=_trendCloses(r,nDays||30);
   if(!cl||cl.length<2)return null;
   return (cl[cl.length-1]-cl[0])/cl[0];
 }
@@ -3532,6 +3578,7 @@ function _getSortVal(r,col){
     case 'buy_ret':return r.buy_avg_return!=null?r.buy_avg_return:null;
     case 'sell_ret':return r.sell_avg_return!=null?r.sell_avg_return:null;
     case 'trend':return _trendPct(r);
+    case 'trend1y':return _trendPct(r,252);
     case 'beta':return r.ext&&r.ext.beta!=null?r.ext.beta:null;
     case 'rvol':return r.ext&&r.ext.rvol!=null?r.ext.rvol:null;
     case 'analyst':return r.ext&&r.ext.an_target!=null&&r.price?(r.ext.an_target/r.price-1)*100:null;
@@ -4354,7 +4401,7 @@ function update(){
           '<span class="arrow">&#9654;</span><span class="sym">'+sym+'</span>'+
           '<span class="price" style="color:var(--dim)">---</span><span></span>'+na+
           na+na+na+na+na+na+na+na+
-          '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+
+          '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+na+
           '</div></summary>'+
           '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
         idx++;continue;
@@ -4388,6 +4435,7 @@ function update(){
         fbeta(r)+frvol(r)+
         fanalyst(r)+fins(r)+fshort(r)+
         trendSparkCell(r)+
+        trendSparkCell(r,252,'12 meses')+
         '</div>';
       html+='</summary>';
 
@@ -4580,6 +4628,7 @@ function _getEtfSortVal(r,col){
     case 'buy_ret':return r.buy_avg_return!=null?r.buy_avg_return:null;
     case 'sell_ret':return r.sell_avg_return!=null?r.sell_avg_return:null;
     case 'trend':return _trendPct(r);
+    case 'trend1y':return _trendPct(r,252);
     case 'beta':return r.ext&&r.ext.beta!=null?r.ext.beta:null;
     case 'rvol':return r.ext&&r.ext.rvol!=null?r.ext.rvol:null;
     case 'analyst':return r.ext&&r.ext.an_target!=null&&r.price?(r.ext.an_target/r.price-1)*100:null;
@@ -4728,7 +4777,7 @@ function updateEtf(){
           '<span class="arrow">&#9654;</span><span class="sym">'+sym+'</span>'+
           '<span class="price" style="color:var(--dim)">---</span><span></span>'+na+
           na+na+na+na+na+na+na+na+
-          '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+
+          '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+na+
           '</div></summary>'+
           '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
         idx++;continue;
@@ -4762,6 +4811,7 @@ function updateEtf(){
         fbeta(r)+frvol(r)+
         fanalyst(r)+fins(r)+fshort(r)+
         trendSparkCell(r)+
+        trendSparkCell(r,252,'12 meses')+
         '</div>';
       html+='</summary>';
 
@@ -6579,81 +6629,154 @@ def _compute_position_trend(data):
         return "flat"
 
 
-def _compute_position_verdict(data, position):
-    """Combina la senal tecnica con el estado de la posicion (P&L, SL/TP hit)
-    y devuelve un veredicto accionable para el tablero.
+def _compute_position_verdict(data, position, levels=None):
+    """Combina la senal tecnica con el estado de la posicion (precio de compra,
+    P&L, SL/TP hit) y con la situacion actual (distancia al target/stop
+    sugerido) para dar una sugerencia accionable especifica.
 
     Returns dict:
       verdict: 'BUY' | 'SELL' | 'HOLD' | 'REDUCE' | 'ADD'
       urgency: 'high' | 'medium' | 'low'
       headline: texto corto para el card
-      reason: texto explicativo
+      reason: texto explicativo (menciona precio compra + situacion actual)
       trend: 'up' | 'down' | 'flat'
     """
     sig = data.get("signal", "HOLD")
     strength = data.get("strength", 0) or 0
     conds = data.get("conditions_met", 0) or 0
     price = data.get("price") or 0
-    pnl_pct = (position or {}).get("pnl_pct", 0) or 0
+    pos = position or {}
+    pnl_pct = pos.get("pnl_pct", 0) or 0
+    avg_cost = pos.get("costo_promedio") or 0
+    sl_ib = pos.get("stop_loss")   # SL configurado en IB
+    tp_ib = pos.get("take_profit")  # TP configurado en IB
     trend = _compute_position_trend(data)
 
-    # Senal activa de VENTA sobre una posicion abierta = accion urgente
+    # Contexto de niveles (sugeridos por el analisis)
+    lv = levels or {}
+    target_sug = lv.get("target") or 0
+    stop_sug = lv.get("stop_loss") or 0
+
+    # Distancia relativa al target/stop calculado (bull side)
+    dist_to_target_pct = None
+    dist_to_stop_pct = None
+    if target_sug > 0 and price > 0:
+        dist_to_target_pct = (target_sug - price) / price * 100
+    if stop_sug > 0 and price > 0:
+        dist_to_stop_pct = (price - stop_sug) / price * 100
+
+    def _pnl_text():
+        if avg_cost > 0:
+            sign = "+" if pnl_pct >= 0 else ""
+            return f"Costo prom. ${avg_cost:.2f}, precio ${price:.2f} ({sign}{pnl_pct:.1f}%)"
+        return f"P&L {pnl_pct:+.1f}%"
+
+    # --- SEnAL FUERTE DE VENTA ---
     if sig == "SELL":
-        return {
-            "verdict": "SELL",
-            "urgency": "high",
-            "headline": "VENDER",
-            "reason": f"Senal de VENTA activa (3/3 indicadores, fuerza {strength:.1f}). Considerar cerrar posicion.",
-            "trend": "down",
-        }
+        if pnl_pct >= 20:
+            headline = "VENDER — TOMAR GANANCIAS"
+            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f} y estas +{pnl_pct:.0f}% sobre tu costo. "
+                      f"{_pnl_text()}. Es un buen momento para asegurar la ganancia.")
+        elif pnl_pct >= 5:
+            headline = "VENDER"
+            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f}, estas +{pnl_pct:.0f}% en verde. "
+                      f"{_pnl_text()}. Salir en verde antes que se corrija.")
+        elif pnl_pct >= -3:
+            headline = "VENDER — SALIR PLANO"
+            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f}, casi al breakeven ({pnl_pct:+.1f}%). "
+                      f"Cerrar sin perdida antes que empeore.")
+        else:
+            headline = "VENDER — CORTAR"
+            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f}. Ya estas {pnl_pct:.1f}% en rojo "
+                      f"({_pnl_text()}). Cortar la perdida antes que la senal la acelere.")
+        return {"verdict": "SELL", "urgency": "high", "headline": headline,
+                "reason": reason, "trend": "down"}
 
-    # Senal activa de COMPRA sobre algo ya en cartera = agregar
+    # --- SEnAL FUERTE DE COMPRA ---
     if sig == "BUY":
-        return {
-            "verdict": "ADD",
-            "urgency": "high",
-            "headline": "SUMAR",
-            "reason": f"Senal de COMPRA activa (3/3 indicadores, fuerza {strength:.1f}). Oportunidad para ampliar posicion.",
-            "trend": "up",
-        }
+        if pnl_pct < -8:
+            headline = "SUMAR — PROMEDIAR"
+            reason = (f"Senal 3/3 de COMPRA con fuerza {strength:.1f}. Estas {pnl_pct:.1f}% abajo "
+                      f"({_pnl_text()}), es oportunidad de promediar el costo hacia abajo.")
+        elif pnl_pct < 5:
+            headline = "SUMAR"
+            reason = (f"Senal 3/3 de COMPRA con fuerza {strength:.1f} sobre posicion casi plana "
+                      f"({pnl_pct:+.1f}%). Setup fresco para ampliar posicion.")
+        else:
+            headline = "SUMAR — MOMENTUM"
+            reason = (f"Senal 3/3 de COMPRA con fuerza {strength:.1f} y ya estas +{pnl_pct:.0f}%. "
+                      f"El precio confirma la tesis, ampliar con stop ajustado.")
+        return {"verdict": "ADD", "urgency": "high", "headline": headline,
+                "reason": reason, "trend": "up"}
 
-    # HOLD con 2/3 y tendencia bajista = reducir
+    # --- CERCA DEL TARGET SUGERIDO (>=15% ganancia acumulada) ---
+    if pnl_pct >= 15 and dist_to_target_pct is not None and 0 < dist_to_target_pct < 5:
+        return {"verdict": "REDUCE", "urgency": "medium", "headline": "TOMAR GANANCIAS",
+                "reason": (f"Ya estas +{pnl_pct:.0f}% ({_pnl_text()}) y el precio esta a "
+                           f"{dist_to_target_pct:.1f}% del target sugerido (${target_sug:.2f}). "
+                           f"Considerar recoger parte o mover stop al breakeven."),
+                "trend": trend}
+
+    # --- STOP IB CERCA (menos de 3% de distancia) ---
+    if sl_ib and price and 0 < (price - sl_ib) / price < 0.03:
+        return {"verdict": "REDUCE", "urgency": "high", "headline": "STOP CERCA",
+                "reason": (f"Precio ${price:.2f} a {(price-sl_ib)/price*100:.1f}% del stop-loss activo "
+                           f"en IB (${sl_ib:.2f}). {_pnl_text()}. Decidi si aguantas o cerras a mano."),
+                "trend": trend}
+
+    # --- TENDENCIA BAJISTA (2/3) sobre posicion con ganancia = proteger ---
     if conds >= 2 and trend == "down":
-        return {
-            "verdict": "REDUCE",
-            "urgency": "medium",
-            "headline": "REDUCIR",
-            "reason": f"{conds}/3 indicadores girando a VENTA. Momentum bajista, ajustar exposicion.",
-            "trend": "down",
-        }
+        if pnl_pct >= 8:
+            headline = "REDUCIR — PROTEGER GANANCIA"
+            reason = (f"{conds}/3 indicadores girando bajistas y estas +{pnl_pct:.0f}%. "
+                      f"{_pnl_text()}. Ajustar stop al breakeven o reducir posicion.")
+        elif pnl_pct >= -5:
+            headline = "REDUCIR"
+            reason = (f"{conds}/3 indicadores girando bajistas ({pnl_pct:+.1f}% actual). "
+                      f"Momentum negativo, ajustar exposicion.")
+        else:
+            headline = "CORTAR PERDIDA"
+            reason = (f"{conds}/3 indicadores bajistas y ya estas {pnl_pct:.1f}% abajo "
+                      f"({_pnl_text()}). La perdida puede profundizarse.")
+        return {"verdict": "REDUCE", "urgency": "medium", "headline": headline,
+                "reason": reason, "trend": "down"}
 
-    # HOLD con 2/3 y tendencia alcista = mantener con sesgo alcista
+    # --- TENDENCIA ALCISTA (2/3) sobre posicion con perdida = mantener con tesis viva ---
     if conds >= 2 and trend == "up":
-        return {
-            "verdict": "HOLD",
-            "urgency": "low",
-            "headline": "HOLD (alcista)",
-            "reason": f"{conds}/3 indicadores alineados alcistas. Mantener, cerca de senal de compra.",
-            "trend": "up",
-        }
+        if pnl_pct < -5:
+            headline = "HOLD — RECUPERANDO"
+            reason = (f"{conds}/3 indicadores girando al alza sobre posicion con {pnl_pct:.1f}% "
+                      f"de perdida ({_pnl_text()}). La tesis sigue viva, mantener.")
+        else:
+            headline = "HOLD (alcista)"
+            reason = (f"{conds}/3 indicadores alineados alcistas ({pnl_pct:+.1f}% actual). "
+                      f"Cerca de senal de compra, mantener.")
+        return {"verdict": "HOLD", "urgency": "low", "headline": headline,
+                "reason": reason, "trend": "up"}
 
-    # Perdida grande sin senal tecnica = revisar stop
-    if pnl_pct < -12:
-        return {
-            "verdict": "REDUCE",
-            "urgency": "medium",
-            "headline": "REVISAR",
-            "reason": f"Perdida acumulada {pnl_pct:.1f}%. Sin senal tecnica de compra. Revisar stop-loss.",
-            "trend": trend,
-        }
+    # --- PERDIDA GRANDE SIN SEnAL TECNICA ---
+    if pnl_pct <= -15:
+        return {"verdict": "REDUCE", "urgency": "medium", "headline": "REVISAR — PERDIDA GRANDE",
+                "reason": (f"Perdida acumulada {pnl_pct:.1f}% ({_pnl_text()}) sin senal tecnica que la revierta. "
+                           f"Revisar tesis original y ajustar stop-loss."),
+                "trend": trend}
+    if pnl_pct <= -8:
+        return {"verdict": "REDUCE", "urgency": "low", "headline": "MONITOREAR",
+                "reason": (f"Perdida {pnl_pct:.1f}% ({_pnl_text()}). Sin tendencia clara al alza, "
+                           f"definir un stop personal si aun no lo tenes."),
+                "trend": trend}
 
-    return {
-        "verdict": "HOLD",
-        "urgency": "low",
-        "headline": "HOLD",
-        "reason": "Sin senales tecnicas relevantes. Mantener y monitorear.",
-        "trend": trend,
-    }
+    # --- GANANCIA GRANDE PERO SIN SEnAL, CON TENDENCIA PLANA ---
+    if pnl_pct >= 20 and trend == "flat":
+        return {"verdict": "HOLD", "urgency": "low", "headline": "HOLD — SUBIR STOP",
+                "reason": (f"Estas +{pnl_pct:.0f}% ({_pnl_text()}) sin senal fresca ni momentum claro. "
+                           f"Considerar mover el stop al breakeven o subir un trailing stop."),
+                "trend": trend}
+
+    # --- Default: HOLD sin novedad ---
+    return {"verdict": "HOLD", "urgency": "low", "headline": "HOLD",
+            "reason": (f"Sin senales tecnicas relevantes. {_pnl_text()}. Monitorear."),
+            "trend": trend}
 
 
 def _build_position_deep_analysis(sym, position, n_bars=90):
@@ -6730,8 +6853,22 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "media": (konc_full.get("media") or [])[start:],
     }
 
-    # 5. Verdict (accion recomendada)
-    verdict = _compute_position_verdict(data, position)
+    # 5. Verdict (accion recomendada, con contexto de niveles)
+    verdict = _compute_position_verdict(data, position, levels)
+
+    # 5b. Entry fills (BUY) para marcar en el chart cuando compre
+    entry_fills = []
+    try:
+        from portfolio import get_executions_for_symbol
+        for e in get_executions_for_symbol(sym):
+            if (e.get("side") or "").upper() == "BOT" and e.get("price") and e.get("time"):
+                entry_fills.append({
+                    "time": e["time"],
+                    "price": round(float(e["price"]), 2),
+                    "qty": float(e.get("qty", 0) or 0),
+                })
+    except Exception as e:
+        print(f"  [Portfolio deep] Fills error para {sym}: {e}")
 
     bt = data.get("backtest", {}) or {}
     sig = data.get("signal", "HOLD")
@@ -6775,6 +6912,7 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "chart_macd": chart_macd,
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
+        "entry_fills": entry_fills,
         "fundamentals": fund,
         "verdict": verdict.get("verdict", "HOLD"),
         "urgency": verdict.get("urgency", "low"),
