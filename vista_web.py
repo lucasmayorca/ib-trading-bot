@@ -3212,11 +3212,42 @@ function renderPortAnalysisList(positions){
     html+='</summary>';
     html+='<div class="rec-body">';
 
-    // Veredicto grande (call to action)
+    // Veredicto grande (call to action) + factores del scoring multi-indicador
     if(rec.verdict_reason){
-      html+='<div class="rec-thesis" style="border-left:4px solid '+(verdict==='SELL'?'#c22436':(verdict==='ADD'||verdict==='BUY'?'#0b7a4b':(verdict==='REDUCE'?'#b45309':'#4262d9')))+'">';
+      let vColor=(verdict==='SELL'?'#c22436':(verdict==='ADD'||verdict==='BUY'?'#0b7a4b':(verdict==='REDUCE'?'#b45309':'#4262d9')));
+      html+='<div class="rec-thesis" style="border-left:4px solid '+vColor+'">';
       html+='<div class="rec-thesis-title">Que hacer con esta posicion</div>';
       html+='<div class="rec-thesis-text"><b>'+vlabel+'.</b> '+rec.verdict_reason+'</div>';
+      // Scoring bull vs bear
+      let bull=rec.bull_score||0, bear=rec.bear_score||0;
+      let tot=Math.max(bull+bear,1);
+      let bullPct=(bull/tot)*100;
+      html+='<div style="margin-top:10px">';
+      html+='<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px">';
+      html+='<span style="color:#0b7a4b;font-weight:700">Alcista '+bull.toFixed(0)+'</span>';
+      html+='<span style="color:#c22436;font-weight:700">Bajista '+bear.toFixed(0)+'</span>';
+      html+='</div>';
+      html+='<div style="height:8px;background:#c2243620;border-radius:4px;overflow:hidden;display:flex">';
+      html+='<div style="width:'+bullPct+'%;background:#0b7a4b"></div>';
+      html+='<div style="flex:1;background:#c22436"></div>';
+      html+='</div></div>';
+      // Factores detectados por el analisis (mismos indicadores del escaner)
+      let facs=rec.verdict_factors||[];
+      if(facs.length>0){
+        html+='<div style="margin-top:12px">';
+        html+='<div class="rec-thesis-title" style="font-size:11px;margin-bottom:6px">Factores tecnicos considerados</div>';
+        html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:6px 12px">';
+        for(let f of facs){
+          if(!f||!f.name)continue;
+          let dotCol=f.side==='bull'?'#0b7a4b':(f.side==='bear'?'#c22436':'#94a3b8');
+          html+='<div style="display:flex;align-items:flex-start;gap:8px;font-size:11px;line-height:1.4">';
+          html+='<span style="width:8px;height:8px;border-radius:50%;background:'+dotCol+';flex-shrink:0;margin-top:5px"></span>';
+          html+='<div><b style="color:var(--text)">'+f.name+':</b> <span style="color:var(--muted)">'+f.detail+'</span>';
+          if(f.weight>0)html+=' <span style="color:'+dotCol+';font-weight:700;font-size:10px">('+f.weight+' pts)</span>';
+          html+='</div></div>';
+        }
+        html+='</div></div>';
+      }
       html+='</div>';
     }
 
@@ -6630,153 +6661,319 @@ def _compute_position_trend(data):
 
 
 def _compute_position_verdict(data, position, levels=None):
-    """Combina la senal tecnica con el estado de la posicion (precio de compra,
-    P&L, SL/TP hit) y con la situacion actual (distancia al target/stop
-    sugerido) para dar una sugerencia accionable especifica.
+    """Veredicto multi-factor que replica los mismos indicadores del escaner:
+    MACD (histograma + slope), RSI (nivel + slope), Koncorde (marron vs media,
+    flujo institucional azul), medias moviles (precio vs SMA200/50/20, golden/
+    death cross), pisos/techos horizontales (via target_basis), y backtest 5Y.
+    Cada factor aporta a un puntaje bull o bear ponderado; el veredicto se
+    combina con la situacion de la posicion (costo, P&L, distancia al stop IB
+    y al target sugerido).
 
     Returns dict:
-      verdict: 'BUY' | 'SELL' | 'HOLD' | 'REDUCE' | 'ADD'
+      verdict: 'SELL' | 'REDUCE' | 'HOLD' | 'ADD'
       urgency: 'high' | 'medium' | 'low'
       headline: texto corto para el card
-      reason: texto explicativo (menciona precio compra + situacion actual)
+      reason: 1-2 frases resumidas basadas en los factores dominantes
       trend: 'up' | 'down' | 'flat'
+      bull_score / bear_score: 0-100 (nivel de convergencia)
+      factors: lista de dicts {name, detail, side: 'bull'|'bear'|'neutral', weight}
     """
     sig = data.get("signal", "HOLD")
+    sig_label = data.get("signal_label", sig) or sig
     strength = data.get("strength", 0) or 0
     conds = data.get("conditions_met", 0) or 0
     price = data.get("price") or 0
+    vals = data.get("values") or {}
+    chart = data.get("chart") or {}
+    mas = chart.get("mas") or {}
+    bt = data.get("backtest") or {}
+
     pos = position or {}
     pnl_pct = pos.get("pnl_pct", 0) or 0
     avg_cost = pos.get("costo_promedio") or 0
-    sl_ib = pos.get("stop_loss")   # SL configurado en IB
-    tp_ib = pos.get("take_profit")  # TP configurado en IB
-    trend = _compute_position_trend(data)
+    sl_ib = pos.get("stop_loss")   # SL activo en IB
+    tp_ib = pos.get("take_profit")  # TP activo en IB
 
-    # Contexto de niveles (sugeridos por el analisis)
     lv = levels or {}
     target_sug = lv.get("target") or 0
     stop_sug = lv.get("stop_loss") or 0
+    target_basis = (lv.get("target_basis") or "").lower()
 
-    # Distancia relativa al target/stop calculado (bull side)
-    dist_to_target_pct = None
-    dist_to_stop_pct = None
-    if target_sug > 0 and price > 0:
-        dist_to_target_pct = (target_sug - price) / price * 100
-    if stop_sug > 0 and price > 0:
-        dist_to_stop_pct = (price - stop_sug) / price * 100
+    factors = []   # list of dicts {name, detail, side, weight}
+    bull = 0.0
+    bear = 0.0
+
+    def _f(name, detail, side, w):
+        factors.append({"name": name, "detail": detail, "side": side, "weight": w})
+        return w
+
+    # 1) Senal principal (peso 25) — mismo criterio que el escaner
+    if sig == "BUY":
+        bull += _f("Senal tecnica", f"COMPRA activa 3/3 (fuerza {strength:.1f})", "bull", 25)
+    elif sig == "SELL":
+        bear += _f("Senal tecnica", f"VENTA activa 3/3 (fuerza {strength:.1f})", "bear", 25)
+    else:
+        # HOLD: parcial segun signal_label
+        label = sig_label.upper()
+        if "VENTA INMINENTE" in label:
+            bear += _f("Senal tecnica", f"VENTA INMINENTE 2/3 (fuerza {strength:.1f})", "bear", 18)
+        elif "COMPRA INMINENTE" in label:
+            bull += _f("Senal tecnica", f"COMPRA INMINENTE 2/3 (fuerza {strength:.1f})", "bull", 18)
+        elif "VIRANDO A COMPRA" in label:
+            bull += _f("Senal tecnica", f"virando a COMPRA ({conds}/3)", "bull", 8)
+        elif "VIRANDO A VENTA" in label:
+            bear += _f("Senal tecnica", f"virando a VENTA ({conds}/3)", "bear", 8)
+        elif "SOBREVENTA" in label:
+            bull += _f("Senal tecnica", "zona de sobreventa", "bull", 5)
+        elif "SOBRECOMPRA" in label:
+            bear += _f("Senal tecnica", "zona de sobrecompra", "bear", 5)
+        else:
+            _f("Senal tecnica", "neutral, sin senales", "neutral", 0)
+
+    # 2) MACD histograma + slope (peso 12)
+    macd_series = (chart.get("macd") or {}).get("hist") or []
+    if len(macd_series) >= 3:
+        h0, h1, h2 = macd_series[-1], macd_series[-2], macd_series[-3]
+        if h0 is not None and h1 is not None and h2 is not None:
+            if h0 < 0 and h0 > h1:
+                bull += _f("MACD", f"histograma negativo ({h0:.2f}) pero girando al alza", "bull", 12)
+            elif h0 > 0 and h0 < h1:
+                bear += _f("MACD", f"histograma positivo ({h0:.2f}) pero girando a la baja", "bear", 12)
+            elif h0 > 0 and h0 > h1:
+                bull += _f("MACD", f"histograma positivo {h0:.2f} y subiendo", "bull", 6)
+            elif h0 < 0 and h0 < h1:
+                bear += _f("MACD", f"histograma negativo {h0:.2f} y bajando", "bear", 6)
+            else:
+                _f("MACD", f"histograma {h0:.2f}, sin direccion clara", "neutral", 0)
+
+    # 3) RSI nivel + slope (peso 10)
+    rsi_val = vals.get("rsi")
+    rsi_series = chart.get("rsi") or []
+    if rsi_val is not None:
+        rsi_prev = rsi_series[-2] if len(rsi_series) >= 2 else rsi_val
+        if rsi_val < 30:
+            bull += _f("RSI", f"{rsi_val:.0f} SOBREVENTA {'rebotando' if rsi_val > rsi_prev else 'aun cayendo'}",
+                       "bull" if rsi_val > rsi_prev else "neutral", 10 if rsi_val > rsi_prev else 5)
+        elif rsi_val > 70:
+            bear += _f("RSI", f"{rsi_val:.0f} SOBRECOMPRA {'cayendo' if rsi_val < rsi_prev else 'extendiendo'}",
+                       "bear" if rsi_val < rsi_prev else "neutral", 10 if rsi_val < rsi_prev else 5)
+        elif rsi_val < 40:
+            bull += _f("RSI", f"{rsi_val:.0f} zona baja, cerca de sobreventa", "bull", 3)
+        elif rsi_val > 60:
+            bear += _f("RSI", f"{rsi_val:.0f} zona alta, cerca de sobrecompra", "bear", 3)
+        else:
+            _f("RSI", f"{rsi_val:.0f} neutral", "neutral", 0)
+
+    # 4) Koncorde marron vs media + slope (peso 10)
+    konc = vals.get("koncorde") or {}
+    marron = konc.get("marron")
+    media = konc.get("media")
+    marron_series = (chart.get("koncorde") or {}).get("marron") or []
+    if marron is not None and media is not None:
+        marron_prev = marron_series[-2] if len(marron_series) >= 2 else marron
+        if marron < media and marron > marron_prev:
+            bull += _f("Koncorde", f"marron {marron:.1f} bajo media {media:.1f} pero girando arriba", "bull", 10)
+        elif marron > media and marron < marron_prev:
+            bear += _f("Koncorde", f"marron {marron:.1f} sobre media {media:.1f} pero girando abajo", "bear", 10)
+        elif marron > media:
+            bull += _f("Koncorde", f"marron {marron:.1f} sobre media {media:.1f} (fuerza)", "bull", 4)
+        else:
+            bear += _f("Koncorde", f"marron {marron:.1f} bajo media {media:.1f} (debilidad)", "bear", 3)
+
+    # 5) Flujo institucional (azul) (peso 8)
+    azul = konc.get("azul") if isinstance(konc, dict) else None
+    if azul is not None:
+        if azul > 5:
+            bull += _f("Flujo institucional", f"fuerte entrada (azul={azul:.1f})", "bull", 8)
+        elif azul > 0:
+            bull += _f("Flujo institucional", f"entrada moderada (azul={azul:.1f})", "bull", 3)
+        elif azul < -5:
+            bear += _f("Flujo institucional", f"fuerte salida (azul={azul:.1f})", "bear", 8)
+        elif azul < 0:
+            bear += _f("Flujo institucional", f"salida moderada (azul={azul:.1f})", "bear", 3)
+        else:
+            _f("Flujo institucional", "neutro", "neutral", 0)
+
+    # 6) Precio vs SMA200 - tendencia mayor (peso 10)
+    sma200 = mas.get("sma200_val")
+    if sma200 and price > 0:
+        pct = (price - sma200) / sma200 * 100
+        if pct > 5:
+            bull += _f("Tendencia mayor", f"precio {pct:+.1f}% sobre SMA200 (alcista clara)", "bull", 10)
+        elif pct > 0:
+            bull += _f("Tendencia mayor", f"precio {pct:+.1f}% sobre SMA200 (alcista)", "bull", 5)
+        elif pct > -5:
+            bear += _f("Tendencia mayor", f"precio {pct:.1f}% bajo SMA200 (perdiendo tendencia)", "bear", 3)
+        else:
+            bear += _f("Tendencia mayor", f"precio {pct:.1f}% bajo SMA200 (bear market)", "bear", 8)
+
+    # 7) Golden/Death Cross SMA50 vs SMA200 (peso 6)
+    sma50 = mas.get("sma50_val")
+    if sma50 and sma200:
+        if sma50 > sma200:
+            bull += _f("Cross MA", "golden cross activo (SMA50 > SMA200)", "bull", 6)
+        else:
+            bear += _f("Cross MA", "death cross activo (SMA50 < SMA200)", "bear", 6)
+
+    # 8) Precio vs SMA20/SMA50 - corto plazo (peso 5)
+    sma20 = mas.get("sma20_val")
+    if sma20 and price > 0:
+        pct = (price - sma20) / sma20 * 100
+        if pct > 3:
+            bull += _f("Corto plazo", f"precio {pct:+.1f}% sobre SMA20", "bull", 3)
+        elif pct < -3:
+            bear += _f("Corto plazo", f"precio {pct:.1f}% bajo SMA20", "bear", 3)
+    if sma50 and price > 0:
+        pct = (price - sma50) / sma50 * 100
+        if pct > 3:
+            bull += _f("Precio vs SMA50", f"precio {pct:+.1f}% sobre SMA50", "bull", 2)
+        elif pct < -3:
+            bear += _f("Precio vs SMA50", f"precio {pct:.1f}% bajo SMA50", "bear", 2)
+
+    # 9) Pisos / techos horizontales — cercania a soporte fuerte o resistencia (peso 6)
+    if target_sug and price:
+        dist_pct = (target_sug - price) / price * 100  # positivo = precio bajo target
+        if "piso" in target_basis or "soporte" in target_basis:
+            # Target apunta hacia abajo (soporte) — cercania es riesgo si estamos largos
+            if -3 < dist_pct < 0:
+                bear += _f("Nivel horizontal", f"precio {abs(dist_pct):.1f}% sobre piso ${target_sug:.2f} (soporte critico)", "bear", 6)
+        elif "techo" in target_basis or "resistencia" in target_basis:
+            # Target apunta hacia arriba (resistencia)
+            if 0 < dist_pct < 3:
+                bear += _f("Nivel horizontal", f"precio a {dist_pct:.1f}% del techo ${target_sug:.2f} (freno tecnico)", "bear", 4)
+            elif 3 < dist_pct < 10:
+                bull += _f("Nivel horizontal", f"resistencia a {dist_pct:.1f}% de camino al target ${target_sug:.2f}", "bull", 3)
+
+    # 10) Backtest 5Y (peso 10)
+    is_bearish = _label_is_bearish(sig_label)
+    if is_bearish:
+        wr = bt.get("sell_win_rate") or 0
+        exp = bt.get("sell_expectancy") or 0
+        cnt = bt.get("sell_count") or 0
+    else:
+        wr = bt.get("buy_win_rate") or 0
+        exp = bt.get("buy_expectancy") or 0
+        cnt = bt.get("buy_count") or 0
+    conf = bt.get("confidence") or 0
+    if conf >= 60 and wr >= 0.55 and cnt >= 5:
+        if is_bearish:
+            bear += _f("Backtest 5Y", f"WR {wr*100:.0f}% con confianza {conf:.0f}% ({cnt} senales bajistas)", "bear", 10)
+        else:
+            bull += _f("Backtest 5Y", f"WR {wr*100:.0f}% con confianza {conf:.0f}% ({cnt} senales alcistas)", "bull", 10)
+    elif conf >= 30:
+        _f("Backtest 5Y", f"WR {wr*100:.0f}%, confianza {conf:.0f}% (modesta, {cnt} senales)", "neutral", 3)
+    elif cnt > 0:
+        _f("Backtest 5Y", f"muestra chica ({cnt} senales), confianza baja", "neutral", 0)
+
+    # === Derivar trend del score ===
+    if bull > bear + 12:
+        trend = "up"
+    elif bear > bull + 12:
+        trend = "down"
+    else:
+        trend = "flat"
+
+    # Distancia al target/stop (contexto para el mensaje)
+    dist_to_target_pct = ((target_sug - price) / price * 100) if (target_sug and price) else None
+    dist_to_stop_ib_pct = ((price - sl_ib) / price * 100) if (sl_ib and price and sl_ib > 0) else None
 
     def _pnl_text():
         if avg_cost > 0:
-            sign = "+" if pnl_pct >= 0 else ""
-            return f"Costo prom. ${avg_cost:.2f}, precio ${price:.2f} ({sign}{pnl_pct:.1f}%)"
+            return f"Costo ${avg_cost:.2f}, precio ${price:.2f} ({pnl_pct:+.1f}%)"
         return f"P&L {pnl_pct:+.1f}%"
 
-    # --- SEnAL FUERTE DE VENTA ---
+    # === DETERMINAR VEREDICTO ===
+    override_reason = None
+
+    # Signal fuerte manda (BUY/SELL 3/3)
     if sig == "SELL":
+        verdict = "SELL"; urgency = "high"
         if pnl_pct >= 20:
             headline = "VENDER — TOMAR GANANCIAS"
-            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f} y estas +{pnl_pct:.0f}% sobre tu costo. "
-                      f"{_pnl_text()}. Es un buen momento para asegurar la ganancia.")
         elif pnl_pct >= 5:
             headline = "VENDER"
-            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f}, estas +{pnl_pct:.0f}% en verde. "
-                      f"{_pnl_text()}. Salir en verde antes que se corrija.")
         elif pnl_pct >= -3:
             headline = "VENDER — SALIR PLANO"
-            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f}, casi al breakeven ({pnl_pct:+.1f}%). "
-                      f"Cerrar sin perdida antes que empeore.")
         else:
             headline = "VENDER — CORTAR"
-            reason = (f"Senal 3/3 de VENTA con fuerza {strength:.1f}. Ya estas {pnl_pct:.1f}% en rojo "
-                      f"({_pnl_text()}). Cortar la perdida antes que la senal la acelere.")
-        return {"verdict": "SELL", "urgency": "high", "headline": headline,
-                "reason": reason, "trend": "down"}
-
-    # --- SEnAL FUERTE DE COMPRA ---
-    if sig == "BUY":
+    elif sig == "BUY":
+        verdict = "ADD"; urgency = "high"
         if pnl_pct < -8:
             headline = "SUMAR — PROMEDIAR"
-            reason = (f"Senal 3/3 de COMPRA con fuerza {strength:.1f}. Estas {pnl_pct:.1f}% abajo "
-                      f"({_pnl_text()}), es oportunidad de promediar el costo hacia abajo.")
         elif pnl_pct < 5:
             headline = "SUMAR"
-            reason = (f"Senal 3/3 de COMPRA con fuerza {strength:.1f} sobre posicion casi plana "
-                      f"({pnl_pct:+.1f}%). Setup fresco para ampliar posicion.")
         else:
             headline = "SUMAR — MOMENTUM"
-            reason = (f"Senal 3/3 de COMPRA con fuerza {strength:.1f} y ya estas +{pnl_pct:.0f}%. "
-                      f"El precio confirma la tesis, ampliar con stop ajustado.")
-        return {"verdict": "ADD", "urgency": "high", "headline": headline,
-                "reason": reason, "trend": "up"}
-
-    # --- CERCA DEL TARGET SUGERIDO (>=15% ganancia acumulada) ---
-    if pnl_pct >= 15 and dist_to_target_pct is not None and 0 < dist_to_target_pct < 5:
-        return {"verdict": "REDUCE", "urgency": "medium", "headline": "TOMAR GANANCIAS",
-                "reason": (f"Ya estas +{pnl_pct:.0f}% ({_pnl_text()}) y el precio esta a "
-                           f"{dist_to_target_pct:.1f}% del target sugerido (${target_sug:.2f}). "
-                           f"Considerar recoger parte o mover stop al breakeven."),
-                "trend": trend}
-
-    # --- STOP IB CERCA (menos de 3% de distancia) ---
-    if sl_ib and price and 0 < (price - sl_ib) / price < 0.03:
-        return {"verdict": "REDUCE", "urgency": "high", "headline": "STOP CERCA",
-                "reason": (f"Precio ${price:.2f} a {(price-sl_ib)/price*100:.1f}% del stop-loss activo "
-                           f"en IB (${sl_ib:.2f}). {_pnl_text()}. Decidi si aguantas o cerras a mano."),
-                "trend": trend}
-
-    # --- TENDENCIA BAJISTA (2/3) sobre posicion con ganancia = proteger ---
-    if conds >= 2 and trend == "down":
-        if pnl_pct >= 8:
+    # Stop IB critico manda sobre HOLD
+    elif dist_to_stop_ib_pct is not None and 0 < dist_to_stop_ib_pct < 3:
+        verdict = "REDUCE"; urgency = "high"
+        headline = "STOP CERCA — DECIDIR"
+        override_reason = (f"Precio ${price:.2f} a {dist_to_stop_ib_pct:.1f}% del stop-loss activo en IB "
+                          f"(${sl_ib:.2f}). {_pnl_text()}. Decidi si aguantas o cerras a mano.")
+    # Cerca del target con ganancia grande
+    elif pnl_pct >= 15 and dist_to_target_pct is not None and 0 < dist_to_target_pct < 5:
+        verdict = "REDUCE"; urgency = "medium"
+        headline = "TOMAR GANANCIAS"
+        override_reason = (f"Estas +{pnl_pct:.0f}% y el precio a {dist_to_target_pct:.1f}% del target "
+                          f"${target_sug:.2f}. {_pnl_text()}. Considerar recoger parte o mover stop.")
+    # Score bull/bear domina
+    elif bear >= 55 and bear >= bull + 12:
+        verdict = "REDUCE"; urgency = "medium"
+        if pnl_pct >= 10:
             headline = "REDUCIR — PROTEGER GANANCIA"
-            reason = (f"{conds}/3 indicadores girando bajistas y estas +{pnl_pct:.0f}%. "
-                      f"{_pnl_text()}. Ajustar stop al breakeven o reducir posicion.")
         elif pnl_pct >= -5:
             headline = "REDUCIR"
-            reason = (f"{conds}/3 indicadores girando bajistas ({pnl_pct:+.1f}% actual). "
-                      f"Momentum negativo, ajustar exposicion.")
         else:
             headline = "CORTAR PERDIDA"
-            reason = (f"{conds}/3 indicadores bajistas y ya estas {pnl_pct:.1f}% abajo "
-                      f"({_pnl_text()}). La perdida puede profundizarse.")
-        return {"verdict": "REDUCE", "urgency": "medium", "headline": headline,
-                "reason": reason, "trend": "down"}
-
-    # --- TENDENCIA ALCISTA (2/3) sobre posicion con perdida = mantener con tesis viva ---
-    if conds >= 2 and trend == "up":
+    elif bull >= 55 and bull >= bear + 12:
+        verdict = "HOLD"; urgency = "low"
         if pnl_pct < -5:
             headline = "HOLD — RECUPERANDO"
-            reason = (f"{conds}/3 indicadores girando al alza sobre posicion con {pnl_pct:.1f}% "
-                      f"de perdida ({_pnl_text()}). La tesis sigue viva, mantener.")
         else:
             headline = "HOLD (alcista)"
-            reason = (f"{conds}/3 indicadores alineados alcistas ({pnl_pct:+.1f}% actual). "
-                      f"Cerca de senal de compra, mantener.")
-        return {"verdict": "HOLD", "urgency": "low", "headline": headline,
-                "reason": reason, "trend": "up"}
+    # Perdida grande sin senal que la respalde
+    elif pnl_pct <= -15 and bull < 30:
+        verdict = "REDUCE"; urgency = "medium"
+        headline = "REVISAR — PERDIDA GRANDE"
+        override_reason = (f"Perdida acumulada {pnl_pct:.1f}% ({_pnl_text()}) sin score alcista que la respalde "
+                          f"(bull {bull:.0f} vs bear {bear:.0f}). Revisar tesis y ajustar stop.")
+    # Ganancia grande sin senal fresca
+    elif pnl_pct >= 20 and trend == "flat":
+        verdict = "HOLD"; urgency = "low"
+        headline = "HOLD — SUBIR STOP"
+        override_reason = (f"Estas +{pnl_pct:.0f}% ({_pnl_text()}) sin senal fresca. "
+                          f"Considerar mover el stop al breakeven o trailing stop.")
+    else:
+        verdict = "HOLD"; urgency = "low"
+        headline = "HOLD"
 
-    # --- PERDIDA GRANDE SIN SEnAL TECNICA ---
-    if pnl_pct <= -15:
-        return {"verdict": "REDUCE", "urgency": "medium", "headline": "REVISAR — PERDIDA GRANDE",
-                "reason": (f"Perdida acumulada {pnl_pct:.1f}% ({_pnl_text()}) sin senal tecnica que la revierta. "
-                           f"Revisar tesis original y ajustar stop-loss."),
-                "trend": trend}
-    if pnl_pct <= -8:
-        return {"verdict": "REDUCE", "urgency": "low", "headline": "MONITOREAR",
-                "reason": (f"Perdida {pnl_pct:.1f}% ({_pnl_text()}). Sin tendencia clara al alza, "
-                           f"definir un stop personal si aun no lo tenes."),
-                "trend": trend}
+    # === RAZoN — top factores dominantes ===
+    if override_reason:
+        reason = override_reason
+    else:
+        # Elegir los 3 factores mas relevantes en la direccion del veredicto
+        target_side = "bear" if verdict in ("SELL", "REDUCE") else "bull"
+        rel = [f for f in factors if f["side"] == target_side and f["weight"] > 0]
+        rel.sort(key=lambda f: f["weight"], reverse=True)
+        top3 = rel[:3]
+        if top3:
+            fac_text = "; ".join(f"{f['detail']}" for f in top3)
+        else:
+            # sin factores dominantes en la direccion — usar los mas fuertes cualesquiera
+            top3 = sorted(factors, key=lambda f: f["weight"], reverse=True)[:3]
+            fac_text = "; ".join(f"{f['detail']}" for f in top3) if top3 else "sin factores tecnicos claros"
+        reason = f"Factores dominantes: {fac_text}. {_pnl_text()}."
 
-    # --- GANANCIA GRANDE PERO SIN SEnAL, CON TENDENCIA PLANA ---
-    if pnl_pct >= 20 and trend == "flat":
-        return {"verdict": "HOLD", "urgency": "low", "headline": "HOLD — SUBIR STOP",
-                "reason": (f"Estas +{pnl_pct:.0f}% ({_pnl_text()}) sin senal fresca ni momentum claro. "
-                           f"Considerar mover el stop al breakeven o subir un trailing stop."),
-                "trend": trend}
-
-    # --- Default: HOLD sin novedad ---
-    return {"verdict": "HOLD", "urgency": "low", "headline": "HOLD",
-            "reason": (f"Sin senales tecnicas relevantes. {_pnl_text()}. Monitorear."),
-            "trend": trend}
+    return {
+        "verdict": verdict,
+        "urgency": urgency,
+        "headline": headline,
+        "reason": reason,
+        "trend": trend,
+        "bull_score": round(bull, 1),
+        "bear_score": round(bear, 1),
+        "factors": factors,
+    }
 
 
 def _build_position_deep_analysis(sym, position, n_bars=90):
@@ -6918,6 +7115,9 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "urgency": verdict.get("urgency", "low"),
         "headline": verdict.get("headline", "HOLD"),
         "verdict_reason": verdict.get("reason", ""),
+        "verdict_factors": verdict.get("factors", []),
+        "bull_score": verdict.get("bull_score", 0),
+        "bear_score": verdict.get("bear_score", 0),
         "trend": verdict.get("trend", "flat"),
         "macd_ok": data.get("macd_ok", False),
         "rsi_ok": data.get("rsi_ok", False),
