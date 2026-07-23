@@ -1830,14 +1830,17 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
   grid-template-columns:20px 76px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 56px 44px 78px 52px 46px 92px 84px;
   gap:4px;align-items:center;
 }
-.stock-row{padding:9px 14px;min-width:1420px}
+.stock-row{padding:9px 14px;min-width:1548px}
+/* El fondo blanco de details debe cubrir todo el ancho scrolleable del grid
+   (si no, en pantallas angostas las ultimas columnas quedan sobre el gris) */
+#stock-list details,#etf-list details{min-width:1548px}
 .trend-spark{width:100%;height:20px;display:block}
 .tspark-na{color:var(--dim);font-size:10px;text-align:center}
 .list-header{
   background:var(--surface);
   border-bottom:1px solid var(--accent);color:var(--muted);
   position:sticky;top:0;z-index:10;border-radius:8px 8px 0 0;
-  padding:0 14px;min-width:1420px;
+  padding:0 14px;min-width:1548px;
 }
 /* Celdas de enriquecimiento (Mercado / Wall Street): dos lineas, mono */
 .ext2{display:flex;flex-direction:column;align-items:flex-end;line-height:1.25;font-family:'JetBrains Mono',monospace}
