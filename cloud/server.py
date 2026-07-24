@@ -58,7 +58,7 @@ socketio = SocketIO(
     ping_timeout=40,
 )
 
-# Owner account — sees the collected-feedback review panel in the "Tu Opinion"
+# Owner account — sees the collected-feedback review panel in the "Tu Opinión"
 # tab. Override with ADMIN_EMAIL env var if the owner account changes.
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "lucas.mayorca@gmail.com").strip().lower()
 
@@ -782,6 +782,9 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "atr": levels.get("atr", 0),
         "target_pct": levels.get("target_pct", 0),
         "target_basis": levels.get("target_basis", ""),
+        "entry_basis": levels.get("entry_basis", ""),
+        "stop_basis": levels.get("stop_basis", ""),
+        "expected_move_pct": levels.get("expected_move_pct", None),
         "horizon": levels.get("horizon_weeks", ""),
         "thesis": thesis,
         "win_rate": (bt.get("sell_win_rate", 0) if sig == "SELL"
@@ -1989,10 +1992,10 @@ def _inject_cloud_setup_tab(html):
 
     # 1. Nav tab button
     html = html.replace(
-        '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Historicos</button>\n</div>',
-        '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Historicos</button>\n'
+        '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Históricos</button>\n</div>',
+        '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Históricos</button>\n'
         '  <button class="nav-tab" onclick="switchTab(\'setup\')">Conectar TWS</button>\n'
-        '  <button class="nav-tab" onclick="switchTab(\'feedback\')">Tu Opinion</button>\n</div>',
+        '  <button class="nav-tab" onclick="switchTab(\'feedback\')">Tu Opinión</button>\n</div>',
     )
 
     # 2. Header: bridge status + user email + logout (right side, stacked under the sub line)
@@ -2072,8 +2075,8 @@ def _inject_cloud_setup_tab(html):
       <summary style="color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;padding:13px 18px">Ver historial completo de trades (opcional)</summary>
       <div style="padding:4px 18px 18px">
         <p style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6">
-          Por defecto, "Trades Historicos" solo muestra las operaciones de <b>hoy</b>
-          (asi funciona la conexion normal con TWS). Para ver tu historial completo,
+          Por defecto, "Trades Históricos" solo muestra las operaciones de <b>hoy</b>
+          (así funciona la conexión normal con TWS). Para ver tu historial completo,
           IB pide un paso extra de configuracion que se hace <b>una sola vez</b> en tu cuenta.
           Son 3 partes.
         </p>
@@ -2325,7 +2328,7 @@ function loadTradesHistory(){
     document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">Error cargando trades: '+e.message+'</span>';
   });
 }
-// ---- Tu Opinion (feedback) tab ----
+// ---- Tu Opinión (feedback) tab ----
 let _fbRating=0;
 let _fbAdminLoaded=false;
 const _fbLabels={1:'Muy mala',2:'Mala',3:'Regular',4:'Buena',5:'Excelente'};

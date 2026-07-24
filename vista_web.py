@@ -1,7 +1,7 @@
 """
 Vista Web - Dashboard local para usar junto a TWS
 Escanea top 100 acciones por volumen, calcula MACD+RSI+Koncorde,
-muestra graficos de velas con medias moviles.
+muestra graficos de velas con medias móviles.
 
 Uso:
     python vista_web.py
@@ -353,7 +353,7 @@ def run_analysis():
             last_update_time = datetime.now().strftime("%H:%M:%S")
         time.sleep(1)
 
-    print(f"  Analisis completo: {last_update_time}")
+    print(f"  Análisis completo: {last_update_time}")
 
 
 def analysis_loop():
@@ -361,7 +361,7 @@ def analysis_loop():
         try:
             run_analysis()
         except Exception as e:
-            print(f"  Error en analisis: {e}")
+            print(f"  Error en análisis: {e}")
         time.sleep(config.VISTA_REFRESH_SECONDS)
 
 
@@ -396,7 +396,7 @@ def run_etf_analysis():
             etf_last_update_time = datetime.now().strftime("%H:%M:%S")
         time.sleep(1)
 
-    print(f"  [ETF] Analisis completo: {etf_last_update_time}")
+    print(f"  [ETF] Análisis completo: {etf_last_update_time}")
 
 
 def etf_analysis_loop():
@@ -404,7 +404,7 @@ def etf_analysis_loop():
         try:
             run_etf_analysis()
         except Exception as e:
-            print(f"  [ETF] Error en analisis: {e}")
+            print(f"  [ETF] Error en análisis: {e}")
         time.sleep(config.VISTA_REFRESH_SECONDS)
 
 
@@ -844,6 +844,20 @@ def _compute_price_levels(data):
     piso_fuerte = next((c for c in pisos if c["touches"] >= 2), None)
     techo_fuerte = next((c for c in techos if c["touches"] >= 2), None)
     stop_basis = ""
+    entry_basis = ""
+
+    def _entry_desc(anchor, anchors_list, strong, chan, ma_vals, ma_names, kind):
+        # kind: "soporte" (bullish) o "resistencia" (bearish)
+        if not anchors_list or abs(anchor - anchors_list[0]) > 1e-6:
+            side = "bajo" if kind == "soporte" else "sobre"
+            return f"banda ~1.5x ATR {side} el precio (sin {kind} cercano)"
+        if strong and abs(anchor - strong["level"]) < 1e-6:
+            piso_o_techo = "piso" if kind == "soporte" else "techo"
+            return f"{piso_o_techo} ${anchor:.2f} ({strong['touches']} toques)"
+        if chan is not None and abs(anchor - chan) < 1e-6:
+            return f"{'piso' if kind == 'soporte' else 'techo'} del canal de tendencia"
+        nm = next((ma_names[k] for k, v in ma_vals.items() if abs(v - anchor) < 1e-6), None)
+        return f"{nm} como {kind}" if nm else f"{kind} cercano"
 
     if is_bearish:
         # Techo por encima como techo de entrada (resistencia horizontal, canal o MA)
@@ -854,6 +868,8 @@ def _compute_price_levels(data):
             res_above = sorted(res_above + [chan_up])
         entry_high = min(res_above[0], price + 1.5 * atr) if res_above else price + atr
         entry_low = price
+        entry_basis = _entry_desc(entry_high, res_above, techo_fuerte, chan_up,
+                                  ma_vals, ma_names, "resistencia")
 
         # Objetivo: pisos (soportes) + MAs + swing + canal, filtrados por movimiento esperado
         target, target_basis = _pick_directional_target(
@@ -885,6 +901,8 @@ def _compute_price_levels(data):
             sup_below = sorted(sup_below + [chan_lo], reverse=True)
         entry_low = max(sup_below[0], price - 1.5 * atr) if sup_below else price - atr
         entry_high = price
+        entry_basis = _entry_desc(entry_low, sup_below, piso_fuerte, chan_lo,
+                                  ma_vals, ma_names, "soporte")
 
         # Objetivo: techos (resistencias) + MAs + swing + canal, filtrados por movimiento esperado
         target, target_basis = _pick_directional_target(
@@ -942,6 +960,7 @@ def _compute_price_levels(data):
         "target_pct": round(target_pct, 1),
         "target_basis": target_basis,
         "stop_basis": stop_basis,
+        "entry_basis": entry_basis,
         "horizon_weeks": horizon_weeks,
         "expected_move_pct": round(expected_pct * 100, 1),
     }
@@ -981,13 +1000,13 @@ def _generate_rationale(sym, data, levels=None):
     conds = data.get("conditions_met", 0)
     is_bearish = _label_is_bearish(label)
     if sig == "BUY":
-        parts.append(f"Senal de {label}: 3/3 indicadores alineados al alza (fuerza {data.get('strength', 0):.1f})")
+        parts.append(f"Señal de {label}: 3/3 indicadores alineados al alza (fuerza {data.get('strength', 0):.1f})")
     elif sig == "SELL":
-        parts.append(f"Senal de {label}: 3/3 indicadores alineados a la baja (fuerza {data.get('strength', 0):.1f})")
+        parts.append(f"Señal de {label}: 3/3 indicadores alineados a la baja (fuerza {data.get('strength', 0):.1f})")
     else:
-        # Estado PRE-senal: decir explicitamente que cumple y que FALTA (con umbral).
+        # Estado PRE-señal: decir explicitamente que cumple y que FALTA (con umbral).
         # El sistema completo exige MACD girando + RSI extremo + Koncorde girando;
-        # INMINENTE (2/3) y VIRANDO (1/3) son grados de cercania, no senal ejecutable.
+        # INMINENTE (2/3) y VIRANDO (1/3) son grados de cercania, no señal ejecutable.
         rsi_v = vals.get("rsi")
         rsi_thr = ">70" if is_bearish else "<30"
         missing = []
@@ -1000,7 +1019,7 @@ def _generate_rationale(sym, data, levels=None):
             missing.append("Koncorde (marron girando vs media)")
         txt = f"{label} — {conds}/3 condiciones del sistema cumplidas"
         if missing:
-            txt += ". FALTA para senal completa: " + " · ".join(missing)
+            txt += ". FALTA para señal completa: " + " · ".join(missing)
         parts.append(txt)
 
     # 2. Target justification (from levels)
@@ -1088,7 +1107,7 @@ def _generate_rationale(sym, data, levels=None):
         wr = bt.get("sell_win_rate", 0) or 0
         ar = bt.get("sell_avg_return")
         direction = "venta"
-    bt_text = f"Backtest 5Y: {cnt} senales de {direction}, win rate {wr * 100:.0f}%"
+    bt_text = f"Backtest 5Y: {cnt} señales de {direction}, win rate {wr * 100:.0f}%"
     if ar is not None:
         bt_text += f", retorno promedio {ar:+.1f}%"
     parts.append(bt_text)
@@ -1139,7 +1158,7 @@ def _generate_rationale(sym, data, levels=None):
         if earn and earn.get("days_until") is not None:
             d = earn["days_until"]
             if d <= 14:
-                parts.append(f"ATENCION: Earnings en {d} dias ({earn['next_date']}). Volatilidad esperada alta.")
+                parts.append(f"ATENCIÓN: Earnings en {d} dias ({earn['next_date']}). Volatilidad esperada alta.")
             elif d <= 30:
                 parts.append(f"Earnings proximos: {earn['next_date']} (en {d} dias)")
 
@@ -1263,11 +1282,11 @@ def _generate_thesis(sym, data, levels, fund):
     is_bearish = _label_is_bearish(label)
 
     if sig == "BUY":
-        lines.append(f"{sym} presenta senal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados al alza. Senal COMPLETA del sistema MACD+RSI+Koncorde.")
+        lines.append(f"{sym} presenta señal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados al alza. Señal COMPLETA del sistema MACD+RSI+Koncorde.")
     elif sig == "SELL":
-        lines.append(f"{sym} presenta senal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados a la baja. Senal COMPLETA del sistema MACD+RSI+Koncorde.")
+        lines.append(f"{sym} presenta señal de {label} con fuerza {strength:.1f}/5.1 — los 3 indicadores alineados a la baja. Señal COMPLETA del sistema MACD+RSI+Koncorde.")
     else:
-        # Estados PRE-senal: la tesis dice exactamente que condiciones del sistema
+        # Estados PRE-señal: la tesis dice exactamente que condiciones del sistema
         # se cumplen, cuales faltan (con umbral y valor actual) y si se acercan.
         met, missing = _system_status(data, is_bearish)
         met_txt = " y ".join(met) if met else "ninguna condicion del sistema"
@@ -1276,13 +1295,13 @@ def _generate_thesis(sym, data, levels, fund):
         if "INMINENTE" in label:
             l1 = f"{sym} en {label} ({conds}/3): ya cumple {met_txt}."
             if miss_txt:
-                l1 += f" Para confirmar la senal de {dir_word} del sistema falta: {miss_txt}."
+                l1 += f" Para confirmar la señal de {dir_word} del sistema falta: {miss_txt}."
             lines.append(l1)
         elif "VIRANDO" in label:
             l1 = f"{sym} {label.lower()} ({conds}/3): {('cumple ' + met_txt + '.') if met else 'los tecnicos empiezan a girar.'}"
             if miss_txt:
                 l1 += f" Aun falta: {miss_txt}."
-            l1 += " Estado temprano — no es senal ejecutable."
+            l1 += " Estado temprano — no es señal ejecutable."
             lines.append(l1)
         elif "SOBREVENTA" in label or "SOBRECOMPRA" in label:
             zona = "sobreventa" if "SOBREVENTA" in label else "sobrecompra"
@@ -1374,7 +1393,7 @@ def _generate_thesis(sym, data, levels, fund):
         else:
             cross_txt = " Death cross activo."
     if ma_parts:
-        lines.append("Medias moviles: " + ", ".join(ma_parts) + "." + cross_txt)
+        lines.append("Medias móviles: " + ", ".join(ma_parts) + "." + cross_txt)
 
     # --- Line 4: Institutional flow (Koncorde azul) ---
     if azul is not None:
@@ -1431,7 +1450,7 @@ def _generate_thesis(sym, data, levels, fund):
         if earn and earn.get("days_until") is not None:
             d = earn["days_until"]
             if d <= 14:
-                fline_parts.append(f"ATENCION: earnings en {d} dias")
+                fline_parts.append(f"ATENCIÓN: earnings en {d} dias")
             elif d <= 30:
                 fline_parts.append(f"earnings proximos en {d} dias")
 
@@ -1552,7 +1571,7 @@ def compute_top3(cache, min_target_pct=None):
             if len(ohlc) < 20:
                 continue
             # El fallback relajado tambien exige un setup coherente (INMINENTE o
-            # senal activa) y el objetivo minimo — calidad antes que cantidad:
+            # señal activa) y el objetivo minimo — calidad antes que cantidad:
             # si no hay 5 oportunidades reales, se muestran menos.
             lbl = data.get("signal_label", "") or ""
             if data.get("signal", "HOLD") == "HOLD" and "INMINENTE" not in lbl:
@@ -1637,6 +1656,9 @@ def compute_top3(cache, min_target_pct=None):
             "atr": levels["atr"],
             "target_pct": levels.get("target_pct", 0),
             "target_basis": levels.get("target_basis", ""),
+            "entry_basis": levels.get("entry_basis", ""),
+            "stop_basis": levels.get("stop_basis", ""),
+            "expected_move_pct": levels.get("expected_move_pct", None),
             "horizon": levels.get("horizon_weeks", ""),
             "thesis": thesis,
             "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
@@ -1774,7 +1796,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vista Analisis - Top 100 Volumen</title>
+<title>Vista Análisis - Top 100 Volumen</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -2038,6 +2060,14 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-2col-right{display:flex;flex-direction:column;gap:12px;min-width:0}
 .rec-2col-right .rec-research-row{grid-template-columns:1fr;margin-bottom:0}
 .rec-2col-right .rec-metrics,.rec-2col-right .rec-levels{margin:0}
+/* Métricas como tarjeta consistente con el resto de la columna derecha */
+.rec-2col-right .rec-metrics{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:12px 14px;gap:8px 14px}
+/* Fundamentales: en columna angosta, label arriba / valor abajo (evita colisión) */
+.rec-2col-right .rec-fund-grid{grid-template-columns:1fr 1fr;gap:9px 16px}
+.rec-2col-right .rec-fl{flex-direction:column;align-items:flex-start;gap:1px;padding:0}
+.rec-2col-right .rec-fll{font-size:10px;text-transform:uppercase;letter-spacing:.3px;line-height:1.2}
+.rec-2col-right .rec-flv{font-size:12.5px}
+.rec-why{font-size:10px;color:var(--muted);line-height:1.35;margin:-1px 0 7px;padding-left:1px}
 .rec-rat{border-top:1px solid var(--border);padding-top:12px;margin-top:6px}
 .rec-rt{font-size:10px;font-weight:700;color:#2456e6;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
 .rec-ri{font-size:13px;color:var(--text);padding:4px 0;line-height:1.5}
@@ -2524,7 +2554,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 </head>
 <body>
 <div class="header">
-  <h1><em>VISTA</em> ANALISIS &mdash; TOP 100 VOLUMEN</h1>
+  <h1><em>VISTA</em> ANÁLISIS &mdash; TOP 100 VOLUMEN</h1>
   <div class="sub">Esc&aacute;ner &middot; Se&ntilde;ales &middot; Cartera &middot; Opciones &nbsp;&bull;&nbsp; <span id="port-info"></span></div>
 </div>
 <div class="pulse-bar" id="pulse-bar" style="display:none"></div>
@@ -2533,7 +2563,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
   <button class="nav-tab" onclick="switchTab('etf')">ETF Scanner</button>
   <button class="nav-tab" onclick="switchTab('portfolio')">Mi Cartera</button>
   <button class="nav-tab" onclick="switchTab('optionslab')">Options Lab</button>
-  <button class="nav-tab" onclick="switchTab('trades')">Trades Historicos</button>
+  <button class="nav-tab" onclick="switchTab('trades')">Trades Históricos</button>
 </div>
 
 <!-- TAB: SCANNER -->
@@ -2552,19 +2582,19 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     </div>
     <div class="lh-cols">
     <span></span><span data-col="sym" title="Simbolo · debajo, volumen promedio en dolares (20d)" onclick="sortListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" title="Ultimo precio · debajo, variacion vs cierre anterior" onclick="sortListBy('price')">Precio</span>
-    <span data-col="signal" title="Etiqueta de senal segun MACD + RSI + Koncorde" onclick="sortListBy('signal')">Senal</span><span data-col="strength" style="text-align:right" title="Fuerza de la senal (0-5.1): indicadores que confirman + bonus por intensidad" onclick="sortListBy('strength')">Fuerza</span>
+    <span data-col="signal" title="Etiqueta de señal segun MACD + RSI + Koncorde" onclick="sortListBy('signal')">Señal</span><span data-col="strength" style="text-align:right" title="Fuerza de la señal (0-5.1): indicadores que confirman + bonus por intensidad" onclick="sortListBy('strength')">Fuerza</span>
     <span class="sep" data-col="sma200" style="text-align:right" title="Distancia del precio a la SMA de 200 ruedas" onclick="sortListBy('sma200')">MA200</span><span data-col="sma100" style="text-align:right" title="Distancia del precio a la SMA de 100 ruedas" onclick="sortListBy('sma100')">MA100</span>
     <span data-col="sma50" style="text-align:right" title="Distancia del precio a la SMA de 50 ruedas" onclick="sortListBy('sma50')">MA50</span><span data-col="sma20" style="text-align:right" title="Distancia del precio a la SMA de 20 ruedas" onclick="sortListBy('sma20')">MA20</span>
     <span data-col="ema9" style="text-align:right" title="Distancia del precio a la EMA de 9 ruedas" onclick="sortListBy('ema9')">EMA9</span>
     <span class="sep" data-col="macd" style="text-align:right" title="Histograma MACD (12,26,9) · punto = condicion de giro cumplida" onclick="sortListBy('macd')">MACD</span><span data-col="rsi" style="text-align:right" title="RSI 14 · verde <30 sobreventa, rojo >70 sobrecompra" onclick="sortListBy('rsi')">RSI</span>
     <span data-col="konc" style="text-align:right" title="Koncorde marron (manos fuertes) · punto = giro vs media cumplido" onclick="sortListBy('konc')">Konc.</span><span data-col="cond" style="text-align:center" title="Condiciones alineadas de 3 (MACD, RSI, Koncorde)" onclick="sortListBy('cond')">Cond</span>
     <span class="sep" data-col="conf" style="text-align:right" title="Confianza calibrada del backtest 5A (0-100): significancia del edge x muestra" onclick="sortListBy('conf')">Conf</span>
-    <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)" onclick="sortListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por senal de VENTA (backtest 5A, neto de costes)" onclick="sortListBy('sell_ret')">Ret.V</span>
+    <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por señal de COMPRA (backtest 5A, neto de costes)" onclick="sortListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por señal de VENTA (backtest 5A, neto de costes)" onclick="sortListBy('sell_ret')">Ret.V</span>
     <span class="sep" data-col="beta" style="text-align:right" title="Beta propio (12 meses, retornos diarios vs SPY): cuanto amplifica los movimientos del mercado. 1 = se mueve igual que el SPY, 2 = el doble, 0.5 = la mitad, negativo = inverso. Debajo: fuerza relativa 30d (retorno del activo menos el del SPY, en puntos)" onclick="sortListBy('beta')">Beta/RS</span>
     <span data-col="rvol" style="text-align:right" title="Volumen relativo: volumen de la ultima rueda vs su promedio de 20 ruedas (el dia en curso se proyecta por la fraccion de sesion transcurrida). 1x = normal, >1.5x = actividad inusual, >2.5x = movimiento con conviccion" onclick="sortListBy('rvol')">RVOL</span>
     <span class="sep" data-col="analyst" style="text-align:right" title="Consenso de analistas de Wall Street: recomendacion promedio (escala 1 = compra fuerte a 5 = venta). Debajo: % de distancia al precio objetivo medio del consenso. Ordena por ese upside" onclick="sortListBy('analyst')">Analistas</span>
     <span data-col="insiders" style="text-align:right" title="Transacciones de directivos de la empresa reportadas a la SEC (ultimos 90 dias): compras vs ventas. Compras con plata propia = confianza; las ventas pueden ser por diversificacion o impuestos" onclick="sortListBy('insiders')">Insiders</span>
-    <span data-col="short_int" style="text-align:right" title="Interes corto: % del float vendido en corto. >15% = apuesta bajista fuerte del mercado... y combustible para un short squeeze si aparece senal de compra" onclick="sortListBy('short_int')">Short</span>
+    <span data-col="short_int" style="text-align:right" title="Interes corto: % del float vendido en corto. >15% = apuesta bajista fuerte del mercado... y combustible para un short squeeze si aparece señal de compra" onclick="sortListBy('short_int')">Short</span>
     <span class="sep" data-col="trend" style="text-align:center" title="Tendencia de precio, ultimos 30 dias (ordena por % de cambio)" onclick="sortListBy('trend')">30D</span>
     <span data-col="trend1y" style="text-align:center" title="Tendencia de precio, ultimos 12 meses (ordena por % de cambio). Es el contexto de fondo del 30D: distingue un rebote dentro de una caida larga de una suba sostenida" onclick="sortListBy('trend1y')">1A</span>
     </div>
@@ -2589,14 +2619,14 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
     </div>
     <div class="lh-cols">
     <span></span><span data-col="sym" title="Simbolo · debajo, volumen promedio en dolares (20d)" onclick="sortEtfListBy('sym')">Ticker</span><span data-col="price" style="text-align:right" title="Ultimo precio · debajo, variacion vs cierre anterior" onclick="sortEtfListBy('price')">Precio</span>
-    <span data-col="signal" title="Etiqueta de senal segun MACD + RSI + Koncorde" onclick="sortEtfListBy('signal')">Senal</span><span data-col="strength" style="text-align:right" title="Fuerza de la senal (0-5.1): indicadores que confirman + bonus por intensidad" onclick="sortEtfListBy('strength')">Fuerza</span>
+    <span data-col="signal" title="Etiqueta de señal segun MACD + RSI + Koncorde" onclick="sortEtfListBy('signal')">Señal</span><span data-col="strength" style="text-align:right" title="Fuerza de la señal (0-5.1): indicadores que confirman + bonus por intensidad" onclick="sortEtfListBy('strength')">Fuerza</span>
     <span class="sep" data-col="sma200" style="text-align:right" title="Distancia del precio a la SMA de 200 ruedas" onclick="sortEtfListBy('sma200')">MA200</span><span data-col="sma100" style="text-align:right" title="Distancia del precio a la SMA de 100 ruedas" onclick="sortEtfListBy('sma100')">MA100</span>
     <span data-col="sma50" style="text-align:right" title="Distancia del precio a la SMA de 50 ruedas" onclick="sortEtfListBy('sma50')">MA50</span><span data-col="sma20" style="text-align:right" title="Distancia del precio a la SMA de 20 ruedas" onclick="sortEtfListBy('sma20')">MA20</span>
     <span data-col="ema9" style="text-align:right" title="Distancia del precio a la EMA de 9 ruedas" onclick="sortEtfListBy('ema9')">EMA9</span>
     <span class="sep" data-col="macd" style="text-align:right" title="Histograma MACD (12,26,9) · punto = condicion de giro cumplida" onclick="sortEtfListBy('macd')">MACD</span><span data-col="rsi" style="text-align:right" title="RSI 14 · verde <30 sobreventa, rojo >70 sobrecompra" onclick="sortEtfListBy('rsi')">RSI</span>
     <span data-col="konc" style="text-align:right" title="Koncorde marron (manos fuertes) · punto = giro vs media cumplido" onclick="sortEtfListBy('konc')">Konc.</span><span data-col="cond" style="text-align:center" title="Condiciones alineadas de 3 (MACD, RSI, Koncorde)" onclick="sortEtfListBy('cond')">Cond</span>
     <span class="sep" data-col="conf" style="text-align:right" title="Confianza calibrada del backtest 5A (0-100): significancia del edge x muestra" onclick="sortEtfListBy('conf')">Conf</span>
-    <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por senal de VENTA (backtest 5A, neto de costes)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
+    <span data-col="buy_ret" style="text-align:right" title="Retorno promedio por señal de COMPRA (backtest 5A, neto de costes)" onclick="sortEtfListBy('buy_ret')">Ret.C</span><span data-col="sell_ret" style="text-align:right" title="Retorno promedio por señal de VENTA (backtest 5A, neto de costes)" onclick="sortEtfListBy('sell_ret')">Ret.V</span>
     <span class="sep" data-col="beta" style="text-align:right" title="Beta propio (12 meses, retornos diarios vs SPY): cuanto amplifica los movimientos del mercado. 1 = igual que el SPY, ~3 = apalancado x3, negativo = inverso. Clave en ETFs apalancados e inversos. Debajo: fuerza relativa 30d vs SPY" onclick="sortEtfListBy('beta')">Beta/RS</span>
     <span data-col="rvol" style="text-align:right" title="Volumen relativo: volumen de la ultima rueda vs su promedio de 20 ruedas (el dia en curso se proyecta por la fraccion de sesion transcurrida). 1x = normal, >1.5x = actividad inusual, >2.5x = movimiento con conviccion" onclick="sortEtfListBy('rvol')">RVOL</span>
     <span class="sep" data-col="analyst" style="text-align:right" title="Consenso de analistas de Wall Street (los ETFs no suelen tener cobertura y muestran ---)" onclick="sortEtfListBy('analyst')">Analistas</span>
@@ -2613,7 +2643,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <!-- TAB: MI CARTERA -->
 <div id="tab-portfolio" class="tab-content">
 <div class="portfolio-section" id="portfolio-section">
-  <div class="port-title"><em>MI CARTERA</em> &mdash; Posiciones & Analisis</div>
+  <div class="port-title"><em>MI CARTERA</em> &mdash; Posiciones & Análisis</div>
   <div id="port-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Cargando cartera... los datos se actualizan con el escaner.</div></div>
   <div id="port-content" style="display:none">
     <!-- Summary cards -->
@@ -2630,9 +2660,9 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <div class="port-verdicts-grid" id="port-verdicts"></div>
     </div>
 
-    <!-- Analisis profundo por posicion (accordions estilo Top 3 Pick) -->
+    <!-- Análisis profundo por posicion (accordions estilo Top 3 Pick) -->
     <div class="port-analysis">
-      <div class="port-analysis-title">Analisis detallado por posicion</div>
+      <div class="port-analysis-title">Análisis detallado por posicion</div>
       <div id="port-analysis-list"></div>
     </div>
 
@@ -2679,7 +2709,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <!-- TAB: TRADES HISTORICOS -->
 <div id="tab-trades" class="tab-content">
 <div class="th-section" id="trades-section">
-  <div class="th-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span><em>TRADES HISTORICOS</em> &mdash; Analisis de Operaciones Cerradas</span><button id="th-refresh-btn" onclick="refreshTradesFromFlex()" style="font-size:12px;padding:4px 14px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:5px" title="Actualizar desde IB Flex Query">&#x21bb; Actualizar desde IB</button><span id="th-refresh-status" style="font-size:11px;color:var(--muted)"></span></div>
+  <div class="th-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span><em>TRADES HISTORICOS</em> &mdash; Análisis de Operaciones Cerradas</span><button id="th-refresh-btn" onclick="refreshTradesFromFlex()" style="font-size:12px;padding:4px 14px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:5px" title="Actualizar desde IB Flex Query">&#x21bb; Actualizar desde IB</button><span id="th-refresh-status" style="font-size:11px;color:var(--muted)"></span></div>
   <div id="th-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Cargando trades historicos...</div></div>
   <div id="th-content" style="display:none">
     <div class="th-summary" id="th-summary"></div>
@@ -2861,7 +2891,7 @@ function renderPortfolio(d){
     for(let a of d.alerts){
       let jump='';
       if(a.symbol){
-        jump='<button class="port-alert-jump" onclick="scrollToPortPosition(\''+a.symbol+'\')">Ver analisis</button>';
+        jump='<button class="port-alert-jump" onclick="scrollToPortPosition(\''+a.symbol+'\')">Ver análisis</button>';
       }
       let priceHtml=(a.price!=null&&a.price>0)?'<span class="port-alert-price">$'+a.price.toFixed(2)+'</span>':'';
       let action=a.action||a.level||'';
@@ -2929,7 +2959,7 @@ function renderPortfolio(d){
   }
   document.getElementById('port-verdicts').innerHTML=vHtml;
 
-  // Analisis profundo por posicion (accordions estilo Top 3 Pick)
+  // Análisis profundo por posicion (accordions estilo Top 3 Pick)
   renderPortAnalysisList(positions);
 }
 
@@ -2999,17 +3029,17 @@ function renderPortMetrics(m,positions){
     html+='<span class="port-metric-sub">Promedio ponderado</span>';
     html+='</div>';
   }
-  // R/R promedio (solo si hay senales activas)
+  // R/R promedio (solo si hay señales activas)
   if(m.risk_reward!=null){
     html+='<div class="port-metric">';
-    html+='<span class="port-metric-lab">R/R senales</span>';
+    html+='<span class="port-metric-lab">R/R señales</span>';
     html+='<span class="port-metric-val">'+m.risk_reward.toFixed(1)+':1</span>';
     html+='<span class="port-metric-sub">Solo posiciones con BUY/SELL</span>';
     html+='</div>';
   }
-  // Distribucion de senales
+  // Distribucion de señales
   html+='<div class="port-metric">';
-  html+='<span class="port-metric-lab">Senales activas</span>';
+  html+='<span class="port-metric-lab">Señales activas</span>';
   html+='<div class="port-metric-signals">';
   if(sc.buy>0)html+='<span class="port-metric-sig buy">'+sc.buy+' BUY</span>';
   if(sc.sell>0)html+='<span class="port-metric-sig sell">'+sc.sell+' SELL</span>';
@@ -3197,8 +3227,10 @@ function renderPortAnalysisList(positions){
       let tSign=sig==='SELL'?'-':'+';
       let tPct=rec.target_pct?(' ('+tSign+Math.abs(rec.target_pct).toFixed(0)+'%)'):'';
       html+='<div class="rec-lr"><span class="rec-ll">'+(sig==='SELL'?'Obj. (baja)':'Target')+'</span><span class="rec-lv lv-target">$'+rec.target.toFixed(2)+tPct+'</span></div>';
+      html+=recWhy(_objWhy(rec));
     }
-    if(rec.stop_loss)html+='<div class="rec-lr"><span class="rec-ll">Stop Loss sug.</span><span class="rec-lv lv-stop">$'+rec.stop_loss.toFixed(2)+'</span></div>';
+    if(rec.stop_loss){html+='<div class="rec-lr"><span class="rec-ll">Stop Loss sug.</span><span class="rec-lv lv-stop">$'+rec.stop_loss.toFixed(2)+'</span></div>';
+      html+=recWhy(rec.stop_basis?('Ubicado '+rec.stop_basis+' — si se pierde, la tesis se invalida'):'');}
     if(p.stop_loss)html+='<div class="rec-lr"><span class="rec-ll">Stop IB activo</span><span class="rec-lv" style="color:#c22436">$'+p.stop_loss.toFixed(2)+'</span></div>';
     if(p.take_profit)html+='<div class="rec-lr"><span class="rec-ll">Take-Profit IB</span><span class="rec-lv" style="color:#0b7a4b">$'+p.take_profit.toFixed(2)+'</span></div>';
     if(rec.risk_reward)html+='<div class="rec-lr"><span class="rec-ll">R/R</span><span class="rec-lv lv-rr">'+rec.risk_reward.toFixed(1)+':1</span></div>';
@@ -3209,7 +3241,7 @@ function renderPortAnalysisList(positions){
     html+='</div>'; // end 2col
 
     // Rationale
-    html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';
+    html+='<div class="rec-rat"><div class="rec-rt">Detalle del Análisis</div>';
     if(rec.rationale&&rec.rationale.length>0){for(let l of rec.rationale)html+='<div class="rec-ri">'+l+'</div>';}
     html+='</div>';
 
@@ -3308,13 +3340,13 @@ function fcond(n,r){
 }
 function cc(n){return"cond cond-"+n;}
 function fconf(val,nSignals){
-  // "---" SOLO cuando no hubo senales historicas que backtestear.
+  // "---" SOLO cuando no hubo señales historicas que backtestear.
   // Confianza 0 es un resultado real (edge no significativo) y se muestra como 0.
-  if(nSignals!=null&&nSignals<=0)return'<span class="iv v-na" title="Sin senales historicas de este setup en 5A — nada que backtestear">---</span>';
+  if(nSignals!=null&&nSignals<=0)return'<span class="iv v-na" title="Sin señales historicas de este setup en 5A — nada que backtestear">---</span>';
   if(val==null)return'<span class="iv v-na" title="Backtest no disponible">---</span>';
   let col=val>=60?'var(--buy)':(val>=30?'var(--hold)':'var(--sell)');
-  let t='Confianza calibrada del backtest 5A: '+val.toFixed(0)+'/100\n(significancia estadistica del edge x tamano de muestra)';
-  if(val<=0)t='Confianza 0/100 — hubo senales historicas'+(nSignals?' ('+nSignals+')':'')+' pero su edge no es estadisticamente significativo (o es negativo)';
+  let t='Confianza calibrada del backtest 5A: '+val.toFixed(0)+'/100\n(significancia estadística del edge x tamaño de muestra)';
+  if(val<=0)t='Confianza 0/100 — hubo señales historicas'+(nSignals?' ('+nSignals+')':'')+' pero su edge no es estadisticamente significativo (o es negativo)';
   return'<span class="conf-cell" title="'+t+'"><b style="color:'+col+'">'+val.toFixed(0)+'</b><i class="conf-bar"><u style="width:'+Math.max(2,Math.min(100,val))+'%;background:'+col+'"></u></i></span>';
 }
 function fret(val,tip){
@@ -3329,7 +3361,7 @@ function fbeta(r){
   let e=r&&r.ext?r.ext:null;
   if(!e||e.beta==null)return _extNA('Beta en calculo o sin datos suficientes (minimo 60 ruedas superpuestas con SPY). Se actualiza en segundo plano cada 15 min');
   let b=e.beta;
-  let col='var(--muted)',regime='acompana al mercado';
+  let col='var(--muted)',regime='acompaña al mercado';
   if(b<0){col='var(--sell)';regime='INVERSO: se mueve al reves del mercado';}
   else if(b<0.5){col='#2563eb';regime='defensivo: amortigua los movimientos del mercado';}
   else if(b>=2){col='var(--sell)';regime='muy agresivo / apalancado: amplifica fuerte los movimientos';}
@@ -3377,14 +3409,14 @@ function fanalyst(r){
     if(up!=null)t+=' — '+(up>=0?'+':'')+up.toFixed(0)+'% desde el precio actual';
     t+='.';
   }
-  t+='\nOjo: los objetivos de analistas suelen ajustarse DESPUES de los movimientos, no antes. Usalo como contrapunto de la senal tecnica, no como confirmacion.';
+  t+='\nOjo: los objetivos de analistas suelen ajustarse DESPUES de los movimientos, no antes. Usalo como contrapunto de la señal tecnica, no como confirmacion.';
   return'<span class="ext2" title="'+t.replace(/"/g,'&quot;')+'">'+(rec?'<b class="wst-rec" style="color:'+recCol+'">'+rec+'</b>':'<b>--</b>')+sub+'</span>';
 }
 function fins(r){
   let e=r&&r.ext?r.ext:null;
   if(!e||(e.ins_buys==null&&e.ins_sells==null))return _extNA('Sin transacciones de insiders en 90 dias, no aplica (ETFs) o dato en carga (1 vez al dia)');
   let b=e.ins_buys||0,s=e.ins_sells||0,net=b-s;
-  let read=net>0?'los directivos estan COMPRANDO su propia accion con plata propia: senal de confianza en el negocio':(net<0?'los directivos estan VENDIENDO: una venta aislada puede ser diversificacion o impuestos, pero muchas juntas es senal de cautela':'sin sesgo claro entre compras y ventas');
+  let read=net>0?'los directivos estan COMPRANDO su propia accion con plata propia: señal de confianza en el negocio':(net<0?'los directivos estan VENDIENDO: una venta aislada puede ser diversificacion o impuestos, pero muchas juntas es señal de cautela':'sin sesgo claro entre compras y ventas');
   let t='INSIDERS (90 dias): '+b+' compras / '+s+' ventas reportadas a la SEC.\n'+read+'.';
   if(e.ins_last&&e.ins_last.length){t+='\n\nUltimas:\n- '+e.ins_last.join('\n- ');}
   return'<span class="ext-ins" title="'+t.replace(/"/g,'&quot;')+'"><span style="color:var(--buy)">&#8593;'+b+'</span><span style="color:var(--sell)">&#8595;'+s+'</span></span>';
@@ -3580,6 +3612,40 @@ function _scHist(times,arr,posC,negC){
   return out;
 }
 
+/* Primitive: bandas horizontales sombreadas (zonas de sobrecompra/sobreventa).
+   LW no soporta bandas nativas; se dibujan sobre el canvas del panel, detrás de
+   la serie. bands = [{from, to, color}] en precio. */
+function _scZoneBands(bands){
+  let _series=null;
+  return {
+    attached(p){_series=p.series;},
+    detached(){_series=null;},
+    updateAllViews(){},
+    paneViews(){
+      return [{
+        zOrder(){return 'bottom';},
+        renderer(){
+          return {draw(target){
+            if(!_series)return;
+            target.useBitmapCoordinateSpace(function(scope){
+              let ctx=scope.context;
+              for(let b of bands){
+                let y1=_series.priceToCoordinate(b.from);
+                let y2=_series.priceToCoordinate(b.to);
+                if(y1==null||y2==null)continue;
+                let top=Math.min(y1,y2)*scope.verticalPixelRatio;
+                let h=Math.abs(y2-y1)*scope.verticalPixelRatio;
+                ctx.fillStyle=b.color;
+                ctx.fillRect(0,top,scope.bitmapSize.width,h);
+              }
+            });
+          }};
+        }
+      }];
+    }
+  };
+}
+
 function _scChart(el,h,timeVis,isBottom){
   return LightweightCharts.createChart(el,{
     width:el.clientWidth||600,height:h,
@@ -3699,6 +3765,7 @@ function scBuild(key,data,decorate,heights){
     } else if(p.n==='macd'){
       let hist=chart.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
       hist.setData(_scHist(times,data.macd.hist,'#0b7a4bcc','#c22436cc'));
+      hist.createPriceLine({price:0,color:'#00000033',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false});
       let lM=chart.addLineSeries({color:'#0e7490',lineWidth:1.5,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});lM.setData(_scLine(times,data.macd.macd));
       let lS=chart.addLineSeries({color:'#c2570b',lineWidth:1.5,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});lS.setData(_scLine(times,data.macd.signal));
       primary=hist;valAt=i=>data.macd.hist[i];
@@ -3707,15 +3774,18 @@ function scBuild(key,data,decorate,heights){
       let anchor=chart.addLineSeries({color:'rgba(0,0,0,0)',lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
       anchor.setData([{time:times[0],value:0},{time:times[times.length-1],value:100}]);
       let l=chart.addLineSeries({color:'#7c3aed',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+      // Zonas sombreadas: sobreventa (<30, verde) y sobrecompra (>70, roja)
+      try{l.attachPrimitive(_scZoneBands([{from:0,to:30,color:'rgba(11,122,75,0.11)'},{from:70,to:100,color:'rgba(194,36,54,0.11)'}]));}catch(e){}
       l.setData(_scLine(times,data.rsi));
-      l.createPriceLine({price:70,color:'#c2243666',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'70'});
-      l.createPriceLine({price:30,color:'#0b7a4b66',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'30'});
+      l.createPriceLine({price:70,color:'#c2243677',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'70'});
+      l.createPriceLine({price:30,color:'#0b7a4b77',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'30'});
       primary=l;valAt=i=>data.rsi[i];
       fmt=i=>{let j=(i!=null)?i:times.length-1;let v=data.rsi[j];let col=(v==null)?'#888':(v>=70?'#c22436':(v<=30?'#0b7a4b':'#7c3aed'));return _scRi('RSI',v,col);};
     } else { // koncorde
       let kd=data.koncorde;
       let hMar=chart.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
       hMar.setData(_scHist(times,kd.marron,'rgba(180,83,9,0.55)','rgba(180,83,9,0.38)'));
+      hMar.createPriceLine({price:0,color:'#00000033',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false});
       let hVer=chart.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
       hVer.setData(_scHist(times,kd.verde,'rgba(11,122,75,0.60)','rgba(11,122,75,0.42)'));
       let lA=chart.addLineSeries({color:'#2563eb',lineWidth:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});lA.setData(_scLine(times,kd.azul));
@@ -3814,6 +3884,13 @@ function fmtMktCap(v){if(v==null)return'N/A';if(v>=1e12)return'$'+(v/1e12).toFix
 // Arma la fila de research (analistas+earnings | insiders | fundamentales)
 // omitiendo los paneles vacios. Los ETFs no traen analistas/insiders, asi que
 // esos recuadros ya no quedan grises y vacios; la grilla auto-fit se reacomoda.
+function recWhy(t){return t?'<div class="rec-why">'+t+'</div>':'';}
+function _objWhy(r){
+  let parts=[];
+  if(r.target_basis)parts.push(r.target_basis);
+  if(r.expected_move_pct!=null)parts.push('mov. esperado ~'+r.expected_move_pct+'%');
+  return parts.join(' · ');
+}
 function researchRow(fund,price){
   let c1=renderRecAnalystTargets(fund,price)+renderRecEarnings(fund);
   let c2=renderRecInsiderTrades(fund);
@@ -4026,11 +4103,11 @@ function renderTop3(top3){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la senal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + senal activa (5), menos penalizacion contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
-    html+='<span class="rec-sm" title="Fuerza de la senal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la señal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + señal activa (5), menos penalización contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Fuerza de la señal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     let cf=r.confidence!=null?r.confidence:null;
     let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
-    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadistica del edge x tamano de muestra. 0 = hubo senales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
+    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadística del edge x tamaño de muestra. 0 = hubo señales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
     html+='<span class="rec-sm" title="Win rate historico de este setup (backtest 5A, neto de costes)"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
     html+='<span class="rec-sm" title="Riesgo/beneficio: ganancia esperada al objetivo vs perdida al stop"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
     html+='</span>';
@@ -4042,7 +4119,7 @@ function renderTop3(top3){
     // Thesis (prominent, first thing in body)
     if(r.thesis){
       html+='<div class="rec-thesis">';
-      html+='<div class="rec-thesis-title">Tesis de Inversion</div>';
+      html+='<div class="rec-thesis-title">Tesis de Inversión</div>';
       html+='<div class="rec-thesis-text">'+r.thesis+'</div>';
       html+='<div class="rec-thesis-meta">';
       if(r.horizon){
@@ -4075,12 +4152,16 @@ function renderTop3(top3){
     html+='</div>';
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
+    html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
     let tSign=r.signal==='SELL'?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
     html+='<div class="rec-lr"><span class="rec-ll">'+(r.signal==='SELL'?'Obj. (baja)':'Objetivo')+'</span><span class="rec-lv lv-target">$'+r.target.toFixed(2)+tPct+'</span></div>';
+    html+=recWhy(_objWhy(r));
     html+='<div class="rec-lr"><span class="rec-ll">Stop Loss</span><span class="rec-lv lv-stop">$'+r.stop_loss.toFixed(2)+'</span></div>';
+    html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+' — si se pierde, la tesis se invalida'):'');
     html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
-    if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';}
+    if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
+      html+=recWhy('Estimado por volatilidad (ATR·√t) para recorrer la distancia al objetivo');}
     html+='</div>';
     // Research: analistas/insiders/fundamentales (apilados en la columna derecha)
     html+=researchRow(r.fundamentals||{},r.price);
@@ -4088,7 +4169,7 @@ function renderTop3(top3){
     html+='</div>'; // end 2col
 
     // Rationale
-    html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';
+    html+='<div class="rec-rat"><div class="rec-rt">Detalle del Análisis</div>';
     if(r.rationale&&r.rationale.length>0){for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';}
     html+='</div>';
     // Score bar
@@ -4296,8 +4377,8 @@ function update(){
         fv(km,r.konc_ok,'Koncorde marron (manos fuertes) vs su media\n'+(r.konc_detail||''))+
         fcond(cond,r)+
         fconf(r.confidence,(r.buy_count||0)+(r.sell_count||0))+
-        fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
-        fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
+        fret(r.buy_avg_return,'Retorno promedio por señal de COMPRA (backtest 5A, neto de costes)')+
+        fret(r.sell_avg_return,'Retorno promedio por señal de VENTA (backtest 5A, neto de costes)')+
         fbeta(r)+frvol(r)+
         fanalyst(r)+fins(r)+fshort(r)+
         trendSparkCell(r)+
@@ -4324,7 +4405,7 @@ function update(){
         '<div class="cond-line"><span class="cond-label" style="color:#b45309">Koncorde</span><span class="'+(r.konc_ok?'v-ok':'v-no')+'">'+(r.konc_detail||"")+'</span></div>'+
         '<div class="bt-line">'+
         '<b>Backtest 5Y</b> &nbsp; Confianza: '+(r.confidence!=null?'<span class="'+(r.confidence>=60?'v-ok':r.confidence>=30?'v-warn':'v-no')+'">'+r.confidence.toFixed(0)+'%</span>':'N/A')+
-        ' &nbsp;&bull;&nbsp; Senales: '+(r.buy_count||0)+'B / '+(r.sell_count||0)+'S'+
+        ' &nbsp;&bull;&nbsp; Señales: '+(r.buy_count||0)+'B / '+(r.sell_count||0)+'S'+
         ' &nbsp;&bull;&nbsp; Ret.Buy: '+(r.buy_avg_return!=null?'<span class="'+(r.buy_avg_return>=0?'v-ok':'v-no')+'">'+(r.buy_avg_return>=0?'+':'')+r.buy_avg_return.toFixed(1)+'%</span>':'N/A')+
         ' &nbsp;&bull;&nbsp; Ret.Sell: '+(r.sell_avg_return!=null?'<span class="'+(r.sell_avg_return>=0?'v-ok':'v-no')+'">'+(r.sell_avg_return>=0?'+':'')+r.sell_avg_return.toFixed(1)+'%</span>':'N/A')+
         '</div>'+
@@ -4440,7 +4521,7 @@ async function loadPulse(){
     }
     if(d.breadth!=null){
       h+='<span class="pulse-chip" title="Amplitud de mercado: '+d.breadth+'% alcista'
-        +'\nDe los simbolos analizados por el scanner (acciones + ETFs),\nel '+d.breadth+'% tiene senal o sesgo de compra y el '+(100-d.breadth)+'% de venta.'
+        +'\nDe los simbolos analizados por el scanner (acciones + ETFs),\nel '+d.breadth+'% tiene señal o sesgo de compra y el '+(100-d.breadth)+'% de venta.'
         +'\n>50% = mas oportunidades alcistas que bajistas. Los extremos\n(>80% o <20%) suelen marcar euforia o capitulacion.">Amplitud'
         +breadthSvg(d.breadth)+'<b>'+d.breadth+'%</b></span>';
     }
@@ -4613,8 +4694,8 @@ function updateEtf(){
         fv(km,r.konc_ok,'Koncorde marron (manos fuertes) vs su media\n'+(r.konc_detail||''))+
         fcond(cond,r)+
         fconf(r.confidence,(r.buy_count||0)+(r.sell_count||0))+
-        fret(r.buy_avg_return,'Retorno promedio por senal de COMPRA (backtest 5A, neto de costes)')+
-        fret(r.sell_avg_return,'Retorno promedio por senal de VENTA (backtest 5A, neto de costes)')+
+        fret(r.buy_avg_return,'Retorno promedio por señal de COMPRA (backtest 5A, neto de costes)')+
+        fret(r.sell_avg_return,'Retorno promedio por señal de VENTA (backtest 5A, neto de costes)')+
         fbeta(r)+frvol(r)+
         fanalyst(r)+fins(r)+fshort(r)+
         trendSparkCell(r)+
@@ -4638,7 +4719,7 @@ function updateEtf(){
         '<div class="cond-line"><span class="cond-label" style="color:#b45309">Koncorde</span><span class="'+(r.konc_ok?'v-ok':'v-no')+'">'+(r.konc_detail||"")+'</span></div>'+
         '<div class="bt-line">'+
         '<b>Backtest 5Y</b> &nbsp; Confianza: '+(r.confidence!=null?'<span class="'+(r.confidence>=60?'v-ok':r.confidence>=30?'v-warn':'v-no')+'">'+r.confidence.toFixed(0)+'%</span>':'N/A')+
-        ' &nbsp;&bull;&nbsp; Senales: '+(r.buy_count||0)+'B / '+(r.sell_count||0)+'S'+
+        ' &nbsp;&bull;&nbsp; Señales: '+(r.buy_count||0)+'B / '+(r.sell_count||0)+'S'+
         ' &nbsp;&bull;&nbsp; Ret.Buy: '+(r.buy_avg_return!=null?'<span class="'+(r.buy_avg_return>=0?'v-ok':'v-no')+'">'+(r.buy_avg_return>=0?'+':'')+r.buy_avg_return.toFixed(1)+'%</span>':'N/A')+
         ' &nbsp;&bull;&nbsp; Ret.Sell: '+(r.sell_avg_return!=null?'<span class="'+(r.sell_avg_return>=0?'v-ok':'v-no')+'">'+(r.sell_avg_return>=0?'+':'')+r.sell_avg_return.toFixed(1)+'%</span>':'N/A')+
         '</div>'+
@@ -4753,11 +4834,11 @@ function renderEtfTop3(top3){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la senal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + senal activa (5), menos penalizacion contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
-    html+='<span class="rec-sm" title="Fuerza de la senal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la señal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + señal activa (5), menos penalización contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Fuerza de la señal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     let cf=r.confidence!=null?r.confidence:null;
     let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
-    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadistica del edge x tamano de muestra. 0 = hubo senales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
+    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadística del edge x tamaño de muestra. 0 = hubo señales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
     html+='<span class="rec-sm" title="Win rate historico de este setup (backtest 5A, neto de costes)"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
     html+='<span class="rec-sm" title="Riesgo/beneficio: ganancia esperada al objetivo vs perdida al stop"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
     html+='</span>';
@@ -4766,7 +4847,7 @@ function renderEtfTop3(top3){
     html+='<div class="rec-body">';
     if(r.thesis){
       html+='<div class="rec-thesis">';
-      html+='<div class="rec-thesis-title">Tesis de Inversion</div>';
+      html+='<div class="rec-thesis-title">Tesis de Inversión</div>';
       html+='<div class="rec-thesis-text">'+r.thesis+'</div>';
       html+='<div class="rec-thesis-meta">';
       if(r.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+r.horizon+'</span>';
@@ -4790,19 +4871,23 @@ function renderEtfTop3(top3){
     html+='</div>';
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
+    html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
     let tSign=(sl.includes('VENTA')||sl.includes('SOBRECOMPRA'))?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
     html+='<div class="rec-lr"><span class="rec-ll">Objetivo</span><span class="rec-lv lv-target">$'+r.target.toFixed(2)+tPct+'</span></div>';
+    html+=recWhy(_objWhy(r));
     html+='<div class="rec-lr"><span class="rec-ll">Stop Loss</span><span class="rec-lv lv-stop">$'+r.stop_loss.toFixed(2)+'</span></div>';
+    html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+' — si se pierde, la tesis se invalida'):'');
     html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
-    if(r.horizon)html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
+    if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
+      html+=recWhy('Estimado por volatilidad (ATR·√t) para recorrer la distancia al objetivo');}
     html+='</div>';
     // Research: analistas/insiders/fundamentales (apilados en la columna derecha)
     html+=researchRow(r.fundamentals||{},r.price);
     html+='</div>'; // end right
     html+='</div>'; // end 2col
 
-    if(r.rationale&&r.rationale.length>0){html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';html+='</div>';}
+    if(r.rationale&&r.rationale.length>0){html+='<div class="rec-rat"><div class="rec-rt">Detalle del Análisis</div>';for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';html+='</div>';}
     html+='<div class="rec-sb"><div class="rec-sf" style="width:'+r.score+'%"></div></div>';
 
     html+='</div>';
@@ -4850,7 +4935,7 @@ function loadOptionsLab(sym){
       document.getElementById('olab-loading').style.display='none';
       if(d.error){document.getElementById('olab-status').textContent=d.error;return;}
       _olabData=d;
-      document.getElementById('olab-status').textContent='Analisis de '+sym;
+      document.getElementById('olab-status').textContent='Análisis de '+sym;
       renderOptionsLab(d);
     })
     .catch(e=>{
@@ -4872,7 +4957,7 @@ function loadOptionsLabTop(){
       document.getElementById('olab-loading').style.display='none';
       if(!d.opportunities||!d.opportunities.length){
         document.getElementById('olab-loading').style.display='';
-        document.getElementById('olab-loading').innerHTML='<div class="tab-loading-text">No hay oportunidades disponibles aun. El scanner necesita completar al menos un ciclo de analisis.</div>';
+        document.getElementById('olab-loading').innerHTML='<div class="tab-loading-text">No hay oportunidades disponibles aun. El scanner necesita completar al menos un ciclo de análisis.</div>';
         return;
       }
       document.getElementById('olab-status').textContent=d.opportunities.length+' oportunidades encontradas';
@@ -5018,7 +5103,7 @@ function _labelIsBearish(label){
 
 function renderIVSection(d){
   let iv=d.iv_analysis||{};
-  let html='<div class="olab-section-title">Analisis de Volatilidad'+
+  let html='<div class="olab-section-title">Análisis de Volatilidad'+
     '<span class="olab-badge" style="background:'+(iv.iv_regime==='high'?'rgba(194,36,54,.15);color:#c22436':(iv.iv_regime==='low'?'rgba(11,122,75,.15);color:#0b7a4b':'rgba(36,86,230,.15);color:#4262d9'))+'">'+
     'IV '+(iv.iv_regime==='high'?'ALTA':(iv.iv_regime==='low'?'BAJA':'NORMAL'))+'</span></div>';
 
@@ -5028,7 +5113,7 @@ function renderIVSection(d){
     {label:'HV 30d',value:iv.hv_30?((iv.hv_30*100).toFixed(1)+'%'):'--',sub:'Volatilidad historica'},
     {label:'HV 10d',value:iv.hv_10?((iv.hv_10*100).toFixed(1)+'%'):'--',sub:'Vol. corto plazo'},
     {label:'HV 60d',value:iv.hv_60?((iv.hv_60*100).toFixed(1)+'%'):'--',sub:'Vol. largo plazo'},
-    {label:'HV Rank',value:iv.hv_rank!=null?(iv.hv_rank.toFixed(0)+'%'):'--',sub:'Percentil vs 1 ano'},
+    {label:'HV Rank',value:iv.hv_rank!=null?(iv.hv_rank.toFixed(0)+'%'):'--',sub:'Percentil vs 1 año'},
     {label:'IV/HV Ratio',value:iv.iv_vs_hv?(iv.iv_vs_hv.toFixed(2)+'x'):'--',sub:iv.iv_premium!=null?('Prima '+(iv.iv_premium>0?'+':'')+iv.iv_premium.toFixed(0)+'%'):''},
   ];
   for(let c of cards){
@@ -5053,7 +5138,7 @@ function renderIVSection(d){
 function renderBacktest(d){
   let bt=d.backtest||{};
   let outcomes=bt.outcomes||{};
-  let html='<div class="olab-section-title">Backtesting Historico <span class="olab-badge" style="background:rgba(36,86,230,.15);color:#4262d9">'+
+  let html='<div class="olab-section-title">Backtesting Histórico <span class="olab-badge" style="background:rgba(36,86,230,.15);color:#4262d9">'+
     (bt.similar_count||0)+' situaciones similares</span></div>';
 
   if(bt.current_vs_history){
@@ -5542,7 +5627,7 @@ function toggleOlabMulti(idx,sym){
       '</tr>';
     }
     html+='</tbody></table>';
-    html+='<div style="margin-top:8px"><button onclick="switchTab(\'optionslab\');loadOptionsLab(\''+d.symbol+'\')" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:5px;font-weight:700;font-size:11px;cursor:pointer">Ver analisis completo</button></div>';
+    html+='<div style="margin-top:8px"><button onclick="switchTab(\'optionslab\');loadOptionsLab(\''+d.symbol+'\')" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:5px;font-weight:700;font-size:11px;cursor:pointer">Ver análisis completo</button></div>';
     html+='</div>';
 
     body.innerHTML=html;
@@ -5789,7 +5874,7 @@ function toggleThTrade(idx){
     if(!trade)return;
     _thCharts[idx]={loading:true};
     let candleEl=document.getElementById('th-candle-'+idx);
-    if(candleEl)candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;padding:40px">Cargando grafico y analisis...</div>';
+    if(candleEl)candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;padding:40px">Cargando grafico y análisis...</div>';
 
     fetch('/api/trades-history/chart/'+encodeURIComponent(trade.id)+'?symbol='+trade.symbol+'&entry='+trade.entry_date+'&exit='+trade.exit_date)
       .then(r=>r.json())
@@ -5863,12 +5948,12 @@ function _renderThTradeChart(idx,trade,chart){
       else if(dur>60)lessons.push('Posicion mantenida '+dur+' dias — paciencia recompensada.');
     }else{
       if(pnl_pct<-20)lessons.push('Perdida significativa ('+pnl_pct.toFixed(1)+'%). Revisar si el stop loss fue respetado.');
-      else if(pnl_pct<-10)lessons.push('Perdida considerable ('+pnl_pct.toFixed(1)+'%). Evaluar si las senales de salida se activaron a tiempo.');
+      else if(pnl_pct<-10)lessons.push('Perdida considerable ('+pnl_pct.toFixed(1)+'%). Evaluar si las señales de salida se activaron a tiempo.');
       else lessons.push('Perdida controlada ('+pnl_pct.toFixed(1)+'%).');
       if(trade.type!=='STK'&&pnl_pct<=-90)lessons.push('Opcion expiro sin valor — riesgo inherente de opciones.');
     }
     if(lessons.length>0){
-      lesEl.innerHTML='<div class="th-lessons-box"><div class="th-les-label">Analisis del Trade</div><div class="th-les-text">'+lessons.join(' ')+'</div></div>';
+      lesEl.innerHTML='<div class="th-lessons-box"><div class="th-les-label">Análisis del Trade</div><div class="th-les-text">'+lessons.join(' ')+'</div></div>';
     }
   }
 }
@@ -6222,7 +6307,7 @@ def api_bars(symbol, period):
 
 def _compute_position_trend(data):
     """Devuelve 'up' | 'down' | 'flat' segun momentum de MACD/RSI/Koncorde.
-    Base para tendencia hacia BUY/SELL cuando la senal esta en HOLD."""
+    Base para tendencia hacia BUY/SELL cuando la señal esta en HOLD."""
     try:
         chart = data.get("chart") or {}
         macd = chart.get("macd") or {}
@@ -6264,7 +6349,7 @@ def _compute_position_trend(data):
 def _compute_position_verdict(data, position, levels=None):
     """Veredicto multi-factor que replica los mismos indicadores del escaner:
     MACD (histograma + slope), RSI (nivel + slope), Koncorde (marron vs media,
-    flujo institucional azul), medias moviles (precio vs SMA200/50/20, golden/
+    flujo institucional azul), medias móviles (precio vs SMA200/50/20, golden/
     death cross), pisos/techos horizontales (via target_basis), y backtest 5Y.
     Cada factor aporta a un puntaje bull o bear ponderado; el veredicto se
     combina con la situacion de la posicion (costo, P&L, distancia al stop IB
@@ -6308,28 +6393,28 @@ def _compute_position_verdict(data, position, levels=None):
         factors.append({"name": name, "detail": detail, "side": side, "weight": w})
         return w
 
-    # 1) Senal principal (peso 25) — mismo criterio que el escaner
+    # 1) Señal principal (peso 25) — mismo criterio que el escaner
     if sig == "BUY":
-        bull += _f("Senal tecnica", f"COMPRA activa 3/3 (fuerza {strength:.1f})", "bull", 25)
+        bull += _f("Señal tecnica", f"COMPRA activa 3/3 (fuerza {strength:.1f})", "bull", 25)
     elif sig == "SELL":
-        bear += _f("Senal tecnica", f"VENTA activa 3/3 (fuerza {strength:.1f})", "bear", 25)
+        bear += _f("Señal tecnica", f"VENTA activa 3/3 (fuerza {strength:.1f})", "bear", 25)
     else:
         # HOLD: parcial segun signal_label
         label = sig_label.upper()
         if "VENTA INMINENTE" in label:
-            bear += _f("Senal tecnica", f"VENTA INMINENTE 2/3 (fuerza {strength:.1f})", "bear", 18)
+            bear += _f("Señal tecnica", f"VENTA INMINENTE 2/3 (fuerza {strength:.1f})", "bear", 18)
         elif "COMPRA INMINENTE" in label:
-            bull += _f("Senal tecnica", f"COMPRA INMINENTE 2/3 (fuerza {strength:.1f})", "bull", 18)
+            bull += _f("Señal tecnica", f"COMPRA INMINENTE 2/3 (fuerza {strength:.1f})", "bull", 18)
         elif "VIRANDO A COMPRA" in label:
-            bull += _f("Senal tecnica", f"virando a COMPRA ({conds}/3)", "bull", 8)
+            bull += _f("Señal tecnica", f"virando a COMPRA ({conds}/3)", "bull", 8)
         elif "VIRANDO A VENTA" in label:
-            bear += _f("Senal tecnica", f"virando a VENTA ({conds}/3)", "bear", 8)
+            bear += _f("Señal tecnica", f"virando a VENTA ({conds}/3)", "bear", 8)
         elif "SOBREVENTA" in label:
-            bull += _f("Senal tecnica", "zona de sobreventa", "bull", 5)
+            bull += _f("Señal tecnica", "zona de sobreventa", "bull", 5)
         elif "SOBRECOMPRA" in label:
-            bear += _f("Senal tecnica", "zona de sobrecompra", "bear", 5)
+            bear += _f("Señal tecnica", "zona de sobrecompra", "bear", 5)
         else:
-            _f("Senal tecnica", "neutral, sin senales", "neutral", 0)
+            _f("Señal tecnica", "neutral, sin señales", "neutral", 0)
 
     # 2) MACD histograma + slope (peso 12)
     macd_series = (chart.get("macd") or {}).get("hist") or []
@@ -6458,13 +6543,13 @@ def _compute_position_verdict(data, position, levels=None):
     conf = bt.get("confidence") or 0
     if conf >= 60 and wr >= 0.55 and cnt >= 5:
         if is_bearish:
-            bear += _f("Backtest 5Y", f"WR {wr*100:.0f}% con confianza {conf:.0f}% ({cnt} senales bajistas)", "bear", 10)
+            bear += _f("Backtest 5Y", f"WR {wr*100:.0f}% con confianza {conf:.0f}% ({cnt} señales bajistas)", "bear", 10)
         else:
-            bull += _f("Backtest 5Y", f"WR {wr*100:.0f}% con confianza {conf:.0f}% ({cnt} senales alcistas)", "bull", 10)
+            bull += _f("Backtest 5Y", f"WR {wr*100:.0f}% con confianza {conf:.0f}% ({cnt} señales alcistas)", "bull", 10)
     elif conf >= 30:
-        _f("Backtest 5Y", f"WR {wr*100:.0f}%, confianza {conf:.0f}% (modesta, {cnt} senales)", "neutral", 3)
+        _f("Backtest 5Y", f"WR {wr*100:.0f}%, confianza {conf:.0f}% (modesta, {cnt} señales)", "neutral", 3)
     elif cnt > 0:
-        _f("Backtest 5Y", f"muestra chica ({cnt} senales), confianza baja", "neutral", 0)
+        _f("Backtest 5Y", f"muestra chica ({cnt} señales), confianza baja", "neutral", 0)
 
     # === Derivar trend del score ===
     if bull > bear + 12:
@@ -6532,17 +6617,17 @@ def _compute_position_verdict(data, position, levels=None):
             headline = "HOLD — RECUPERANDO"
         else:
             headline = "HOLD (alcista)"
-    # Perdida grande sin senal que la respalde
+    # Perdida grande sin señal que la respalde
     elif pnl_pct <= -15 and bull < 30:
         verdict = "REDUCE"; urgency = "medium"
         headline = "REVISAR — PERDIDA GRANDE"
         override_reason = (f"Perdida acumulada {pnl_pct:.1f}% ({_pnl_text()}) sin score alcista que la respalde "
                           f"(bull {bull:.0f} vs bear {bear:.0f}). Revisar tesis y ajustar stop.")
-    # Ganancia grande sin senal fresca
+    # Ganancia grande sin señal fresca
     elif pnl_pct >= 20 and trend == "flat":
         verdict = "HOLD"; urgency = "low"
         headline = "HOLD — SUBIR STOP"
-        override_reason = (f"Estas +{pnl_pct:.0f}% ({_pnl_text()}) sin senal fresca. "
+        override_reason = (f"Estas +{pnl_pct:.0f}% ({_pnl_text()}) sin señal fresca. "
                           f"Considerar mover el stop al breakeven o trailing stop.")
     else:
         verdict = "HOLD"; urgency = "low"
@@ -6578,7 +6663,7 @@ def _compute_position_verdict(data, position, levels=None):
 
 
 def _generate_position_recommendation(sym, data, position, levels, entry_fills, verdict):
-    """Narrativa integral de la posicion, estilo Tesis de Inversion del escaner.
+    """Narrativa integral de la posicion, estilo Tesis de Inversión del escaner.
 
     4 partes en un solo texto coherente (separadas por \n\n):
       1. Tu posicion — cuando compraste (del primer fill), a que precio,
@@ -6649,12 +6734,12 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
         met, missing = [], []
     dir_word = "venta" if is_bearish else "compra"
     if sig in ("BUY", "SELL"):
-        p2 = (f"El sistema marca senal COMPLETA de {dir_word} ({sig_label}, "
+        p2 = (f"El sistema marca señal COMPLETA de {dir_word} ({sig_label}, "
               f"fuerza {data.get('strength', 0):.1f}/5.1): " + "; ".join(met) + ".")
     elif met:
         p2 = f"El cuadro esta en {sig_label}: ya cumple " + " y ".join(met)
         if missing:
-            p2 += f". Para confirmar la senal de {dir_word} falta: " + "; ".join(missing)
+            p2 += f". Para confirmar la señal de {dir_word} falta: " + "; ".join(missing)
         p2 += "."
     else:
         p2 = f"El cuadro tecnico esta {sig_label.lower()}, sin condiciones del sistema activas en ninguna direccion."
@@ -6679,7 +6764,7 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
         p3_bits.append(f"el proximo nivel tecnico relevante esta en ${target:.2f} "
                        f"({abs(target_pct):.0f}% {tdir}" + (f", {lv.get('target_basis')}" if lv.get("target_basis") else "") + ")")
     if stop_sug:
-        p3_bits.append(f"el piso de invalidacion del analisis en ${stop_sug:.2f}")
+        p3_bits.append(f"el piso de invalidación del análisis en ${stop_sug:.2f}")
     if sl_ib:
         p3_bits.append(f"tu stop activo en IB esta en ${sl_ib:.2f}")
     if p3_bits:
@@ -6695,16 +6780,16 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
                   f"ahora marca venta completa, y estas {pnl_pct:+.0f}% arriba — asegurar la ganancia aca "
                   f"es coherente con la estrategia.")
         elif pnl_pct <= -5:
-            p4 = (f"Recomendacion: VENDER. La senal de venta esta completa y la posicion ya pierde "
+            p4 = (f"Recomendacion: VENDER. La señal de venta esta completa y la posicion ya pierde "
                   f"{pnl_pct:.1f}%; sostenerla va contra el sistema. Cortar y esperar el proximo setup.")
         else:
-            p4 = (f"Recomendacion: VENDER. Senal completa de venta con la posicion casi plana "
+            p4 = (f"Recomendacion: VENDER. Señal completa de venta con la posicion casi plana "
                   f"({pnl_pct:+.1f}%) — salir ahora evita que un retroceso la convierta en perdida.")
     elif action == "ADD":
         p4 = (f"Recomendacion: SUMAR. Tu posicion tiene activo hoy el mismo setup 3/3 que el escaner "
               f"exige para una compra nueva")
         if pnl_pct < -5:
-            p4 += f", y al estar {pnl_pct:.1f}% abajo permite promediar el costo con senal a favor"
+            p4 += f", y al estar {pnl_pct:.1f}% abajo permite promediar el costo con señal a favor"
         p4 += (f". Target ${target:.2f}" if target else ".") + (f", stop sugerido ${stop_sug:.2f}." if stop_sug else ".")
     elif action == "REDUCE":
         if pnl_pct >= 10:
@@ -6714,14 +6799,14 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
         else:
             floor_ref = stop_sug or sl_ib
             p4 = (f"Recomendacion: REDUCIR. El peso de los indicadores esta del lado bajista y no hay "
-                  f"senal de compra que respalde aguantar")
+                  f"señal de compra que respalde aguantar")
             if floor_ref:
                 p4 += f"; si el precio pierde ${floor_ref:.2f}, cerrar el resto"
             p4 += "."
     else:  # HOLD
         if pnl_pct <= -12:
             p4 = (f"Recomendacion: MANTENER CON PLAN. La perdida es {pnl_pct:.1f}% pero el cuadro "
-                  f"tecnico no da senal de venta")
+                  f"tecnico no da señal de venta")
             if not is_bearish and missing:
                 p4 += f" y hay condiciones de compra formandose ({missing[0] if missing else ''})"
             floor_ref = stop_sug or sl_ib
@@ -6734,7 +6819,7 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
                 p4 = (f"Recomendacion: PREPARAR LA SALIDA. Llevas {pnl_pct:+.0f}% y el cuadro de venta "
                       f"se esta armando — solo falta {missing[0]}. Subir el stop ya "
                       f"(breakeven ${avg_cost:.2f}" + (f" o el piso de ${stop_sug:.2f}" if stop_sug else "") + ") "
-                      f"y si la senal se completa, tomar la ganancia sin dudar.")
+                      f"y si la señal se completa, tomar la ganancia sin dudar.")
             elif stop_sug:
                 p4 = (f"Recomendacion: MANTENER Y PROTEGER. Llevas {pnl_pct:+.0f}% y el cuadro no marca venta; "
                       f"subir el stop (breakeven ${avg_cost:.2f} o el piso de ${stop_sug:.2f}) deja correr la "
@@ -6747,7 +6832,7 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
             if missing and not is_bearish:
                 p4 += f"El proximo evento a vigilar es {missing[0]}"
                 if target:
-                    p4 += f"; si se completa la senal con precio cerca de ${target:.2f}, reevaluar tomar ganancias"
+                    p4 += f"; si se completa la señal con precio cerca de ${target:.2f}, reevaluar tomar ganancias"
                 p4 += "."
             elif missing and is_bearish:
                 p4 += (f"Ojo: se esta armando un cuadro de venta — falta {missing[0]}. "
@@ -6760,7 +6845,7 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
 
 
 def _build_position_deep_analysis(sym, position, n_bars=90):
-    """Enriquece una posicion abierta con el analisis completo estilo escaner
+    """Enriquece una posicion abierta con el análisis completo estilo escaner
     (charts, MACD/RSI/Koncorde, tesis, targets, fundamentales, veredicto).
 
     Retorna el dict que el frontend renderiza como card expandible.
@@ -6884,6 +6969,9 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "atr": levels.get("atr", 0),
         "target_pct": levels.get("target_pct", 0),
         "target_basis": levels.get("target_basis", ""),
+        "entry_basis": levels.get("entry_basis", ""),
+        "stop_basis": levels.get("stop_basis", ""),
+        "expected_move_pct": levels.get("expected_move_pct", None),
         "horizon": levels.get("horizon_weeks", ""),
         "thesis": thesis,
         "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
@@ -6936,7 +7024,7 @@ options_lab_lock = threading.Lock()
 
 @flask_app.route("/api/options-lab/<symbol>")
 def api_options_lab(symbol):
-    """Genera analisis completo del Options Lab para un simbolo."""
+    """Genera análisis completo del Options Lab para un simbolo."""
     symbol = symbol.upper()
 
     # Check cache (5 min TTL)
@@ -7017,10 +7105,10 @@ def api_options_lab(symbol):
 def api_options_lab_top():
     """Analiza TODAS las acciones del scanner para encontrar las mejores
     oportunidades de opciones. Rankea por una combinacion de:
-    - Fuerza de senal tecnica (del scanner)
+    - Fuerza de señal tecnica (del scanner)
     - Desalineacion de IV (opciones caras o baratas)
     - Calidad del mejor strategy score
-    Devuelve las top 10 oportunidades con analisis completo."""
+    Devuelve las top 10 oportunidades con análisis completo."""
 
     # 1. Pre-screen: score all stocks quickly for options potential
     candidates = []
@@ -7319,7 +7407,7 @@ def _generate_post_trade_analysis(trade):
         if pnl_pct < -20:
             lessons.append(f"Perdida significativa ({pnl_pct:.1f}%). Revisar si el stop loss fue respetado.")
         elif pnl_pct < -10:
-            lessons.append(f"Perdida considerable ({pnl_pct:.1f}%). Evaluar si las senales de salida se activaron a tiempo.")
+            lessons.append(f"Perdida considerable ({pnl_pct:.1f}%). Evaluar si las señales de salida se activaron a tiempo.")
         else:
             lessons.append(f"Perdida controlada ({pnl_pct:.1f}%).")
 
@@ -7745,7 +7833,7 @@ _CALIBRATION_MAX_SYMBOLS = 20   # acota latencia del fetch 5Y por yfinance
 
 def build_calibration_report():
     """Colecta 5Y de historia para el universo (watchlist + escaneados) y mide
-    la calibracion del modelo: win-rate y retorno realizados por fuerza de senal."""
+    la calibracion del modelo: win-rate y retorno realizados por fuerza de señal."""
     import calibration as _calib
 
     syms = list(dict.fromkeys(list(getattr(config, "WATCHLIST", [])) +
@@ -7867,8 +7955,8 @@ def api_market_pulse():
 
 @flask_app.route("/api/calibration")
 def api_calibration():
-    """Diagrama de calibracion: contrasta la fuerza de senal predicha contra el
-    win-rate y retorno realmente observados en 5 anos de historia del universo."""
+    """Diagrama de calibracion: contrasta la fuerza de señal predicha contra el
+    win-rate y retorno realmente observados en 5 años de historia del universo."""
     if _calibration_cache["data"] and time.time() - _calibration_cache["ts"] < _CALIBRATION_TTL:
         return Response(to_json(_calibration_cache["data"]), mimetype="application/json")
     try:
@@ -8035,7 +8123,7 @@ def main():
     else:
         print("Iniciando dashboard sin conexion a TWS (solo trades importados)...\n")
 
-    # Los loops de analisis corren siempre: con TWS usan sus historicos,
+    # Los loops de análisis corren siempre: con TWS usan sus historicos,
     # sin TWS (o con TWS colgada) caen a yfinance via fetch_historical().
     if stock_list:
         analysis_thread = threading.Thread(target=analysis_loop, daemon=True)
