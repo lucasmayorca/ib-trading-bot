@@ -1775,7 +1775,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vista Analisis - Top 100 Volumen</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -2018,6 +2017,20 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-ind-wrap{border-radius:var(--radius);overflow:hidden;border:1px solid var(--border);background:var(--card)}
 .rec-ind-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;padding:6px 10px;background:var(--glass)}
 .rec-ind-canvas{width:100%;height:190px;display:block}
+/* ===== Synced chart stack (candle + MACD + RSI + Koncorde) ===== */
+.sc-stack{display:flex;flex-direction:column;width:100%;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:var(--card);margin-bottom:14px}
+.sc-pane+.sc-pane,.sc-legend+.sc-pane{border-top:1px solid var(--border)}
+.sc-pane-hd{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:4px 10px;background:var(--glass);min-height:22px}
+.sc-pane-tt{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;white-space:nowrap}
+.sc-ro{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-ro .sc-ri{margin-left:9px}
+.sc-ro .sc-ri b{font-weight:700}
+.sc-pane-body{width:100%;position:relative}
+.sc-nodata{display:flex;align-items:center;justify-content:center;min-height:80px;color:var(--muted);font-size:12px;padding:8px;text-align:center}
+.sc-legend{display:flex;flex-wrap:wrap;gap:4px 12px;padding:5px 10px;font-size:10px;color:var(--muted);background:var(--card);align-items:center}
+.sc-legend span{display:inline-flex;align-items:center;white-space:nowrap}
+.sc-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
+.sc-info-row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px}
 .rec-rat{border-top:1px solid var(--border);padding-top:12px;margin-top:6px}
 .rec-rt{font-size:10px;font-weight:700;color:#2456e6;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
 .rec-ri{font-size:13px;color:var(--text);padding:4px 0;line-height:1.5}
@@ -2690,13 +2703,10 @@ function marketStatusText(){
   return open?'Mercado abierto':'Mercado cerrado \u2014 precios al cierre';
 }
 const REFRESH_MS=300000;
-const DAILY_BARS={'ALL':9999,'5Y':9999,'1Y':252,'3M':63,'1M':22,'1W':5,'1D':1};
-// Frecuencia de barras por ventana: ALL/5Y -> velas semanales (agregadas de
-// los diarios), 1Y/3M -> diario, 1M -> 1h, 1W -> 30min, 1D -> 15min (via /api/bars).
-// 1h para 1M (y no 4h): la sesion USA dura 6.5h, las velas de 4h quedan asimetricas.
-const INTRADAY_P={'1M':'1h','1W':'30m','1D':'15m'};
-const WEEKLY_P={'ALL':9999,'5Y':9999};   // periodo -> dias diarios a agregar en semanal
-let _data=null,_charts={},_periods={},_intradayCache={};
+// Ventanas de tiempo: ALL/5Y/1Y/3M -> velas diarias (recortadas), 1M -> 1h,
+// 1W -> 30min, 1D -> 15min (intradía via /api/bars, con indicadores). El mapeo
+// vive en el motor del stack sincronizado (SC_DAILY_BARS / SC_INTRADAY).
+let _data=null,_charts={},_periods={};
 let _activeTab='scanner';
 let _portData=null;
 let _portHistChart=null;
@@ -3024,136 +3034,47 @@ function scrollToPortPosition(sym){
 let _portAnalCharts={};
 let _portAnalPeriods={};
 
-function _portAnalPriceLines(cs,rec,avgCost){
+function _portAnalDecorate(rec,pos){
+  // Devuelve {priceLines, markers} para el panel de velas (Costo/Target/Stop + fills de compra)
+  let priceLines=[],markers=[];
   try{
-    if(avgCost!=null&&avgCost>0){
-      cs.createPriceLine({price:avgCost,color:'#2563eb',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Costo Prom.'});
-    }
-    if(rec.target){
-      cs.createPriceLine({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
-    }
-    if(rec.stop_loss){
-      cs.createPriceLine({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
-    }
+    let avgCost=pos?pos.costo_promedio:null;
+    if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Costo Prom.'});
+    if(rec.target)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
+    if(rec.stop_loss)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
   }catch(e){}
-}
-
-function _portAnalEntryMarkers(cs,rec){
-  // Dibuja una flecha azul debajo de cada vela donde el usuario compro (BUY fill)
   try{
     let fills=(rec&&rec.entry_fills)||[];
-    if(!fills.length)return;
-    // Agrupar por dia para evitar apilamiento cuando hay varios fills el mismo dia
     let byDay={};
     for(let f of fills){
-      if(!f||!f.time||!f.price)continue;
-      let d=f.time;
+      if(!f||!f.time||!f.price)continue;let d=f.time;
       if(!byDay[d]){byDay[d]={time:d,price:f.price,qty:f.qty||0,n:1};}
-      else{
-        let g=byDay[d];
-        let tot=g.qty+(f.qty||0);
-        g.price=tot>0?((g.price*g.qty)+(f.price*(f.qty||0)))/tot:f.price;
-        g.qty=tot;g.n++;
-      }
+      else{let g=byDay[d];let tot=g.qty+(f.qty||0);g.price=tot>0?((g.price*g.qty)+(f.price*(f.qty||0)))/tot:f.price;g.qty=tot;g.n++;}
     }
-    let markers=[];
-    for(let d in byDay){
-      let g=byDay[d];
-      markers.push({
-        time:g.time,
-        position:'belowBar',
-        color:'#2563eb',
-        shape:'arrowUp',
-        text:'C '+g.qty.toFixed(0)+' @ $'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':''),
-      });
-    }
+    for(let d in byDay){let g=byDay[d];markers.push({time:g.time,position:'belowBar',color:'#2563eb',shape:'arrowUp',text:'C '+g.qty.toFixed(0)+' @ $'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':'')});}
     markers.sort((a,b)=>a.time<b.time?-1:1);
-    cs.setMarkers(markers);
   }catch(e){}
+  return {priceLines:priceLines,markers:markers};
 }
 
-function _portAnalDestroy(sym){
-  let e=_portAnalCharts[sym];
-  if(!e)return;
-  try{if(e.lw)e.lw.remove();}catch(err){}
-  try{if(e.macd)e.macd.destroy();}catch(err){}
-  try{if(e.rsi)e.rsi.destroy();}catch(err){}
-  try{if(e.konc)e.konc.destroy();}catch(err){}
-  delete _portAnalCharts[sym];
-}
+function _portAnalDestroy(sym){scDestroy(_scReg['port_'+sym]);_scReg['port_'+sym]=null;delete _portAnalCharts[sym];}
 
 function renderPortAnalCharts(sym,rec,pos,period){
-  _portAnalDestroy(sym);
   if(!rec)return;
   if(!period)period=_portAnalPeriods[sym]||'1Y';
   _portAnalPeriods[sym]=period;
   let bar=document.getElementById('portanal_pb_'+sym);
   if(bar)bar.querySelectorAll('.rec-period-btn').forEach(b=>b.classList.toggle('active',b.dataset.p===period));
 
-  let e={lw:null,macd:null,rsi:null,konc:null};
-
-  // Prefer scanner cache if available (full 5Y), else use rec pre-sliced data
+  // Preferir cache del escáner (5Y completo), sino datos pre-sliceados del rec
   let fullData=(_data&&_data.results)?_data.results[sym]:null;
   let ch=fullData?fullData.chart:null;
-  let indBars=DAILY_BARS[period]||252;
+  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
-  let candleEl=document.getElementById('portanal_candle_'+sym);
-  if(candleEl){
-    candleEl.innerHTML='';
-    if(INTRADAY_P[period]){
-      let apiP=INTRADAY_P[period];
-      let cacheKey=sym+'_'+apiP;
-      if(_recIntradayCache[cacheKey]){
-        let chart=_createLW(candleEl,true);chart.applyOptions({height:340});
-        let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-        cs.setData(_recIntradayCache[cacheKey]);
-        _portAnalPriceLines(cs,rec,pos.costo_promedio);
-        chart.timeScale().fitContent();e.lw=chart;
-      }else{
-        candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:12px">Cargando '+apiP+'...</div>';
-        fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
-          _recIntradayCache[cacheKey]=d.ohlc||[];
-          if(_portAnalPeriods[sym]===period)renderPortAnalCharts(sym,rec,pos,period);
-        }).catch(err=>console.error('port intraday err:',err));
-      }
-    }else if(ch&&ch.ohlc&&ch.ohlc.length>=5){
-      let chart=_createLW(candleEl,false);chart.applyOptions({height:340});
-      let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      if(WEEKLY_P[period]){let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);cs.setData(toWeekly(src));}
-      else{let o=sl(ch.ohlc,indBars);cs.setData(o);_addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);}
-      _portAnalPriceLines(cs,rec,pos.costo_promedio);
-      _portAnalEntryMarkers(cs,rec);
-      chart.timeScale().fitContent();e.lw=chart;
-    }else if(rec.chart_ohlc&&rec.chart_ohlc.length>=5){
-      let chart=_createLW(candleEl,false);chart.applyOptions({height:340});
-      let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      cs.setData(rec.chart_ohlc);
-      let mas=rec.chart_mas||{};
-      let maColors={"sma200":"#c22436","sma100":"#c2570b","sma50":"#d4a017","sma20":"#2563eb","ema9":"#7c3aed"};
-      for(let name of["sma200","sma100","sma50","sma20","ema9"]){
-        let vals=mas[name];if(!vals||vals.length===0)continue;
-        let line=chart.addLineSeries({color:maColors[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-        let ld=[];for(let j=0;j<rec.chart_ohlc.length;j++){if(j>=vals.length||vals[j]==null)continue;ld.push({time:rec.chart_ohlc[j].time,value:vals[j]});}
-        if(ld.length>0)line.setData(ld);
-      }
-      _portAnalPriceLines(cs,rec,pos.costo_promedio);
-      _portAnalEntryMarkers(cs,rec);
-      chart.timeScale().fitContent();e.lw=chart;
-    }else{
-      candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:12px">Sin datos historicos disponibles.</div>';
-    }
-  }
-
-  let dates=ch?ch.dates:rec.chart_dates;
-  let macdData=ch?ch.macd:rec.chart_macd;
-  let rsiData=ch?ch.rsi:rec.chart_rsi;
-  let koncData=ch?ch.koncorde:rec.chart_koncorde;
-  if(dates&&dates.length>0){
-    if(macdData)e.macd=createMACDChart('portanal_macd_'+sym,dates,macdData,indBars);
-    if(rsiData&&rsiData.length>0)e.rsi=createRSIChart('portanal_rsi_'+sym,dates,rsiData,indBars);
-    if(koncData)e.konc=createKoncordeChart('portanal_konc_'+sym,dates,koncData,indBars);
-  }
-  _portAnalCharts[sym]=e;
+  scRenderStack({key:'port_'+sym,symbol:sym,chart:ch,period:period,
+    decorate:_portAnalDecorate(rec,pos),heights:{candle:320,ind:112},
+    getPeriod:()=>_portAnalPeriods[sym]});
+  _portAnalCharts[sym]=1;
 }
 
 function setPortAnalPeriod(sym,period){
@@ -3252,30 +3173,15 @@ function renderPortAnalysisList(positions){
     }
     html+='</div>';
 
-    // Candle + right panel
-    html+='<div class="rec-top-row">';
-    html+='<div class="rec-candle-wrap"><div class="rec-candle-box" id="portanal_candle_'+sym+'"></div>';
-    html+='<div class="rec-candle-legend">';
-    html+='<span><i style="background:#2563eb"></i>Costo Prom.</span>';
-    html+='<span style="color:#2563eb;font-weight:700">&#9650; Compra</span>';
-    html+='<span><i style="background:#0b7a4b"></i>Target</span>';
-    html+='<span><i style="background:#c22436"></i>Stop</span>';
-    html+='<span><i style="background:#c22436"></i>SMA200</span>';
-    html+='<span><i style="background:#c2570b"></i>SMA100</span>';
-    html+='<span><i style="background:#d4a017"></i>SMA50</span>';
-    html+='<span><i style="background:#2563eb"></i>SMA20</span>';
-    html+='<span><i style="background:#7c3aed"></i>EMA9</span>';
-    html+='</div></div>';
-
-    // Right panel
-    html+='<div class="rec-right-panel">';
-    html+='<div class="rec-metrics">';
+    // Métricas + niveles (encabezado compacto sobre el stack de gráficos)
+    html+='<div class="sc-info-row">';
+    html+='<div class="rec-metrics" style="flex:1 1 260px">';
     html+='<div class="rec-m"><span class="rec-ml">Cantidad</span><span class="rec-mv">'+(p.cantidad||0).toFixed(0)+'</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Valor</span><span class="rec-mv">$'+fmtN(p.valor_mercado||0)+'</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">P&L</span><span class="rec-mv" style="color:'+pnlCol+'">'+(pnlPct>=0?'+':'')+'$'+fmtN(Math.abs(p.pnl||0))+'</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
+    html+='<div class="rec-levels" style="flex:1 1 280px"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Costo Prom.</span><span class="rec-lv lv-entry">$'+avgCost.toFixed(2)+'</span></div>';
     html+='<div class="rec-lr"><span class="rec-ll">Precio Actual</span><span class="rec-lv">$'+curPrice.toFixed(2)+'</span></div>';
     if(rec.target){
@@ -3288,17 +3194,13 @@ function renderPortAnalysisList(positions){
     if(p.take_profit)html+='<div class="rec-lr"><span class="rec-ll">Take-Profit IB</span><span class="rec-lv" style="color:#0b7a4b">$'+p.take_profit.toFixed(2)+'</span></div>';
     if(rec.risk_reward)html+='<div class="rec-lr"><span class="rec-ll">R/R</span><span class="rec-lv lv-rr">'+rec.risk_reward.toFixed(1)+':1</span></div>';
     html+='</div>';
-    html+='</div></div>';
+    html+='</div>';
 
     // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
     html+=researchRow(rec.fundamentals||{},curPrice);
 
-    // Indicator row
-    html+='<div class="rec-ind-grid">';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">MACD (12,26,9)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="portanal_macd_'+sym+'"></canvas></div></div>';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">RSI (14)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="portanal_rsi_'+sym+'"></canvas></div></div>';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">Koncorde</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="portanal_konc_'+sym+'"></canvas></div></div>';
-    html+='</div>';
+    // Stack sincronizado: velas + MACD + RSI + Koncorde (mismo eje, crosshair común)
+    html+=scStackHTML('port_'+sym,SC_LEGEND_FULL);
 
     // Rationale
     html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';
@@ -3516,7 +3418,6 @@ function fstr(val,sig,r){
   let pct=Math.max(4,Math.min(100,val/5.1*100));
   return'<span class="str-cell" title="'+t.replace(/"/g,'&quot;')+'"><b style="color:'+col+'">'+val.toFixed(1)+'</b><i class="str-bar"><u style="width:'+pct+'%;background:'+col+'"></u></i></span>';
 }
-function sd(d){let s=String(d).replace(/-/g,"").replace(/ .*/,"");if(s.length>=8)return s.slice(6,8)+"/"+s.slice(4,6);return String(d).slice(-5);}
 function fma(mas,key,price){
   if(!mas||price==null)return'<span class="iv v-na">---</span>';
   let v=mas[key];
@@ -3633,203 +3534,251 @@ function sortListBy(col){
 }
 function sl(arr,n){if(!arr||arr.length<=n)return arr;return arr.slice(-n);}
 
-/* === WEEKLY AGGREGATION (daily -> weekly candles) === */
-function toWeekly(ohlc){
-  if(!ohlc||ohlc.length===0)return[];
-  let weeks=[],cur=null;
-  for(let b of ohlc){
-    let d=new Date(b.time+'T00:00:00');
-    let day=d.getDay();let mon=new Date(d);mon.setDate(d.getDate()-(day===0?6:day-1));
-    let wk=mon.toISOString().slice(0,10);
-    if(!cur||cur.wk!==wk){
-      if(cur)weeks.push(cur.bar);
-      cur={wk:wk,bar:{time:b.time,open:b.open,high:b.high,low:b.low,close:b.close}};
-    }else{
-      cur.bar.high=Math.max(cur.bar.high,b.high);
-      cur.bar.low=Math.min(cur.bar.low,b.low);
-      cur.bar.close=b.close;
+/* === CHART MANAGEMENT === */
+function destroyDetailCharts(idx){scDestroy(_scReg['scan_'+idx]);_scReg['scan_'+idx]=null;delete _charts[idx];}
+
+/* ========================================================================
+   SYNCED CHART STACK  (candle + MACD + RSI + Koncorde, Lightweight Charts)
+   Un solo motor reutilizable: 4 paneles apilados que comparten eje de tiempo,
+   rango visible y crosshair. Al mover el cursor sobre cualquier panel se
+   marcan los otros y se muestran los valores de cada indicador en ese instante.
+   ------------------------------------------------------------------------
+   Contrato de datos (todo index-parallel a ohlc):
+     data = {ohlc:[{time,open,high,low,close}], mas:{sma200:[],...}|null,
+             macd:{hist:[],macd:[],signal:[]}|null, rsi:[]|null,
+             koncorde:{verde:[],marron:[],azul:[],media:[]}|null, timeVis:bool}
+   ======================================================================== */
+const SC_MA_COLORS={sma200:'#c22436',sma100:'#c2570b',sma50:'#d4a017',sma20:'#2563eb',ema9:'#7c3aed'};
+const SC_MA_LEGEND='<span><i style="background:#c22436"></i>SMA200</span><span><i style="background:#c2570b"></i>SMA100</span><span><i style="background:#d4a017"></i>SMA50</span><span><i style="background:#2563eb"></i>SMA20</span><span><i style="background:#7c3aed"></i>EMA9</span>';
+const SC_LEGEND_FULL='<span><i style="background:#2563eb"></i>Costo Prom.</span><span style="color:#2563eb;font-weight:700">&#9650; Compra</span><span><i style="background:#0b7a4b"></i>Target</span><span><i style="background:#c22436"></i>Stop</span>'+SC_MA_LEGEND;
+const SC_LEGEND_REC='<span><i style="background:#2563eb"></i>Entrada</span><span><i style="background:#0b7a4b"></i>Target</span><span><i style="background:#c22436"></i>Stop</span>'+SC_MA_LEGEND;
+const SC_LEGEND_TRADE='<span style="color:#0b7a4b;font-weight:700">&#9650; BUY</span><span style="color:#c22436;font-weight:700">&#9660; SELL</span><span><i style="background:#2563eb"></i>Entrada</span><span><i style="background:#d4a017"></i>SMA50</span><span><i style="background:#2563eb"></i>SMA20</span>';
+const SC_INTRADAY={'1M':'1h','1W':'30m','1D':'15m'};
+const SC_DAILY_BARS={'ALL':99999,'5Y':1300,'1Y':252,'3M':63};
+let _scReg={};     // key -> group
+let _scIntra={};   // sym_apiP -> payload {ohlc,macd,rsi,koncorde}
+
+function _scN(x){return (x==null||isNaN(x))?'–':(+x).toFixed(2);}
+function _scRi(lab,v,col){return '<span class="sc-ri"><b style="color:'+col+'">'+lab+'</b> '+_scN(v)+'</span>';}
+
+function _scLine(times,arr){
+  let out=[];
+  for(let i=0;i<times.length;i++){let v=arr?arr[i]:null;out.push((v==null||isNaN(v))?{time:times[i]}:{time:times[i],value:v});}
+  return out;
+}
+function _scHist(times,arr,posC,negC){
+  let out=[];
+  for(let i=0;i<times.length;i++){let v=arr?arr[i]:null;
+    if(v==null||isNaN(v)){out.push({time:times[i]});}
+    else{out.push({time:times[i],value:v,color:v>=0?posC:negC});}}
+  return out;
+}
+
+function _scChart(el,h,timeVis,isBottom){
+  return LightweightCharts.createChart(el,{
+    width:el.clientWidth||600,height:h,
+    layout:{background:{color:'#ffffff'},textColor:'#6d7480',fontSize:10,fontFamily:"'Inter',system-ui,sans-serif"},
+    grid:{vertLines:{color:'#f0efe9'},horzLines:{color:'#f0efe9'}},
+    crosshair:{mode:0,
+      vertLine:{color:'#4262d977',width:1,labelBackgroundColor:'#4262d9',labelVisible:!!isBottom},
+      horzLine:{color:'#4262d977',labelBackgroundColor:'#4262d9'}},
+    timeScale:{borderColor:'#dcdad3',timeVisible:!!timeVis,visible:!!isBottom},
+    rightPriceScale:{borderColor:'#dcdad3',minimumWidth:60},
+    handleScroll:true,handleScale:true,
+  });
+}
+
+function scDestroy(g){
+  if(!g)return;
+  try{if(g._ro)g._ro.disconnect();}catch(e){}
+  (g.charts||[]).forEach(c=>{try{c.chart.remove();}catch(e){}});
+  g.charts=[];
+}
+
+function scWindowDaily(chart,period){
+  let bars=SC_DAILY_BARS[period]||252;
+  let mas={};
+  if(chart.mas){for(let k in chart.mas){let a=chart.mas[k];mas[k]=Array.isArray(a)?sl(a,bars):a;}}
+  return {
+    ohlc:sl(chart.ohlc,bars),
+    mas:mas,
+    macd:chart.macd?{hist:sl(chart.macd.hist,bars),macd:sl(chart.macd.macd,bars),signal:sl(chart.macd.signal,bars)}:null,
+    rsi:chart.rsi?sl(chart.rsi,bars):null,
+    koncorde:chart.koncorde?{verde:sl(chart.koncorde.verde,bars),marron:sl(chart.koncorde.marron,bars),azul:sl(chart.koncorde.azul,bars),media:sl(chart.koncorde.media,bars)}:null,
+    timeVis:false,
+  };
+}
+
+function _scEqualize(g){
+  let apply=()=>{
+    let mw=0;
+    g.charts.forEach(c=>{try{let w=c.chart.priceScale('right').width();if(w>mw)mw=w;}catch(e){}});
+    if(mw>0)g.charts.forEach(c=>{try{c.chart.applyOptions({rightPriceScale:{minimumWidth:Math.ceil(mw)}});}catch(e){}});
+  };
+  setTimeout(apply,60);setTimeout(apply,300);
+  let host=document.getElementById('sc_stack_'+g.key);
+  if(host&&window.ResizeObserver){
+    let ro=new ResizeObserver(()=>{
+      g.charts.forEach(c=>{let el=c.el;if(el&&el.clientWidth>0){try{c.chart.applyOptions({width:el.clientWidth});}catch(e){}}});
+      setTimeout(apply,30);
+    });
+    ro.observe(host);g._ro=ro;
+  }
+}
+
+function _scLink(g){
+  g._syncing=false;g._xs=false;
+  g.charts.forEach(src=>{
+    src.chart.timeScale().subscribeVisibleLogicalRangeChange(range=>{
+      if(g._syncing||!range)return;g._syncing=true;
+      g.charts.forEach(t=>{if(t!==src){try{t.chart.timeScale().setVisibleLogicalRange(range);}catch(e){}}});
+      g._syncing=false;
+    });
+    src.chart.subscribeCrosshairMove(param=>{
+      if(g._xs)return;g._xs=true;
+      let t=param.time;
+      let i=(t!=null&&g.timeIndex.has(t))?g.timeIndex.get(t):null;
+      g.charts.forEach(c=>{if(c.roEl&&c.fmt)c.roEl.innerHTML=c.fmt(i);});
+      g.charts.forEach(c=>{
+        if(c===src){g._xs=g._xs;return;}
+        if(t==null){try{c.chart.clearCrosshairPosition();}catch(e){}return;}
+        let v=c.valAt?c.valAt(i):null;if(v==null||isNaN(v))v=0;
+        try{c.chart.setCrosshairPosition(v,t,c.primary);}catch(e){}
+      });
+      g._xs=false;
+    });
+  });
+}
+
+function scBuild(key,data,decorate,heights){
+  decorate=decorate||{};heights=heights||{};
+  let hC=heights.candle||300,hI=heights.ind||108;
+  let ohlc=data.ohlc||[];
+  if(!ohlc.length){let cEl=document.getElementById('sc_candle_'+key);if(cEl)cEl.innerHTML='<div class="sc-nodata">Sin datos históricos disponibles.</div>';return null;}
+  let times=ohlc.map(b=>b.time);
+  let timeIndex=new Map();times.forEach((t,i)=>timeIndex.set(t,i));
+
+  // Determinar paneles presentes (orden vertical) segun datos disponibles
+  let hasM=data.macd&&data.macd.hist&&data.macd.hist.some(v=>v!=null);
+  let hasR=data.rsi&&data.rsi.some(v=>v!=null);
+  let hasK=data.koncorde&&data.koncorde.marron&&data.koncorde.marron.some(v=>v!=null);
+  let specs=[{n:'candle',el:document.getElementById('sc_candle_'+key),ok:true}];
+  specs.push({n:'macd',el:document.getElementById('sc_macd_'+key),ok:hasM});
+  specs.push({n:'rsi',el:document.getElementById('sc_rsi_'+key),ok:hasR});
+  specs.push({n:'konc',el:document.getElementById('sc_konc_'+key),ok:hasK});
+  // Notas para paneles sin datos (intradía: Koncorde necesita ~255 barras)
+  specs.forEach(s=>{if(s.el&&!s.ok){s.el.innerHTML=(s.n==='konc')?'<div class="sc-nodata">Koncorde requiere ~255 barras — no disponible en intradía.</div>':'';}});
+  let panes=specs.filter(s=>s.el&&s.ok);
+  let lastIdx=panes.length-1;
+
+  let group={key:key,charts:[],timeIndex:timeIndex,times:times,_ro:null};
+
+  panes.forEach((p,pi)=>{
+    p.el.innerHTML='';
+    let isBottom=(pi===lastIdx);
+    let h=(p.n==='candle')?hC:hI;
+    let chart=_scChart(p.el,h,!!data.timeVis,isBottom);
+    let primary=null,valAt=null,fmt=null;
+
+    if(p.n==='candle'){
+      let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b99',wickDownColor:'#c2243699'});
+      cs.setData(ohlc);
+      if(data.mas){for(let name of['sma200','sma100','sma50','sma20','ema9']){let vals=data.mas[name];if(!vals||!vals.length)continue;
+        let line=chart.addLineSeries({color:SC_MA_COLORS[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+        line.setData(_scLine(times,vals));}}
+      (decorate.priceLines||[]).forEach(pl=>{try{cs.createPriceLine(pl);}catch(e){}});
+      if(decorate.markers&&decorate.markers.length){try{cs.setMarkers(decorate.markers);}catch(e){}}
+      primary=cs;valAt=i=>{let b=ohlc[i];return b?b.close:null;};
+      fmt=i=>{let b=(i!=null)?ohlc[i]:ohlc[ohlc.length-1];if(!b)return '';return _scRi('O',b.open,'#6d7480')+_scRi('H',b.high,'#0b7a4b')+_scRi('L',b.low,'#c22436')+_scRi('C',b.close,'#111');};
+    } else if(p.n==='macd'){
+      let hist=chart.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
+      hist.setData(_scHist(times,data.macd.hist,'#0b7a4bcc','#c22436cc'));
+      let lM=chart.addLineSeries({color:'#0e7490',lineWidth:1.5,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});lM.setData(_scLine(times,data.macd.macd));
+      let lS=chart.addLineSeries({color:'#c2570b',lineWidth:1.5,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});lS.setData(_scLine(times,data.macd.signal));
+      primary=hist;valAt=i=>data.macd.hist[i];
+      fmt=i=>{let j=(i!=null)?i:times.length-1;let hh=data.macd.hist[j];return _scRi('Hist',hh,(hh>=0?'#0b7a4b':'#c22436'))+_scRi('MACD',data.macd.macd[j],'#0e7490')+_scRi('Señal',data.macd.signal[j],'#c2570b');};
+    } else if(p.n==='rsi'){
+      let anchor=chart.addLineSeries({color:'rgba(0,0,0,0)',lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+      anchor.setData([{time:times[0],value:0},{time:times[times.length-1],value:100}]);
+      let l=chart.addLineSeries({color:'#7c3aed',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+      l.setData(_scLine(times,data.rsi));
+      l.createPriceLine({price:70,color:'#c2243666',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'70'});
+      l.createPriceLine({price:30,color:'#0b7a4b66',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'30'});
+      primary=l;valAt=i=>data.rsi[i];
+      fmt=i=>{let j=(i!=null)?i:times.length-1;let v=data.rsi[j];let col=(v==null)?'#888':(v>=70?'#c22436':(v<=30?'#0b7a4b':'#7c3aed'));return _scRi('RSI',v,col);};
+    } else { // koncorde
+      let kd=data.koncorde;
+      let hMar=chart.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
+      hMar.setData(_scHist(times,kd.marron,'rgba(180,83,9,0.55)','rgba(180,83,9,0.38)'));
+      let hVer=chart.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
+      hVer.setData(_scHist(times,kd.verde,'rgba(11,122,75,0.60)','rgba(11,122,75,0.42)'));
+      let lA=chart.addLineSeries({color:'#2563eb',lineWidth:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});lA.setData(_scLine(times,kd.azul));
+      let lMed=chart.addLineSeries({color:'#c22436',lineWidth:1.5,lineStyle:LightweightCharts.LineStyle.Dashed,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});lMed.setData(_scLine(times,kd.media));
+      primary=hMar;valAt=i=>kd.marron[i];
+      fmt=i=>{let j=(i!=null)?i:times.length-1;return _scRi('Verde',kd.verde[j],'#0b7a4b')+_scRi('Marrón',kd.marron[j],'#b45309')+_scRi('Azul',kd.azul[j],'#2563eb')+_scRi('Media',kd.media[j],'#c22436');};
+    }
+    // Eventos (BUY/SELL) en paneles de indicadores (el candle usa decorate.markers)
+    if(decorate.events&&decorate.events.length&&p.n!=='candle'&&primary&&primary.setMarkers){try{primary.setMarkers(decorate.events);}catch(e){}}
+
+    chart.timeScale().fitContent();
+    let roEl=document.getElementById('sc_ro_'+p.n+'_'+key);
+    group.charts.push({name:p.n,chart:chart,primary:primary,valAt:valAt,fmt:fmt,roEl:roEl,el:p.el});
+  });
+
+  _scLink(group);
+  group.charts.forEach(c=>{if(c.roEl&&c.fmt)c.roEl.innerHTML=c.fmt(null);});
+  _scEqualize(group);
+  return group;
+}
+
+/* Alto nivel: resuelve datos diarios/intradía (fetch on-demand) y construye el stack. */
+function scRenderStack(cfg){
+  scDestroy(_scReg[cfg.key]);_scReg[cfg.key]=null;
+  let period=cfg.period;
+  if(SC_INTRADAY[period]){
+    let apiP=SC_INTRADAY[period],ck=cfg.symbol+'_'+apiP;
+    if(_scIntra[ck]){
+      let d=_scIntra[ck];
+      _scReg[cfg.key]=scBuild(cfg.key,{ohlc:d.ohlc||[],mas:null,macd:d.macd||null,rsi:d.rsi||null,koncorde:d.koncorde||null,timeVis:true},cfg.decorate,cfg.heights);
+    } else {
+      let cEl=document.getElementById('sc_candle_'+cfg.key);if(cEl)cEl.innerHTML='<div class="sc-nodata">Cargando '+apiP+'…</div>';
+      fetch('/api/bars/'+cfg.symbol+'/'+apiP).then(r=>r.json()).then(d=>{
+        _scIntra[ck]=d||{ohlc:[]};
+        if(!cfg.getPeriod||cfg.getPeriod()===period)scRenderStack(cfg);
+      }).catch(e=>console.error('sc intraday',e));
+    }
+  } else {
+    let ch=cfg.chart;
+    if(ch&&ch.ohlc&&ch.ohlc.length>=5){
+      _scReg[cfg.key]=scBuild(cfg.key,scWindowDaily(ch,period),cfg.decorate,cfg.heights);
+    } else {
+      let cEl=document.getElementById('sc_candle_'+cfg.key);if(cEl)cEl.innerHTML='<div class="sc-nodata">Sin datos históricos disponibles.</div>';
     }
   }
-  if(cur)weeks.push(cur.bar);
-  return weeks;
 }
 
-/* === CHART MANAGEMENT === */
-function destroyDetailCharts(idx){
-  let c=_charts[idx];if(!c)return;
-  if(c.lw)c.lw.remove();if(c.macd)c.macd.destroy();
-  if(c.rsi)c.rsi.destroy();if(c.konc)c.konc.destroy();
-  delete _charts[idx];
+/* Markup del stack (compartido por los 6 sitios). */
+function scPaneHTML(title,elId,roId,tall){
+  return '<div class="sc-pane'+(tall?' sc-pane-candle':'')+'">'
+    +'<div class="sc-pane-hd"><span class="sc-pane-tt">'+title+'</span><span class="sc-ro" id="'+roId+'"></span></div>'
+    +'<div class="sc-pane-body" id="'+elId+'"></div></div>';
 }
-
-function _createLW(el,timeVis){
-  let chart=LightweightCharts.createChart(el,{
-    width:el.clientWidth,height:310,
-    layout:{background:{color:'#ffffff'},textColor:'#6d7480',fontSize:10,fontFamily:"'Inter',system-ui,sans-serif"},
-    grid:{vertLines:{color:'#ecebe6'},horzLines:{color:'#ecebe6'}},
-    crosshair:{mode:0,vertLine:{color:'#4262d977',labelBackgroundColor:'#4262d9'},horzLine:{color:'#4262d977',labelBackgroundColor:'#4262d9'}},
-    timeScale:{borderColor:'#dcdad3',timeVisible:!!timeVis},
-    rightPriceScale:{borderColor:'#dcdad3'},
-  });
-  // Si el contenedor midio mal al crear (detalle recien abierto, scroll en curso),
-  // re-medir y re-encajar en el proximo layout.
-  setTimeout(function(){
-    try{
-      if(el.clientWidth>0&&Math.abs(el.clientWidth-chart.options().width)>4){
-        chart.applyOptions({width:el.clientWidth});
-        chart.timeScale().fitContent();
-      }
-    }catch(e){}
-  },120);
-  return chart;
-}
-function _addMAs(chart,ohlc,mas,startIdx){
-  if(!mas)return;
-  let maColors={"sma200":"#c22436","sma100":"#c2570b","sma50":"#d4a017","sma20":"#2563eb","ema9":"#7c3aed"};
-  for(let name of["sma200","sma100","sma50","sma20","ema9"]){
-    let vals=mas[name];if(!vals||vals.length===0)continue;
-    let line=chart.addLineSeries({color:maColors[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-    let ld=[];
-    for(let i=0;i<ohlc.length;i++){let gi=startIdx+i;if(gi>=vals.length||vals[gi]==null)continue;ld.push({time:ohlc[i].time,value:vals[gi]});}
-    if(ld.length>0)line.setData(ld);
-  }
-}
-
-function renderCandleDaily(containerId,allOhlc,mas,bars){
-  let el=document.getElementById(containerId);if(!el)return null;
-  let o=sl(allOhlc,bars);
-  let chart=_createLW(el,false);
-  let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b99',wickDownColor:'#c2243699'});
-  cs.setData(o);
-  _addMAs(chart,o,mas,allOhlc.length-o.length);
-  chart.timeScale().fitContent();
-  return chart;
-}
-
-function renderCandleWeekly(containerId,allOhlc,mas){
-  let el=document.getElementById(containerId);if(!el)return null;
-  let weekly=toWeekly(allOhlc);
-  let chart=_createLW(el,false);
-  let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b99',wickDownColor:'#c2243699'});
-  cs.setData(weekly);
-  // MAs on weekly: aggregate or skip (skip - weekly is for overview)
-  chart.timeScale().fitContent();
-  return chart;
-}
-
-function renderCandleIntraday(containerId,ohlc){
-  let el=document.getElementById(containerId);if(!el)return null;
-  let chart=_createLW(el,true);
-  let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b99',wickDownColor:'#c2243699'});
-  cs.setData(ohlc);
-  chart.timeScale().fitContent();
-  return chart;
-}
-
-function createMACDChart(id,dates,macd,bars){
-  let ctx=document.getElementById(id);if(!ctx)return null;
-  let d=sl(dates,bars),m={hist:sl(macd.hist,bars),macd:sl(macd.macd,bars),signal:sl(macd.signal,bars)};
-  let labels=d.map(sd);
-  let colors=m.hist.map(v=>v>=0?'#0b7a4b':'#c22436');
-  return new Chart(ctx,{type:'bar',data:{labels:labels,datasets:[
-    {type:'bar',data:m.hist,backgroundColor:colors,borderWidth:0,barPercentage:.8,order:2},
-    {type:'line',data:m.macd,borderColor:'#0e7490',borderWidth:1.5,pointRadius:0,fill:false,order:1},
-    {type:'line',data:m.signal,borderColor:'#c2570b',borderWidth:1.5,pointRadius:0,fill:false,order:1}
-  ]},options:{responsive:true,maintainAspectRatio:false,animation:false,
-    plugins:{legend:{display:false}},
-    scales:{x:{ticks:{color:'#7d848f',font:{size:8},maxTicksLimit:8},grid:{color:'#ecebe6'}},
-            y:{ticks:{color:'#7d848f',font:{size:8}},grid:{color:'#ecebe6'}}}}});
-}
-
-function createRSIChart(id,dates,rsi,bars){
-  let ctx=document.getElementById(id);if(!ctx)return null;
-  let d=sl(dates,bars),r=sl(rsi,bars);
-  let labels=d.map(sd);
-  return new Chart(ctx,{type:'line',data:{labels:labels,datasets:[
-    {data:r,borderColor:'#7c3aed',borderWidth:2,pointRadius:0,fill:false}
-  ]},options:{responsive:true,maintainAspectRatio:false,animation:false,
-    plugins:{legend:{display:false}},
-    scales:{x:{ticks:{color:'#7d848f',font:{size:8},maxTicksLimit:8},grid:{color:'#ecebe6'}},
-            y:{min:0,max:100,ticks:{color:'#7d848f',font:{size:8},stepSize:10},
-               grid:{color:function(c){return(c.tick.value===30||c.tick.value===70)?'#c3c8d3':'#ecebe6';}}}}},
-  plugins:[{id:'rz',beforeDraw(ch){
-    let{ctx,chartArea:a,scales}=ch;if(!a)return;let y=scales.y;
-    ctx.save();
-    ctx.fillStyle='rgba(11,122,75,0.08)';ctx.fillRect(a.left,y.getPixelForValue(30),a.width,y.getPixelForValue(0)-y.getPixelForValue(30));
-    ctx.fillStyle='rgba(194,36,54,0.08)';ctx.fillRect(a.left,y.getPixelForValue(100),a.width,y.getPixelForValue(70)-y.getPixelForValue(100));
-    ctx.strokeStyle='#0b7a4b50';ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(a.left,y.getPixelForValue(30));ctx.lineTo(a.right,y.getPixelForValue(30));ctx.stroke();
-    ctx.strokeStyle='#c2243650';ctx.beginPath();ctx.moveTo(a.left,y.getPixelForValue(70));ctx.lineTo(a.right,y.getPixelForValue(70));ctx.stroke();
-    ctx.restore();
-  }}]});
-}
-
-/* === KONCORDE - TradingView style (overlapping bars + lines) === */
-function createKoncordeChart(id,dates,k,bars){
-  let ctx=document.getElementById(id);if(!ctx)return null;
-  let d=sl(dates,bars),kk={verde:sl(k.verde,bars),marron:sl(k.marron,bars),azul:sl(k.azul,bars),media:sl(k.media,bars)};
-  let labels=d.map(sd);
-  let marronBg=kk.marron.map(v=>v>=0?'rgba(180,83,9,0.55)':'rgba(180,83,9,0.38)');
-  let verdeBg=kk.verde.map(v=>v>=0?'rgba(11,122,75,0.65)':'rgba(11,122,75,0.45)');
-  return new Chart(ctx,{type:'bar',data:{labels:labels,datasets:[
-    {type:'bar',label:'Marron',data:kk.marron,backgroundColor:marronBg,borderColor:'#b45309',borderWidth:0.5,barPercentage:0.95,categoryPercentage:0.95,stack:'s1',order:4},
-    {type:'bar',label:'Verde',data:kk.verde,backgroundColor:verdeBg,borderColor:'#0b7a4b',borderWidth:0.5,barPercentage:0.7,categoryPercentage:0.7,stack:'s2',order:3},
-    {type:'line',label:'Azul',data:kk.azul,borderColor:'#2563eb',borderWidth:2,pointRadius:0,fill:false,order:1},
-    {type:'line',label:'Media',data:kk.media,borderColor:'#c22436',borderWidth:1.5,borderDash:[4,4],pointRadius:0,fill:false,order:0}
-  ]},options:{responsive:true,maintainAspectRatio:false,animation:false,
-    plugins:{legend:{display:true,position:'top',labels:{color:'#64748b',font:{size:9},boxWidth:10,padding:5}}},
-    scales:{
-      x:{stacked:true,ticks:{color:'#7d848f',font:{size:8},maxTicksLimit:8},grid:{color:'#ecebe6'}},
-      y:{stacked:false,ticks:{color:'#7d848f',font:{size:8}},grid:{color:'#ecebe6'}}
-    }},
-  plugins:[{id:'zl',beforeDraw(ch){let{ctx,chartArea:a,scales}=ch;if(!a)return;let y0=scales.y.getPixelForValue(0);
-    if(y0>=a.top&&y0<=a.bottom){ctx.save();ctx.strokeStyle='#00000022';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(a.left,y0);ctx.lineTo(a.right,y0);ctx.stroke();ctx.restore();}}}]});
+function scStackHTML(key,legendHTML){
+  return '<div class="sc-stack" id="sc_stack_'+key+'">'
+    +scPaneHTML('Precio','sc_candle_'+key,'sc_ro_candle_'+key,true)
+    +(legendHTML?('<div class="sc-legend">'+legendHTML+'</div>'):'')
+    +scPaneHTML('MACD (12,26,9)','sc_macd_'+key,'sc_ro_macd_'+key,false)
+    +scPaneHTML('RSI (14)','sc_rsi_'+key,'sc_ro_rsi_'+key,false)
+    +scPaneHTML('Koncorde','sc_konc_'+key,'sc_ro_konc_'+key,false)
+    +'</div>';
 }
 
 /* === RENDER CHARTS FOR A DETAIL === */
 function renderDetailCharts(idx,sym,period){
   if(!_data)return;let r=_data.results[sym];if(!r||!r.chart)return;
-  destroyDetailCharts(idx);
-  let ch=r.chart;
-  let indBars=DAILY_BARS[period]||252;
-
-  // Candlestick: frecuencia segun ventana (semanal / diario / intradiario)
-  if(WEEKLY_P[period]){
-    // ALL y 5Y: semanal de todo el historico; 3M: semanal de los ultimos ~3 meses
-    let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);
-    _charts[idx]={lw:renderCandleWeekly('candle_'+idx,src,ch.mas)};
-  }else if(INTRADAY_P[period]){
-    // Intraday: fetch on demand (1M->4h, 1W->1h, 1D->15m)
-    let apiP=INTRADAY_P[period];
-    let cacheKey=sym+'_'+apiP;
-    if(_intradayCache[cacheKey]){
-      _charts[idx]={lw:renderCandleIntraday('candle_'+idx,_intradayCache[cacheKey])};
-    }else{
-      let el=document.getElementById('candle_'+idx);
-      if(el)el.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px">Cargando barras '+apiP+'...</div>';
-      fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
-        _intradayCache[cacheKey]=d.ohlc||[];
-        if(_periods[idx]===period){
-          let el2=document.getElementById('candle_'+idx);
-          if(el2)el2.innerHTML='';
-          if(!_charts[idx])_charts[idx]={};
-          if(_charts[idx].lw)_charts[idx].lw.remove();
-          _charts[idx].lw=renderCandleIntraday('candle_'+idx,_intradayCache[cacheKey]);
-        }
-      }).catch(e=>console.error('Intraday fetch error:',e));
-      _charts[idx]={};
-    }
-  }else{
-    // Diario (1Y)
-    let bars=DAILY_BARS[period]||252;
-    _charts[idx]={lw:renderCandleDaily('candle_'+idx,ch.ohlc,ch.mas,bars)};
-  }
-
-  // Indicator charts always use daily data
-  let c=_charts[idx]||{};
-  c.macd=createMACDChart('macd_'+idx,ch.dates,ch.macd,indBars);
-  c.rsi=createRSIChart('rsi_'+idx,ch.dates,ch.rsi,indBars);
-  c.konc=createKoncordeChart('konc_'+idx,ch.dates,ch.koncorde,indBars);
-  _charts[idx]=c;
+  scRenderStack({key:'scan_'+idx,symbol:sym,chart:r.chart,period:period,
+    decorate:{},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
+  _charts[idx]=1;
 }
 
 function setPeriod(idx,sym,period){
@@ -3841,28 +3790,17 @@ function setPeriod(idx,sym,period){
 
 // ─── TOP 3 ACCORDION — Chart Management ───
 let _recDetailCharts={};
-let _recResizeObservers={};
 let _top3Data=[];
 let _recPeriods={};   // {idx: '3M'}
-let _recIntradayCache={};  // {sym_period: ohlc}
 
 function destroyRecDetailCharts(idx){
-  let entry=_recDetailCharts[idx];
-  if(!entry)return;
-  try{if(entry.lw)entry.lw.remove();}catch(e){}
-  try{if(entry.macd)entry.macd.destroy();}catch(e){}
-  try{if(entry.rsi)entry.rsi.destroy();}catch(e){}
-  try{if(entry.konc)entry.konc.destroy();}catch(e){}
-  let ro=_recResizeObservers[idx];
-  if(ro)try{ro.disconnect();}catch(e){}
+  scDestroy(_scReg['rec_'+idx]);_scReg['rec_'+idx]=null;
   delete _recDetailCharts[idx];
-  delete _recResizeObservers[idx];
 }
 
 function destroyAllRecCharts(){
   for(let idx in _recDetailCharts)destroyRecDetailCharts(idx);
   _recDetailCharts={};
-  _recResizeObservers={};
 }
 
 function fmtMktCap(v){if(v==null)return'N/A';if(v>=1e12)return'$'+(v/1e12).toFixed(1)+'T';if(v>=1e9)return'$'+(v/1e9).toFixed(1)+'B';return'$'+(v/1e6).toFixed(0)+'M';}
@@ -3982,105 +3920,35 @@ function renderRecEarnings(fund){
   return h;
 }
 
-function _recAddPriceLines(cs,rec){
-  cs.createPriceLine({price:rec.entry_low,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
-  if(Math.abs(rec.entry_high-rec.entry_low)>0.01)
-    cs.createPriceLine({price:rec.entry_high,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false,title:''});
-  cs.createPriceLine({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
-  cs.createPriceLine({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
-  if(rec.chart_markers&&rec.chart_markers.length>0){
-    cs.setMarkers(rec.chart_markers.sort((a,b)=>a.time<b.time?-1:1));
-  }
+function _recDecorate(rec){
+  // {priceLines, markers} para tarjetas de recomendación (acciones y ETF)
+  let priceLines=[],markers=[];
+  if(rec.entry_low!=null)priceLines.push({price:rec.entry_low,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
+  if(rec.entry_high!=null&&rec.entry_low!=null&&Math.abs(rec.entry_high-rec.entry_low)>0.01)
+    priceLines.push({price:rec.entry_high,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false,title:''});
+  if(rec.target!=null)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
+  if(rec.stop_loss!=null)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
+  if(rec.chart_markers&&rec.chart_markers.length>0)markers=rec.chart_markers.slice().sort((a,b)=>a.time<b.time?-1:1);
+  return {priceLines:priceLines,markers:markers};
 }
 
 function renderRecDetailCharts(idx,rec,period){
-  destroyRecDetailCharts(idx);
   if(!rec)return;
   let sym=rec.symbol;
   if(!period)period=_recPeriods[idx]||'1Y';
   _recPeriods[idx]=period;
-
-  // Update active button
   let bar=document.getElementById('rec_pb_'+idx);
   if(bar){bar.querySelectorAll('.rec-period-btn').forEach(b=>{b.classList.toggle('active',b.dataset.p===period);});}
 
-  let entry={lw:null,macd:null,rsi:null,konc:null};
-
-  // Get full chart data from main analysis cache (same source as main grid)
+  // Preferir cache del escáner (5Y completo); sino datos pre-sliceados del rec
   let fullData=(_data&&_data.results)?_data.results[sym]:null;
   let ch=fullData?fullData.chart:null;
-  let indBars=DAILY_BARS[period]||252;
+  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
-  // 1. Candlestick chart
-  let candleEl=document.getElementById('rec_candle_'+idx);
-  if(candleEl){
-    candleEl.innerHTML='';
-    if(INTRADAY_P[period]){
-      // Intraday (1M->4h, 1W->1h, 1D->15m)
-      let apiP=INTRADAY_P[period];
-      let cacheKey=sym+'_'+apiP;
-      if(_recIntradayCache[cacheKey]){
-        let chart=_createLW(candleEl,true);chart.applyOptions({height:360});
-        let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-        cs.setData(_recIntradayCache[cacheKey]);
-        _recAddPriceLines(cs,rec);
-        chart.timeScale().fitContent();
-        entry.lw=chart;
-        let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_recResizeObservers[idx]=ro;
-      }else{
-        candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px">Cargando barras '+apiP+'...</div>';
-        fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
-          _recIntradayCache[cacheKey]=d.ohlc||[];
-          if(_recPeriods[idx]===period){renderRecDetailCharts(idx,rec,period);}
-        }).catch(e=>console.error('Rec intraday error:',e));
-      }
-    }else if(ch&&ch.ohlc&&ch.ohlc.length>=5){
-      // Semanal (ALL/5Y/3M) o diario (1Y)
-      let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
-      let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      if(WEEKLY_P[period]){
-        let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);
-        cs.setData(toWeekly(src));
-      }else{
-        let o=sl(ch.ohlc,indBars);cs.setData(o);
-        _addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);
-      }
-      _recAddPriceLines(cs,rec);
-      chart.timeScale().fitContent();
-      entry.lw=chart;
-      let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_recResizeObservers[idx]=ro;
-    }else if(rec.chart_ohlc&&rec.chart_ohlc.length>=5){
-      // Fallback: use pre-sliced rec data
-      let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
-      let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      cs.setData(rec.chart_ohlc);
-      let mas=rec.chart_mas||{};
-      let maColors={"sma200":"#c22436","sma100":"#c2570b","sma50":"#d4a017","sma20":"#2563eb","ema9":"#7c3aed"};
-      for(let name of["sma200","sma100","sma50","sma20","ema9"]){
-        let vals=mas[name];if(!vals||vals.length===0)continue;
-        let line=chart.addLineSeries({color:maColors[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-        let ld=[];for(let j=0;j<rec.chart_ohlc.length;j++){if(j>=vals.length||vals[j]==null)continue;ld.push({time:rec.chart_ohlc[j].time,value:vals[j]});}
-        if(ld.length>0)line.setData(ld);
-      }
-      _recAddPriceLines(cs,rec);
-      chart.timeScale().fitContent();
-      entry.lw=chart;
-      let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_recResizeObservers[idx]=ro;
-    }
-  }
-
-  // 2. Indicator charts — use full data from main cache if available
-  let dates=ch?ch.dates:rec.chart_dates;
-  let macdData=ch?ch.macd:rec.chart_macd;
-  let rsiData=ch?ch.rsi:rec.chart_rsi;
-  let koncData=ch?ch.koncorde:rec.chart_koncorde;
-  if(dates&&dates.length>0){
-    if(macdData)entry.macd=createMACDChart('rec_macd_'+idx,dates,macdData,indBars);
-    if(rsiData&&rsiData.length>0)entry.rsi=createRSIChart('rec_rsi_'+idx,dates,rsiData,indBars);
-    if(koncData)entry.konc=createKoncordeChart('rec_konc_'+idx,dates,koncData,indBars);
-  }
-
-  _recDetailCharts[idx]=entry;
+  scRenderStack({key:'rec_'+idx,symbol:sym,chart:ch,period:period,
+    decorate:_recDecorate(rec),heights:{candle:320,ind:110},
+    getPeriod:()=>_recPeriods[idx]});
+  _recDetailCharts[idx]=1;
 }
 
 function setRecPeriod(idx,period){
@@ -4189,31 +4057,15 @@ function renderTop3(top3){
     }
     html+='</div>';
 
-    // Top row: candle chart (left) + right panel
-    html+='<div class="rec-top-row">';
-
-    // Left: candlestick
-    html+='<div class="rec-candle-wrap"><div class="rec-candle-box" id="rec_candle_'+i+'"></div>';
-    html+='<div class="rec-candle-legend">';
-    html+='<span><i style="background:#2563eb"></i>Entrada</span>';
-    html+='<span><i style="background:#0b7a4b"></i>Target</span>';
-    html+='<span><i style="background:#c22436"></i>Stop</span>';
-    html+='<span><i style="background:#c22436"></i>SMA200</span>';
-    html+='<span><i style="background:#c2570b"></i>SMA100</span>';
-    html+='<span><i style="background:#d4a017"></i>SMA50</span>';
-    html+='<span><i style="background:#2563eb"></i>SMA20</span>';
-    html+='<span><i style="background:#7c3aed"></i>EMA9</span>';
-    html+='</div></div>';
-
-    // Right: metrics + levels only (compact)
-    html+='<div class="rec-right-panel">';
-    html+='<div class="rec-metrics">';
+    // Métricas + niveles (encabezado compacto sobre el stack)
+    html+='<div class="sc-info-row">';
+    html+='<div class="rec-metrics" style="flex:1 1 260px">';
     html+='<div class="rec-m"><span class="rec-ml">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
+    html+='<div class="rec-levels" style="flex:1 1 280px"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     let tSign=r.signal==='SELL'?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
@@ -4222,18 +4074,13 @@ function renderTop3(top3){
     html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
     if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';}
     html+='</div>';
-    html+='</div>'; // end right panel
-    html+='</div>'; // end top-row
+    html+='</div>';
 
     // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
     html+=researchRow(r.fundamentals||{},r.price);
 
-    // Indicator row: MACD / RSI / Koncorde
-    html+='<div class="rec-ind-grid">';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">MACD (12,26,9)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="rec_macd_'+i+'"></canvas></div></div>';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">RSI (14)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="rec_rsi_'+i+'"></canvas></div></div>';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">Koncorde</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="rec_konc_'+i+'"></canvas></div></div>';
-    html+='</div>';
+    // Stack sincronizado: velas + MACD + RSI + Koncorde
+    html+=scStackHTML('rec_'+i,SC_LEGEND_REC);
 
     // Rationale
     html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';
@@ -4492,12 +4339,7 @@ function update(){
         '<button class="period-btn'+(curPeriod==='1W'?' active':'')+'" data-p="1W" onclick="setPeriod('+idx+',\''+sym+'\',\'1W\')">1W</button>'+
         '<button class="period-btn'+(curPeriod==='1D'?' active':'')+'" data-p="1D" onclick="setPeriod('+idx+',\''+sym+'\',\'1D\')">1D</button>'+
         '</div></div>'+
-        '<div class="candle-box" id="candle_'+idx+'"></div>'+
-        '<div class="charts-grid">'+
-        '<div class="chart-box"><h4>MACD</h4><canvas id="macd_'+idx+'"></canvas></div>'+
-        '<div class="chart-box"><h4>RSI</h4><canvas id="rsi_'+idx+'"></canvas></div>'+
-        '<div class="chart-box"><h4>KONCORDE</h4><canvas id="konc_'+idx+'"></canvas></div>'+
-        '</div>'+
+        scStackHTML('scan_'+idx)+
         '<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><button onclick="event.stopPropagation();openInOptionsLab(\''+sym+'\')" style="background:rgba(36,86,230,.15);color:#4262d9;border:1px solid rgba(36,86,230,.3);padding:5px 14px;border-radius:5px;font-weight:700;font-size:11px;cursor:pointer;letter-spacing:.3px">&#x2697; OPTIONS LAB</button></div>'+
         '</div></details>';
       idx++;
@@ -4688,67 +4530,13 @@ function setEtfPeriod(idx,sym,p){
   renderEtfDetailCharts(idx,sym,p);
 }
 
-function destroyEtfDetailCharts(idx){
-  ['macd','rsi','konc'].forEach(k=>{
-    let key='etf_'+k+'_'+idx;
-    if(_etfCharts[key]){_etfCharts[key].destroy();delete _etfCharts[key];}
-  });
-  let ckey='etf_candle_'+idx;
-  if(_etfCharts[ckey]){_etfCharts[ckey].remove();delete _etfCharts[ckey];}
-}
+function destroyEtfDetailCharts(idx){scDestroy(_scReg['etf_'+idx]);_scReg['etf_'+idx]=null;delete _etfCharts[idx];}
 
 function renderEtfDetailCharts(idx,sym,period){
-  destroyEtfDetailCharts(idx);
   if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
-  let bars=DAILY_BARS[period]||252;
-  if(INTRADAY_P[period]){
-    // 1M->4h, 1W->1h, 1D->15m
-    let apiP=INTRADAY_P[period];
-    fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
-      if(d.ohlc)renderCandleIntraday('etf_candle_'+idx,d.ohlc);
-    });
-  } else if(WEEKLY_P[period]){
-    let src=WEEKLY_P[period]>=9999?r.chart.ohlc:r.chart.ohlc.slice(-WEEKLY_P[period]);
-    renderCandleWeekly('etf_candle_'+idx,src,r.chart.mas);
-  } else {
-    renderCandleDaily('etf_candle_'+idx,r.chart.ohlc,r.chart.mas,bars);
-  }
-  renderDetailIndicators('etf_macd_'+idx,'etf_rsi_'+idx,'etf_konc_'+idx,r.chart,bars,_etfCharts,'etf_');
-}
-
-function renderDetailIndicators(macdId,rsiId,koncId,chart,bars,chartsObj,prefix){
-  let dates=(chart.dates||[]).slice(-(bars));
-  let macd=chart.macd||{};let mh=(macd.hist||[]).slice(-bars);let mm=(macd.macd||[]).slice(-bars);let ms=(macd.signal||[]).slice(-bars);
-  let rsiArr=(chart.rsi||[]).slice(-bars);
-  let konc=chart.koncorde||{};let kv=(konc.verde||[]).slice(-bars);let km=(konc.marron||[]).slice(-bars);let ka=(konc.azul||[]).slice(-bars);let kmed=(konc.media||[]).slice(-bars);
-
-  let el1=document.getElementById(macdId);
-  if(el1){
-    chartsObj[macdId]=new Chart(el1,{type:'bar',data:{labels:dates,datasets:[
-      {label:'Hist',data:mh,backgroundColor:mh.map(v=>v>=0?'#0b7a4b66':'#c2243666'),borderWidth:0,order:2},
-      {label:'MACD',data:mm,borderColor:'#2563eb',borderWidth:1.5,type:'line',pointRadius:0,order:1},
-      {label:'Signal',data:ms,borderColor:'#c2570b',borderWidth:1.5,type:'line',pointRadius:0,order:1}
-    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'#e7e5df'}}}}});
-  }
-
-  let el2=document.getElementById(rsiId);
-  if(el2){
-    chartsObj[rsiId]=new Chart(el2,{type:'line',data:{labels:dates,datasets:[
-      {data:rsiArr,borderColor:'#7c3aed',borderWidth:1.5,pointRadius:0,fill:false},
-      {data:Array(dates.length).fill(70),borderColor:'#c2243640',borderWidth:1,pointRadius:0,borderDash:[4,4],fill:false},
-      {data:Array(dates.length).fill(30),borderColor:'#0b7a4b40',borderWidth:1,pointRadius:0,borderDash:[4,4],fill:false}
-    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{min:0,max:100,grid:{color:'#e7e5df'}}}}});
-  }
-
-  let el3=document.getElementById(koncId);
-  if(el3){
-    chartsObj[koncId]=new Chart(el3,{type:'bar',data:{labels:dates,datasets:[
-      {label:'Verde',data:kv,backgroundColor:'#0b7a4b60',order:3},
-      {label:'Marron',data:km,backgroundColor:'#a0845c80',order:2},
-      {label:'Azul',data:ka,backgroundColor:'#2563eb60',order:4},
-      {label:'Media',data:kmed,borderColor:'#b45309',borderWidth:1.5,type:'line',pointRadius:0,order:1,fill:false}
-    ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{display:false},y:{grid:{color:'#e7e5df'}}}}});
-  }
+  scRenderStack({key:'etf_'+idx,symbol:sym,chart:r.chart,period:period,
+    decorate:{},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
+  _etfCharts[idx]=1;
 }
 
 function updateEtf(){
@@ -4865,12 +4653,8 @@ function updateEtf(){
         '<button class="period-btn'+(curPeriod==='1W'?' active':'')+'" data-p="1W" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'1W\')">1W</button>'+
         '<button class="period-btn'+(curPeriod==='1D'?' active':'')+'" data-p="1D" onclick="setEtfPeriod('+idx+',\''+sym+'\',\'1D\')">1D</button>'+
         '</div></div>'+
-        '<div class="candle-box" id="etf_candle_'+idx+'"></div>'+
-        '<div class="charts-grid">'+
-        '<div class="chart-box"><h4>MACD</h4><canvas id="etf_macd_'+idx+'"></canvas></div>'+
-        '<div class="chart-box"><h4>RSI</h4><canvas id="etf_rsi_'+idx+'"></canvas></div>'+
-        '<div class="chart-box"><h4>KONCORDE</h4><canvas id="etf_konc_'+idx+'"></canvas></div>'+
-        '</div></div></details>';
+        scStackHTML('etf_'+idx)+
+        '</div></details>';
       idx++;
     }
     if(!html&&total===0){
@@ -4899,104 +4683,25 @@ let _etfRecPeriods={};
 let _etfRecDetailCharts={};
 let _etfRecFirstRender=true;
 
-function destroyEtfRecDetailCharts(idx){
-  let keys=['candle','macd','rsi','konc'];
-  for(let k of keys){
-    let id='etfrec_'+k+'_'+idx;
-    if(_etfRecDetailCharts[id]){
-      try{if(typeof _etfRecDetailCharts[id].destroy==='function')_etfRecDetailCharts[id].destroy();
-      else if(typeof _etfRecDetailCharts[id].remove==='function')_etfRecDetailCharts[id].remove();}catch(e){}
-      delete _etfRecDetailCharts[id];
-    }
-  }
-}
+function destroyEtfRecDetailCharts(idx){scDestroy(_scReg['etfrec_'+idx]);_scReg['etfrec_'+idx]=null;delete _etfRecDetailCharts[idx];}
 function destroyAllEtfRecCharts(){for(let idx in _etfRecDetailCharts)destroyEtfRecDetailCharts(idx);}
 
-let _etfRecResizeObservers={};
-let _etfRecIntradayCache={};
-
 function renderEtfRecDetailCharts(idx,rec,period){
-  destroyEtfRecDetailCharts(idx);
   if(!rec)return;
   let sym=rec.symbol;
   if(!period)period=_etfRecPeriods[idx]||'1Y';
   _etfRecPeriods[idx]=period;
-
   let bar=document.getElementById('etf_rec_pb_'+idx);
   if(bar){bar.querySelectorAll('.rec-period-btn').forEach(b=>{b.classList.toggle('active',b.dataset.p===period);});}
 
-  let entry={lw:null,macd:null,rsi:null,konc:null};
-
-  // Get full chart data from ETF analysis cache
   let fullData=(_etfData&&_etfData.results)?_etfData.results[sym]:null;
   let ch=fullData?fullData.chart:null;
-  let indBars=DAILY_BARS[period]||252;
+  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
-  let candleEl=document.getElementById('etfrec_candle_'+idx);
-  if(candleEl){
-    candleEl.innerHTML='';
-    if(INTRADAY_P[period]){
-      let apiP=INTRADAY_P[period];
-      let cacheKey=sym+'_'+apiP;
-      if(_etfRecIntradayCache[cacheKey]){
-        let chart=_createLW(candleEl,true);chart.applyOptions({height:360});
-        let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-        cs.setData(_etfRecIntradayCache[cacheKey]);
-        _recAddPriceLines(cs,rec);
-        chart.timeScale().fitContent();
-        entry.lw=chart;
-        let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_etfRecResizeObservers[idx]=ro;
-      }else{
-        candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px">Cargando barras '+apiP+'...</div>';
-        fetch('/api/bars/'+sym+'/'+apiP).then(r=>r.json()).then(d=>{
-          _etfRecIntradayCache[cacheKey]=d.ohlc||[];
-          if(_etfRecPeriods[idx]===period){renderEtfRecDetailCharts(idx,rec,period);}
-        }).catch(e=>console.error('ETF rec intraday error:',e));
-      }
-    }else if(ch&&ch.ohlc&&ch.ohlc.length>=5){
-      let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
-      let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      if(WEEKLY_P[period]){
-        let src=WEEKLY_P[period]>=9999?ch.ohlc:ch.ohlc.slice(-WEEKLY_P[period]);
-        cs.setData(toWeekly(src));
-      }else{
-        let o=sl(ch.ohlc,indBars);cs.setData(o);
-        _addMAs(chart,o,ch.mas,ch.ohlc.length-o.length);
-      }
-      _recAddPriceLines(cs,rec);
-      chart.timeScale().fitContent();
-      entry.lw=chart;
-      let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_etfRecResizeObservers[idx]=ro;
-    }else if(rec.chart_ohlc&&rec.chart_ohlc.length>=5){
-      let chart=_createLW(candleEl,false);chart.applyOptions({height:360});
-      let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-      cs.setData(rec.chart_ohlc);
-      let masObj=rec.chart_mas||{};
-      let maColors={"sma200":"#c22436","sma100":"#c2570b","sma50":"#d4a017","sma20":"#2563eb","ema9":"#7c3aed"};
-      for(let name of["sma200","sma100","sma50","sma20","ema9"]){
-        let vals=masObj[name];if(!vals||vals.length===0)continue;
-        let line=chart.addLineSeries({color:maColors[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-        let ld=[];for(let j=0;j<rec.chart_ohlc.length;j++){if(j>=vals.length||vals[j]==null)continue;ld.push({time:rec.chart_ohlc[j].time,value:vals[j]});}
-        if(ld.length>0)line.setData(ld);
-      }
-      _recAddPriceLines(cs,rec);
-      chart.timeScale().fitContent();
-      entry.lw=chart;
-      let ro=new ResizeObserver(()=>{chart.applyOptions({width:candleEl.clientWidth});});ro.observe(candleEl);_etfRecResizeObservers[idx]=ro;
-    }
-  }
-
-  let dates=ch?ch.dates:rec.chart_dates;
-  let macdData=ch?ch.macd:rec.chart_macd;
-  let rsiData=ch?ch.rsi:rec.chart_rsi;
-  let koncData=ch?ch.koncorde:rec.chart_koncorde;
-  if(dates&&dates.length>0){
-    if(macdData)entry.macd=createMACDChart('etfrec_macd_'+idx,dates,macdData,indBars);
-    if(rsiData&&rsiData.length>0)entry.rsi=createRSIChart('etfrec_rsi_'+idx,dates,rsiData,indBars);
-    if(koncData)entry.konc=createKoncordeChart('etfrec_konc_'+idx,dates,koncData,indBars);
-  }
-
-  _etfRecDetailCharts[idx]=entry;
+  scRenderStack({key:'etfrec_'+idx,symbol:sym,chart:ch,period:period,
+    decorate:_recDecorate(rec),heights:{candle:320,ind:110},
+    getPeriod:()=>_etfRecPeriods[idx]});
+  _etfRecDetailCharts[idx]=1;
 }
 
 function setEtfRecPeriod(idx,period){
@@ -5068,27 +4773,14 @@ function renderEtfTop3(top3){
     for(let p of periods){html+='<button class="rec-period-btn'+(p===curP?' active':'')+'" data-p="'+p+'" onclick="setEtfRecPeriod('+i+',\''+p+'\')">'+p+'</button>';}
     html+='</div>';
 
-    html+='<div class="rec-top-row">';
-    html+='<div class="rec-candle-wrap"><div class="rec-candle-box" id="etfrec_candle_'+i+'"></div>';
-    html+='<div class="rec-candle-legend">';
-    html+='<span><i style="background:#2563eb"></i>Entrada</span>';
-    html+='<span><i style="background:#0b7a4b"></i>Target</span>';
-    html+='<span><i style="background:#c22436"></i>Stop</span>';
-    html+='<span><i style="background:#c22436"></i>SMA200</span>';
-    html+='<span><i style="background:#c2570b"></i>SMA100</span>';
-    html+='<span><i style="background:#d4a017"></i>SMA50</span>';
-    html+='<span><i style="background:#2563eb"></i>SMA20</span>';
-    html+='<span><i style="background:#7c3aed"></i>EMA9</span>';
-    html+='</div></div>';
-
-    html+='<div class="rec-right-panel">';
-    html+='<div class="rec-metrics">';
+    html+='<div class="sc-info-row">';
+    html+='<div class="rec-metrics" style="flex:1 1 260px">';
     html+='<div class="rec-m"><span class="rec-ml">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
+    html+='<div class="rec-levels" style="flex:1 1 280px"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     let tSign=(sl.includes('VENTA')||sl.includes('SOBRECOMPRA'))?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
@@ -5098,16 +4790,12 @@ function renderEtfTop3(top3){
     if(r.horizon)html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
     html+='</div>';
     html+='</div>';
-    html+='</div>';
 
     // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
     html+=researchRow(r.fundamentals||{},r.price);
 
-    html+='<div class="rec-ind-grid">';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">MACD (12,26,9)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="etfrec_macd_'+i+'"></canvas></div></div>';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">RSI (14)</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="etfrec_rsi_'+i+'"></canvas></div></div>';
-    html+='<div class="rec-ind-wrap"><div class="rec-ind-title">Koncorde</div><div style="padding:4px"><canvas class="rec-ind-canvas" id="etfrec_konc_'+i+'"></canvas></div></div>';
-    html+='</div>';
+    // Stack sincronizado: velas + MACD + RSI + Koncorde
+    html+=scStackHTML('etfrec_'+i,SC_LEGEND_REC);
 
     if(r.rationale&&r.rationale.length>0){html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';html+='</div>';}
     html+='<div class="rec-sb"><div class="rec-sf" style="width:'+r.score+'%"></div></div>';
@@ -5986,12 +5674,7 @@ function _thFilterMatch(t,f){
 function renderThList(trades){
   let el=document.getElementById('th-list');
   // Destroy old charts
-  Object.keys(_thCharts).forEach(k=>{
-    if(_thCharts[k].lw)_thCharts[k].lw.remove();
-    if(_thCharts[k].macd)_thCharts[k].macd.destroy();
-    if(_thCharts[k].rsi)_thCharts[k].rsi.destroy();
-    if(_thCharts[k].konc)_thCharts[k].konc.destroy();
-  });
+  Object.keys(_thCharts).forEach(k=>{scDestroy(_scReg['th_'+k]);_scReg['th_'+k]=null;});
   _thCharts={};
 
   let filtered=trades.filter(t=>_thFilterMatch(t,_thFilter));
@@ -6079,15 +5762,8 @@ function renderThList(trades){
 
     h+='</div>';
 
-    // Chart (loaded on demand)
-    h+='<div class="th-chart-row">';
-    h+='<div class="th-chart-container" id="th-candle-'+i+'" style="min-height:310px"></div>';
-    h+='</div>';
-    h+='<div class="th-ind-charts">';
-    h+='<div class="th-ind-chart"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;font-weight:600">MACD</div><canvas id="th-macd-'+i+'"></canvas></div>';
-    h+='<div class="th-ind-chart"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;font-weight:600">RSI</div><canvas id="th-rsi-'+i+'"></canvas></div>';
-    h+='<div class="th-ind-chart"><div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;font-weight:600">Koncorde</div><canvas id="th-konc-'+i+'"></canvas></div>';
-    h+='</div>';
+    // Stack sincronizado (velas + MACD + RSI + Koncorde), se carga al expandir
+    h+=scStackHTML('th_'+i,SC_LEGEND_TRADE);
 
     h+='</div>';  // th-trade-body
     h+='</div>';  // th-trade
@@ -6125,168 +5801,30 @@ function toggleThTrade(idx){
 }
 
 function _renderThTradeChart(idx,trade,chart){
-  let entry={lw:null,macd:null,rsi:null,konc:null};
-
-  // Candlestick
-  let candleEl=document.getElementById('th-candle-'+idx);
-  if(candleEl&&chart.ohlc&&chart.ohlc.length>0){
-    candleEl.innerHTML='';
-    let lwChart=_createLW(candleEl,false);
-    lwChart.applyOptions({height:310});
-    let cs=lwChart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b88',wickDownColor:'#c2243688'});
-    cs.setData(chart.ohlc);
-
-    // Add MAs
-    if(chart.mas){
-      let maColors={"sma50":"#d4a017","sma20":"#2563eb"};
-      for(let name of["sma50","sma20"]){
-        let vals=chart.mas[name];if(!vals||vals.length===0)continue;
-        let line=lwChart.addLineSeries({color:maColors[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-        let ld=[];
-        for(let i=0;i<chart.ohlc.length;i++){
-          if(i>=vals.length||vals[i]==null||isNaN(vals[i]))continue;
-          ld.push({time:chart.ohlc[i].time,value:vals[i]});
-        }
-        if(ld.length>0)line.setData(ld);
-      }
-    }
-
-    // Buy/Sell markers
-    let markers=[];
-    // Find entry price at entry_date
-    if(trade.entry_date){
-      markers.push({
-        time:trade.entry_date,
-        position:'belowBar',
-        color:'#0b7a4b',
-        shape:'arrowUp',
-        text:'BUY $'+trade.entry_price.toFixed(2)
-      });
-    }
-    // Sell markers for each sell fill
-    if(trade.sell_fills){
-      trade.sell_fills.forEach(sf=>{
-        markers.push({
-          time:sf.date,
-          position:'aboveBar',
-          color:'#c22436',
-          shape:'arrowDown',
-          text:'SELL $'+sf.price.toFixed(2)
-        });
-      });
-    }
-    if(markers.length>0){
-      markers.sort((a,b)=>a.time<b.time?-1:1);
-      cs.setMarkers(markers);
-    }
-
-    // Entry price line
-    cs.createPriceLine({price:trade.entry_price,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
-    if(trade.sell_fills&&trade.sell_fills.length>0){
-      let lastSell=trade.sell_fills[trade.sell_fills.length-1];
-      cs.createPriceLine({price:lastSell.price,color:trade.pnl>=0?'#0b7a4b':'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Salida'});
-    }
-
-    lwChart.timeScale().fitContent();
-    entry.lw=lwChart;
-
-    let ro=new ResizeObserver(()=>{lwChart.applyOptions({width:candleEl.clientWidth});});
-    ro.observe(candleEl);
-    entry.ro=ro;
+  // Decoraciones: líneas de entrada/salida + flechas BUY/SELL en velas y
+  // marcadores del mismo instante en los paneles de indicadores.
+  let markers=[],events=[],priceLines=[];
+  if(trade.entry_date){
+    markers.push({time:trade.entry_date,position:'belowBar',color:'#0b7a4b',shape:'arrowUp',text:'BUY $'+trade.entry_price.toFixed(2)});
+    events.push({time:trade.entry_date,position:'aboveBar',color:'#0b7a4b',shape:'circle',text:'B'});
+  }
+  (trade.sell_fills||[]).forEach(sf=>{
+    markers.push({time:sf.date,position:'aboveBar',color:'#c22436',shape:'arrowDown',text:'SELL $'+sf.price.toFixed(2)});
+    events.push({time:sf.date,position:'aboveBar',color:'#c22436',shape:'circle',text:'S'});
+  });
+  markers.sort((a,b)=>a.time<b.time?-1:1);
+  events.sort((a,b)=>a.time<b.time?-1:1);
+  if(trade.entry_price!=null)priceLines.push({price:trade.entry_price,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
+  if(trade.sell_fills&&trade.sell_fills.length>0){
+    let lastSell=trade.sell_fills[trade.sell_fills.length-1];
+    priceLines.push({price:lastSell.price,color:trade.pnl>=0?'#0b7a4b':'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Salida'});
   }
 
-  // Build entry/exit vertical-line plugin for indicator charts
-  let _thMarkerIndices=[];
-  if(chart.dates){
-    let ed=trade.entry_date,sellDates=trade.sell_fills?trade.sell_fills.map(sf=>sf.date):[];
-    chart.dates.forEach((d,i)=>{
-      if(d===ed)_thMarkerIndices.push({idx:i,type:'BUY',color:'#0b7a4b'});
-      if(sellDates.indexOf(d)!==-1)_thMarkerIndices.push({idx:i,type:'SELL',color:'#c22436'});
-    });
-  }
-  let _thVLinePlugin={id:'thVLines',afterDraw(ch){
-    let{ctx:cx,chartArea:a,scales}=ch;if(!a)return;let x=scales.x;
-    cx.save();
-    _thMarkerIndices.forEach(m=>{
-      let px=x.getPixelForValue(m.idx);
-      cx.strokeStyle=m.color;cx.lineWidth=1.5;cx.setLineDash([5,3]);
-      cx.beginPath();cx.moveTo(px,a.top);cx.lineTo(px,a.bottom);cx.stroke();
-      cx.setLineDash([]);
-      cx.fillStyle=m.color;cx.font='bold 9px sans-serif';cx.textAlign='center';
-      cx.fillText(m.type,px,a.top-4);
-    });
-    cx.restore();
-  }};
-
-  // MACD chart
-  if(chart.macd&&chart.dates){
-    let ctx=document.getElementById('th-macd-'+idx);
-    if(ctx){
-      let labels=chart.dates.map(d=>d.length>7?d.substring(5):d);
-      let colors=chart.macd.hist.map(v=>v>=0?'#0b7a4b':'#c22436');
-      entry.macd=new Chart(ctx,{type:'bar',data:{labels:labels,datasets:[
-        {type:'bar',data:chart.macd.hist,backgroundColor:colors,borderWidth:0,barPercentage:.8,order:2},
-        {type:'line',data:chart.macd.macd,borderColor:'#0e7490',borderWidth:1.5,pointRadius:0,fill:false,order:1},
-        {type:'line',data:chart.macd.signal,borderColor:'#c2570b',borderWidth:1.5,pointRadius:0,fill:false,order:1}
-      ]},options:{responsive:true,maintainAspectRatio:false,animation:false,
-        layout:{padding:{top:14}},
-        plugins:{legend:{display:false}},
-        scales:{x:{ticks:{color:'#7d848f',font:{size:7},maxTicksLimit:6},grid:{color:'#ecebe6'}},
-                y:{ticks:{color:'#7d848f',font:{size:7}},grid:{color:'#ecebe6'}}}},
-      plugins:[_thVLinePlugin]});
-    }
-  }
-
-  // RSI chart
-  if(chart.rsi&&chart.dates){
-    let ctx=document.getElementById('th-rsi-'+idx);
-    if(ctx){
-      let labels=chart.dates.map(d=>d.length>7?d.substring(5):d);
-      entry.rsi=new Chart(ctx,{type:'line',data:{labels:labels,datasets:[
-        {data:chart.rsi,borderColor:'#7c3aed',borderWidth:2,pointRadius:0,fill:false}
-      ]},options:{responsive:true,maintainAspectRatio:false,animation:false,
-        layout:{padding:{top:14}},
-        plugins:{legend:{display:false}},
-        scales:{x:{ticks:{color:'#7d848f',font:{size:7},maxTicksLimit:6},grid:{color:'#ecebe6'}},
-                y:{min:0,max:100,ticks:{color:'#7d848f',font:{size:7},stepSize:20},
-                   grid:{color:function(c){return(c.tick.value===30||c.tick.value===70)?'#c3c8d3':'#ecebe6';}}}}},
-      plugins:[{id:'rz2',beforeDraw(ch){
-        let{ctx:cx,chartArea:a,scales}=ch;if(!a)return;let y=scales.y;
-        cx.save();
-        cx.fillStyle='rgba(11,122,75,0.08)';cx.fillRect(a.left,y.getPixelForValue(30),a.width,y.getPixelForValue(0)-y.getPixelForValue(30));
-        cx.fillStyle='rgba(194,36,54,0.08)';cx.fillRect(a.left,y.getPixelForValue(100),a.width,y.getPixelForValue(70)-y.getPixelForValue(100));
-        cx.strokeStyle='#0b7a4b50';cx.setLineDash([4,4]);cx.beginPath();cx.moveTo(a.left,y.getPixelForValue(30));cx.lineTo(a.right,y.getPixelForValue(30));cx.stroke();
-        cx.strokeStyle='#c2243650';cx.beginPath();cx.moveTo(a.left,y.getPixelForValue(70));cx.lineTo(a.right,y.getPixelForValue(70));cx.stroke();
-        cx.restore();
-      }},_thVLinePlugin]});
-    }
-  }
-
-  // Koncorde chart
-  if(chart.koncorde&&chart.dates){
-    let ctx=document.getElementById('th-konc-'+idx);
-    if(ctx){
-      let labels=chart.dates.map(d=>d.length>7?d.substring(5):d);
-      let kk=chart.koncorde;
-      let marronBg=kk.marron.map(v=>v>=0?'rgba(180,83,9,0.55)':'rgba(180,83,9,0.38)');
-      let verdeBg=kk.verde.map(v=>v>=0?'rgba(11,122,75,0.65)':'rgba(11,122,75,0.45)');
-      entry.konc=new Chart(ctx,{type:'bar',data:{labels:labels,datasets:[
-        {type:'bar',label:'Marron',data:kk.marron,backgroundColor:marronBg,borderColor:'#b45309',borderWidth:0.5,barPercentage:0.95,categoryPercentage:0.95,stack:'s1',order:4},
-        {type:'bar',label:'Verde',data:kk.verde,backgroundColor:verdeBg,borderColor:'#0b7a4b',borderWidth:0.5,barPercentage:0.7,categoryPercentage:0.7,stack:'s2',order:3},
-        {type:'line',label:'Azul',data:kk.azul,borderColor:'#2563eb',borderWidth:2,pointRadius:0,fill:false,order:1},
-        {type:'line',label:'Media',data:kk.media,borderColor:'#c22436',borderWidth:1.5,borderDash:[4,4],pointRadius:0,fill:false,order:0}
-      ]},options:{responsive:true,maintainAspectRatio:false,animation:false,
-        layout:{padding:{top:14}},
-        plugins:{legend:{display:true,position:'top',labels:{color:'#64748b',font:{size:8},boxWidth:8,padding:4}}},
-        scales:{
-          x:{stacked:true,ticks:{color:'#7d848f',font:{size:7},maxTicksLimit:6},grid:{color:'#ecebe6'}},
-          y:{stacked:false,ticks:{color:'#7d848f',font:{size:7}},grid:{color:'#ecebe6'}}
-        }},
-      plugins:[_thVLinePlugin]});
-    }
-  }
-
-  _thCharts[idx]=entry;
+  scRenderStack({key:'th_'+idx,symbol:trade.symbol||'',period:'ALL',
+    chart:{ohlc:chart.ohlc,mas:chart.mas,macd:chart.macd,rsi:chart.rsi,koncorde:chart.koncorde},
+    decorate:{priceLines:priceLines,markers:markers,events:events},
+    heights:{candle:300,ind:104}});
+  _thCharts[idx]=1;
 
   // Fill in thesis text
   let entryThEl=document.getElementById('th-entry-thesis-'+idx);
@@ -6500,47 +6038,117 @@ def _build_ohlc(df):
     return ohlc
 
 
-def _fetch_bars_yf(symbol, period):
-    """Barras intraday/1h via yfinance (fallback cuando TWS no responde).
+def _safe_round(x, nd):
+    """round() que mapea NaN/inf -> None (para series de indicadores intradia
+    donde Koncorde/MACD pueden no tener suficiente calentamiento)."""
+    try:
+        xf = float(x)
+        if math.isnan(xf) or math.isinf(xf):
+            return None
+        return round(xf, nd)
+    except (ValueError, TypeError):
+        return None
 
-    period: '1h' (1 mes), '30m' (1 semana), '15m' (2 dias),
-    '4h' (1 mes, resampleado de 1h; legado).
-    Devuelve lista OHLC con timestamps unix para Lightweight Charts."""
+
+def _attach_bar_indicators(payload, ind_df, k):
+    """Calcula MACD/RSI/Koncorde sobre ind_df (con calentamiento) y agrega al
+    payload SOLO las ultimas k filas (la ventana visible), index-parallel a
+    payload['ohlc']. Compartido por local y cloud (mismo contrato)."""
+    if ind_df is None or len(ind_df) < 30 or k <= 0:
+        return payload
+    try:
+        ind = indicators.calculate_all(ind_df)
+        m, r, kc = ind["macd"], ind["rsi"], ind["koncorde"]
+
+        def tail(series, nd):
+            return [_safe_round(x, nd) for x in series.iloc[-k:].tolist()]
+
+        payload["macd"] = {
+            "macd": tail(m["macd"], 3),
+            "signal": tail(m["signal"], 3),
+            "hist": tail(m["hist"], 3),
+        }
+        payload["rsi"] = tail(r["rsi"], 1)
+        payload["koncorde"] = {
+            "verde": tail(kc["verde"], 1),
+            "marron": tail(kc["marron"], 1),
+            "azul": tail(kc["azul"], 1),
+            "media": tail(kc["media"], 1),
+        }
+    except Exception as e:
+        print(f"  Error calculando indicadores intradia: {e}")
+    return payload
+
+
+def _bars_payload_yf(symbol, period):
+    """Payload intradia completo {ohlc, macd, rsi, koncorde} via yfinance.
+
+    Descarga una ventana AMPLIA (calentamiento para MACD/RSI/Koncorde), calcula
+    los indicadores sobre toda la serie y luego recorta ohlc + indicadores a la
+    ventana visible (index-parallel). Timestamps unix para Lightweight Charts.
+
+    period: '1h' (muestra ~1 mes), '30m' (~1 semana), '15m' (~2 dias),
+    '4h' (~1 mes, resampleado de 1h; legado)."""
     import yfinance as yf
+    # (yf_period, interval, dias_visibles, resample)
     cfg = {
-        "4h": ("1mo", "1h"),
-        "1h": ("1mo", "1h"),
-        "30m": ("5d", "30m"),
-        "15m": ("5d", "15m"),
+        "4h": ("3mo", "1h", 30, "4h"),
+        "1h": ("3mo", "1h", 30, None),
+        "30m": ("1mo", "30m", 7, None),
+        "15m": ("60d", "15m", 2, None),
     }
     if period not in cfg:
-        return []
-    yf_period, interval = cfg[period]
+        return {"ohlc": []}
+    yf_period, interval, disp_days, resample = cfg[period]
     h = yf.Ticker(symbol.replace(" ", "-")).history(
         period=yf_period, interval=interval, auto_adjust=False)
     if h is None or h.empty:
-        return []
-    if period == "4h":
-        # yfinance no tiene 4h nativo: resamplear desde 1h
-        h = h.resample("4h").agg({"Open": "first", "High": "max",
-                                  "Low": "min", "Close": "last"}).dropna()
-    if period == "15m":
-        # Mantener solo los ultimos 2 dias de trading
-        days = sorted(set(h.index.date))[-2:]
-        h = h[[d in days for d in h.index.date]]
-    ohlc = []
-    for ts, row in h.iterrows():
+        return {"ohlc": []}
+    if resample:
+        h = h.resample(resample).agg({
+            "Open": "first", "High": "max", "Low": "min",
+            "Close": "last", "Volume": "sum"}).dropna()
+
+    # Ventana visible = ultimos disp_days dias de trading
+    all_days = sorted(set(h.index.date))
+    keep_days = set(all_days[-disp_days:])
+    disp_flags = [d in keep_days for d in h.index.date]
+    k = sum(1 for f in disp_flags if f)
+    if k <= 0:
+        return {"ohlc": []}
+
+    # DataFrame para indicadores (toda la serie calentada)
+    ind_df = pd.DataFrame({
+        "open": h["Open"].astype(float).values,
+        "high": h["High"].astype(float).values,
+        "low": h["Low"].astype(float).values,
+        "close": h["Close"].astype(float).values,
+        "volume": h["Volume"].astype(float).fillna(0).values,
+    })
+
+    payload = {"ohlc": []}
+    idxs = h.index.tolist()
+    for i in range(len(h)):
+        if not disp_flags[i]:
+            continue
         try:
-            ohlc.append({
-                "time": int(ts.timestamp()),
-                "open": round(float(row["Open"]), 2),
-                "high": round(float(row["High"]), 2),
-                "low": round(float(row["Low"]), 2),
-                "close": round(float(row["Close"]), 2),
+            payload["ohlc"].append({
+                "time": int(idxs[i].timestamp()),
+                "open": round(float(h["Open"].iloc[i]), 2),
+                "high": round(float(h["High"].iloc[i]), 2),
+                "low": round(float(h["Low"].iloc[i]), 2),
+                "close": round(float(h["Close"].iloc[i]), 2),
             })
         except (ValueError, TypeError):
             continue
-    return ohlc
+    # Recortar indicadores a la misma cantidad de filas visibles realmente emitidas
+    _attach_bar_indicators(payload, ind_df, len(payload["ohlc"]))
+    return payload
+
+
+def _fetch_bars_yf(symbol, period):
+    """Compat: devuelve solo la lista OHLC (usado por callers legados)."""
+    return _bars_payload_yf(symbol, period).get("ohlc", [])
 
 
 @flask_app.route("/api/bars/<symbol>/<period>")
@@ -6584,13 +6192,18 @@ def api_bars(symbol, period):
             if data:
                 df = pd.DataFrame(data)
                 result["ohlc"] = _build_ohlc(df)
+                # Indicadores sobre las mismas barras (sin calentamiento extra:
+                # Koncorde puede quedar en null si hay <255 barras; MACD/RSI ok).
+                if "volume" in df.columns:
+                    ind_df = df[["open", "high", "low", "close", "volume"]].astype(float)
+                    _attach_bar_indicators(result, ind_df, len(result["ohlc"]))
         except Exception as e:
             print(f"  Error fetching {period} bars for {symbol} via IB: {e}")
 
     # 2. Fallback yfinance: TWS caida, desconectada o respuesta vacia
     if not result["ohlc"]:
         try:
-            result["ohlc"] = _fetch_bars_yf(symbol, period)
+            result = _bars_payload_yf(symbol, period)
         except Exception as e:
             print(f"  Error fetching {period} bars for {symbol} via yfinance: {e}")
 

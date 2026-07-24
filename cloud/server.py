@@ -653,8 +653,9 @@ def api_bars(symbol, period):
         return Response(to_json(cached["data"]), mimetype="application/json")
     result = {"ohlc": []}
     try:
-        from vista_web import _fetch_bars_yf
-        result["ohlc"] = _fetch_bars_yf(symbol, period)
+        # Payload completo {ohlc, macd, rsi, koncorde} para el stack sincronizado.
+        from vista_web import _bars_payload_yf
+        result = _bars_payload_yf(symbol, period)
     except Exception as e:
         print(f"[BARS] Error {period} {symbol}: {e}", flush=True)
     _bars_cache[cache_key] = {"data": result, "ts": time.time()}

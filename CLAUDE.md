@@ -91,15 +91,25 @@ labels can be directional while `signal` is still HOLD.
 
 ## Web Dashboard (vista_web.py)
 - Default chart period: 1Y (scanner, top recommendations, portfolio)
-- **Frecuencia de velas por ventana** (`INTRADAY_P`/`WEEKLY_P` en el JS): ALL/5Y → semanal
-  (agregado de diarios via `toWeekly`), 1Y y 3M → diario, 1M → 1h (~147 velas; no 4h porque
-  la sesión USA de 6.5h deja velas de 4h asimétricas), 1W → 30min (~65), 1D → 15min (~52,
-  últimos 2 días). Intradía vía `/api/bars/<sym>/<1h|30m|15m>` ("4h" sigue soportado como
-  legado): IB si está conectado, **fallback yfinance** (`_fetch_bars_yf`) — sin esto
-  1M/1W/1D quedaban vacíos con TWS caída. El cloud tiene su
-  propio `/api/bars` (yfinance directo, mismo contrato `{"ohlc":[...]}` — antes hacía
-  round-trip al bridge con otro shape y nunca cargaba). Los 5 renderers comparten el mapeo:
-  grilla acciones, grilla ETF, rec cards (stock/ETF) y portfolio.
+- **Stack de gráficos sincronizados (`scRenderStack`/`scBuild`, 2026-07)**: velas + MACD + RSI +
+  Koncorde son 4 paneles **Lightweight Charts** apilados que comparten eje de tiempo, rango visible
+  (`subscribeVisibleLogicalRangeChange`) y crosshair (`subscribeCrosshairMove`+`setCrosshairPosition`).
+  Al pasar el cursor por cualquier panel se marca el mismo instante en los otros y cada header muestra
+  la lectura de valores (`fmt(i)` → O/H/L/C, Hist/MACD/Señal, RSI, Verde/Marrón/Azul/Media). **Chart.js
+  se eliminó** (los indicadores ya no son canvas): un único motor reutilizable sirve a los 6 sitios
+  (`scStackHTML(key,legend)` para el markup, `_scReg[key]` para el registro): escáner acciones
+  (`scan_<idx>`), rec acciones (`rec_<idx>`), escáner ETF (`etf_<idx>`), rec ETF (`etfrec_<idx>`),
+  Mi Cartera (`port_<sym>`) y Trades Históricos (`th_<idx>`). Alineación: todos los paneles usan las
+  MISMAS marcas de tiempo (índice-paralelo a `ohlc`; nulls → whitespace para no desalinear el rango
+  lógico) y se igualan los anchos de escala (`rightPriceScale.minimumWidth`).
+- **Frecuencia de velas por ventana** (`SC_INTRADAY`/`SC_DAILY_BARS` en el JS): ALL/5Y/1Y/3M → **diario**
+  (ya no semanal — `toWeekly` se retiró; con LW el detalle renderiza ~1300 velas diarias sin problema),
+  1M → 1h, 1W → 30min, 1D → 15min. Intradía vía `/api/bars/<sym>/<1h|30m|15m>` ("4h" legado): IB si está
+  conectado, **fallback yfinance** (`_bars_payload_yf`). **El endpoint ahora devuelve indicadores**
+  (`{ohlc, macd, rsi, koncorde}`) calculados sobre las mismas barras intradía con calentamiento amplio
+  (`_attach_bar_indicators` + `indicators.calculate_all`, redondeo NaN-safe vía `_safe_round`) — así los
+  4 paneles siguen sincronizados también en intradía (antes intradía solo tenía velas). El cloud usa el
+  mismo `_bars_payload_yf` (importado de `vista_web`) para paridad.
 - `compute_top3()` muestra `config.TOP_RECOMMENDATIONS` (5) recomendaciones en cada scanner
   (acciones y ETFs, local y cloud). El nombre `top3`/`renderTop3` se conserva por historia;
   el render itera sobre la longitud del array, no asume 3.
@@ -142,7 +152,7 @@ labels can be directional while `signal` is still HOLD.
 - Portfolio "Composicion por Tipo" and "Distribucion por Sector" sections removed
 - **Theme: "Cobalto Suizo" (light)** — white surfaces on warm-grey bg (#f4f4f1), cobalt accent (#2456e6),
   buy green #0b7a4b, sell red #c22436, hold amber #b45309. Tokens live in the `:root{...}` block of
-  `DASHBOARD_HTML`; chart colors (Lightweight Charts / Chart.js / canvas payoff) are passed via JS literals,
+  `DASHBOARD_HTML`; chart colors (Lightweight Charts / canvas payoff) are passed via JS literals,
   NOT CSS — when changing palette, sweep both. Dark-theme colors must not be reintroduced (user explicitly
   chose light background for readability).
 
@@ -251,8 +261,9 @@ labels can be directional while `signal` is still HOLD.
 - Open positions (cross-referenced with `portfolio_history.json`) excluded
 - Chart data lazy-loaded per trade via `/api/trades-history/chart/<trade_id>`
 - Uses yfinance for OHLC (60d before entry → 30d after exit) + SPY context
-- Candlestick chart (Lightweight Charts): BUY/SELL markers, entry/exit price lines, SMA20/50
-- Indicator charts (Chart.js): MACD, RSI (with 30/70 zones), Koncorde — all with vertical BUY/SELL marker lines
+- Stack sincronizado (`scRenderStack`, key `th_<idx>`, período fijo `ALL`): velas (BUY/SELL markers,
+  líneas de entrada/salida, SMA20/50) + MACD + RSI (zonas 30/70) + Koncorde, todos con eje y crosshair
+  comunes; los fills BUY/SELL se marcan también en los paneles de indicadores (`decorate.events`)
 - Auto-generated thesis in Spanish from indicator values at entry/exit dates
 - API: `/api/trades-history` (cached 1hr), `/api/trades-history/chart/<trade_id>`
 - CSS classes prefixed `.th-`
