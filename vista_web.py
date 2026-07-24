@@ -2031,6 +2031,13 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .sc-legend span{display:inline-flex;align-items:center;white-space:nowrap}
 .sc-legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
 .sc-info-row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px}
+/* Layout 2 columnas: gráficos (3/4) a la izquierda, paneles (1/4) a la derecha */
+.rec-2col{display:grid;grid-template-columns:minmax(0,3fr) minmax(340px,1fr);gap:16px;align-items:start;margin-bottom:14px}
+.rec-2col-left{min-width:0}
+.rec-2col-left .sc-stack{margin-bottom:0}
+.rec-2col-right{display:flex;flex-direction:column;gap:12px;min-width:0}
+.rec-2col-right .rec-research-row{grid-template-columns:1fr;margin-bottom:0}
+.rec-2col-right .rec-metrics,.rec-2col-right .rec-levels{margin:0}
 .rec-rat{border-top:1px solid var(--border);padding-top:12px;margin-top:6px}
 .rec-rt{font-size:10px;font-weight:700;color:#2456e6;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px}
 .rec-ri{font-size:13px;color:var(--text);padding:4px 0;line-height:1.5}
@@ -2339,7 +2346,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .tg-status{font-size:13px;margin-top:10px;padding:10px 14px;border-radius:8px}
 
 /* === RESPONSIVE === */
-@media(max-width:1100px){.charts-grid{grid-template-columns:1fr}.content{padding:0 12px 12px}.rec-top-row{grid-template-columns:1fr}.rec-ind-grid{grid-template-columns:1fr}.rec-research-row{grid-template-columns:1fr}.rec-fund-grid{grid-template-columns:1fr 1fr}.port-comp-grid{grid-template-columns:1fr}.port-conc-grid{grid-template-columns:repeat(2,1fr)}.var-grid{grid-template-columns:1fr}.rebal-alloc{grid-template-columns:1fr}}
+@media(max-width:1100px){.charts-grid{grid-template-columns:1fr}.content{padding:0 12px 12px}.rec-top-row{grid-template-columns:1fr}.rec-2col{grid-template-columns:1fr}.rec-ind-grid{grid-template-columns:1fr}.rec-research-row{grid-template-columns:1fr}.rec-fund-grid{grid-template-columns:1fr 1fr}.port-comp-grid{grid-template-columns:1fr}.port-conc-grid{grid-template-columns:repeat(2,1fr)}.var-grid{grid-template-columns:1fr}.rebal-alloc{grid-template-columns:1fr}}
 /* === TECHNICAL OBSERVATIONS (inline in table) === */
 .obs-row{display:flex;gap:8px;padding:3px 14px 5px 32px;flex-wrap:wrap;align-items:center}
 .obs-tag{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:5px;font-size:9px;font-weight:700;letter-spacing:.4px;border:1px solid;flex-shrink:0}
@@ -3072,7 +3079,7 @@ function renderPortAnalCharts(sym,rec,pos,period){
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
   scRenderStack({key:'port_'+sym,symbol:sym,chart:ch,period:period,
-    decorate:_portAnalDecorate(rec,pos),heights:{candle:320,ind:112},
+    decorate:_portAnalDecorate(rec,pos),heights:{candle:380,ind:124},
     getPeriod:()=>_portAnalPeriods[sym]});
   _portAnalCharts[sym]=1;
 }
@@ -3173,15 +3180,17 @@ function renderPortAnalysisList(positions){
     }
     html+='</div>';
 
-    // Métricas + niveles (encabezado compacto sobre el stack de gráficos)
-    html+='<div class="sc-info-row">';
-    html+='<div class="rec-metrics" style="flex:1 1 260px">';
+    // Dos columnas: gráficos (izq, 3/4) + paneles (der, 1/4)
+    html+='<div class="rec-2col">';
+    html+='<div class="rec-2col-left">'+scStackHTML('port_'+sym,SC_LEGEND_FULL)+'</div>';
+    html+='<div class="rec-2col-right">';
+    html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml">Cantidad</span><span class="rec-mv">'+(p.cantidad||0).toFixed(0)+'</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Valor</span><span class="rec-mv">$'+fmtN(p.valor_mercado||0)+'</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">P&L</span><span class="rec-mv" style="color:'+pnlCol+'">'+(pnlPct>=0?'+':'')+'$'+fmtN(Math.abs(p.pnl||0))+'</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+='<div class="rec-levels" style="flex:1 1 280px"><div class="rec-lt">Niveles de Precio</div>';
+    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Costo Prom.</span><span class="rec-lv lv-entry">$'+avgCost.toFixed(2)+'</span></div>';
     html+='<div class="rec-lr"><span class="rec-ll">Precio Actual</span><span class="rec-lv">$'+curPrice.toFixed(2)+'</span></div>';
     if(rec.target){
@@ -3194,13 +3203,10 @@ function renderPortAnalysisList(positions){
     if(p.take_profit)html+='<div class="rec-lr"><span class="rec-ll">Take-Profit IB</span><span class="rec-lv" style="color:#0b7a4b">$'+p.take_profit.toFixed(2)+'</span></div>';
     if(rec.risk_reward)html+='<div class="rec-lr"><span class="rec-ll">R/R</span><span class="rec-lv lv-rr">'+rec.risk_reward.toFixed(1)+':1</span></div>';
     html+='</div>';
-    html+='</div>';
-
-    // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
+    // Research: analistas/insiders/fundamentales (apilados en la columna derecha)
     html+=researchRow(rec.fundamentals||{},curPrice);
-
-    // Stack sincronizado: velas + MACD + RSI + Koncorde (mismo eje, crosshair común)
-    html+=scStackHTML('port_'+sym,SC_LEGEND_FULL);
+    html+='</div>'; // end right
+    html+='</div>'; // end 2col
 
     // Rationale
     html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';
@@ -3946,7 +3952,7 @@ function renderRecDetailCharts(idx,rec,period){
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
   scRenderStack({key:'rec_'+idx,symbol:sym,chart:ch,period:period,
-    decorate:_recDecorate(rec),heights:{candle:320,ind:110},
+    decorate:_recDecorate(rec),heights:{candle:380,ind:124},
     getPeriod:()=>_recPeriods[idx]});
   _recDetailCharts[idx]=1;
 }
@@ -4057,15 +4063,17 @@ function renderTop3(top3){
     }
     html+='</div>';
 
-    // Métricas + niveles (encabezado compacto sobre el stack)
-    html+='<div class="sc-info-row">';
-    html+='<div class="rec-metrics" style="flex:1 1 260px">';
+    // Dos columnas: gráficos (izq, 3/4) + paneles (der, 1/4)
+    html+='<div class="rec-2col">';
+    html+='<div class="rec-2col-left">'+scStackHTML('rec_'+i,SC_LEGEND_REC)+'</div>';
+    html+='<div class="rec-2col-right">';
+    html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+='<div class="rec-levels" style="flex:1 1 280px"><div class="rec-lt">Niveles de Precio</div>';
+    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     let tSign=r.signal==='SELL'?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
@@ -4074,13 +4082,10 @@ function renderTop3(top3){
     html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
     if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';}
     html+='</div>';
-    html+='</div>';
-
-    // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
+    // Research: analistas/insiders/fundamentales (apilados en la columna derecha)
     html+=researchRow(r.fundamentals||{},r.price);
-
-    // Stack sincronizado: velas + MACD + RSI + Koncorde
-    html+=scStackHTML('rec_'+i,SC_LEGEND_REC);
+    html+='</div>'; // end right
+    html+='</div>'; // end 2col
 
     // Rationale
     html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';
@@ -4699,7 +4704,7 @@ function renderEtfRecDetailCharts(idx,rec,period){
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
   scRenderStack({key:'etfrec_'+idx,symbol:sym,chart:ch,period:period,
-    decorate:_recDecorate(rec),heights:{candle:320,ind:110},
+    decorate:_recDecorate(rec),heights:{candle:380,ind:124},
     getPeriod:()=>_etfRecPeriods[idx]});
   _etfRecDetailCharts[idx]=1;
 }
@@ -4773,14 +4778,17 @@ function renderEtfTop3(top3){
     for(let p of periods){html+='<button class="rec-period-btn'+(p===curP?' active':'')+'" data-p="'+p+'" onclick="setEtfRecPeriod('+i+',\''+p+'\')">'+p+'</button>';}
     html+='</div>';
 
-    html+='<div class="sc-info-row">';
-    html+='<div class="rec-metrics" style="flex:1 1 260px">';
+    // Dos columnas: gráficos (izq, 3/4) + paneles (der, 1/4)
+    html+='<div class="rec-2col">';
+    html+='<div class="rec-2col-left">'+scStackHTML('etfrec_'+i,SC_LEGEND_REC)+'</div>';
+    html+='<div class="rec-2col-right">';
+    html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+='<div class="rec-levels" style="flex:1 1 280px"><div class="rec-lt">Niveles de Precio</div>';
+    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     let tSign=(sl.includes('VENTA')||sl.includes('SOBRECOMPRA'))?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
@@ -4789,13 +4797,10 @@ function renderEtfTop3(top3){
     html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
     if(r.horizon)html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
     html+='</div>';
-    html+='</div>';
-
-    // Research row: solo paneles con datos (ETFs no traen analistas/insiders -> se omiten)
+    // Research: analistas/insiders/fundamentales (apilados en la columna derecha)
     html+=researchRow(r.fundamentals||{},r.price);
-
-    // Stack sincronizado: velas + MACD + RSI + Koncorde
-    html+=scStackHTML('etfrec_'+i,SC_LEGEND_REC);
+    html+='</div>'; // end right
+    html+='</div>'; // end 2col
 
     if(r.rationale&&r.rationale.length>0){html+='<div class="rec-rat"><div class="rec-rt">Detalle del Analisis</div>';for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';html+='</div>';}
     html+='<div class="rec-sb"><div class="rec-sf" style="width:'+r.score+'%"></div></div>';
