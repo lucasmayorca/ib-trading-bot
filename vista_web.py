@@ -425,6 +425,7 @@ def _fetch_fundamentals(symbols):
             ticker = yf.Ticker(sym)
             info = ticker.info or {}
             fund_data = {
+                "name": info.get("longName") or info.get("shortName"),
                 "market_cap": info.get("marketCap"),
                 "trailing_pe": info.get("trailingPE"),
                 "forward_pe": info.get("forwardPE"),
@@ -1985,6 +1986,8 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-details[open] .rec-arrow{transform:rotate(90deg)}
 .rec-rank-badge{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;font-weight:900;font-size:14px;background:rgba(36,86,230,.12);color:var(--accent);flex-shrink:0}
 .rec-sym{font-size:17px;font-weight:900;color:var(--text);letter-spacing:-.5px}
+.rec-name{font-size:12px;color:var(--muted);font-weight:600;max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
+@media(max-width:900px){.rec-name{display:none}}
 .rec-price{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:#3a3f48}
 .rec-badge{display:inline-block;padding:3px 12px;border-radius:6px;font-weight:800;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
 .rb-buy{background:rgba(11,122,75,.12);color:var(--buy);border:1px solid rgba(11,122,75,.25)}
@@ -3159,6 +3162,8 @@ function renderPortAnalysisList(positions){
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge '+vc+'" style="min-width:70px;text-align:center">'+vlabel+'</span>';
     html+='<span class="rec-sym">'+sym+'</span>';
+    let _coName=(rec.fundamentals&&rec.fundamentals.name)?rec.fundamentals.name:'';
+    if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
     html+='<span class="rec-price">$'+curPrice.toFixed(2)+'</span>';
     let sl2=rec.signal_label||sig;
     let bc2=sig==='BUY'?'rb-buy':(sig==='SELL'?'rb-sell':(sl2.includes('INMINENTE')&&sl2.includes('COMPRA')?'rb-buy-near':(sl2.includes('INMINENTE')&&sl2.includes('VENTA')?'rb-sell-near':'rb-hold')));
@@ -4098,6 +4103,8 @@ function renderTop3(top3){
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge">#'+(i+1)+'</span>';
     html+='<span class="rec-sym">'+r.symbol+'</span>';
+    let _coName=(r.fundamentals&&r.fundamentals.name)?r.fundamentals.name:'';
+    if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
     html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
     html+='<span class="rec-badge '+bc+'">'+sl+'</span>';
     html+='<span class="rec-sum-metrics">';
@@ -4829,6 +4836,8 @@ function renderEtfTop3(top3){
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge">#'+(i+1)+'</span>';
     html+='<span class="rec-sym">'+r.symbol+'</span>';
+    let _coName=(r.fundamentals&&r.fundamentals.name)?r.fundamentals.name:'';
+    if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
     html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
     html+='<span class="rec-badge '+bc+'">'+sl+'</span>';
     html+='<span class="rec-sum-metrics">';
