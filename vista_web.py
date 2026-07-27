@@ -4733,7 +4733,7 @@ function renderEtfDetailCharts(idx,sym,period){
 }
 
 /* === PULSO DEL MERCADO (SPY) — cabecera del tab ETF === */
-let _mpData=null,_mpLoaded=false,_mpCollapsed=false,_mpUpdated=null,_mpPeriod='1Y';
+let _mpData=null,_mpLoaded=false,_mpCollapsed=true,_mpUpdated=null,_mpPeriod='1Y';
 const SC_LEGEND_MP='<span><i style="background:#0b7a4b"></i>Soporte</span><span><i style="background:#c22436"></i>Resistencia</span><span><i style="background:#2456e6;opacity:.4"></i>Canal &plusmn;2&sigma;</span><span><i style="background:#c22436"></i>SMA200</span><span><i style="background:#d4a017"></i>SMA50</span><span><i style="background:#2563eb"></i>SMA20</span>';
 
 function _mpEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
@@ -4749,7 +4749,12 @@ function updateMarketPulse(){
     }
     let first=!_mpData;_mpData=d;
     if(first){renderMarketPulse();}
-    else if(_mpUpdated!==d.updated){let h=document.getElementById('mp-head');if(h)h.innerHTML=_mpHeadInner();}
+    else if(_mpUpdated!==d.updated){
+      // Contraida: re-render completo (solo titulo+chips, no hay chart que perder).
+      // Expandida: refrescar solo el texto para no desmontar el stack (zoom del usuario).
+      if(_mpCollapsed){renderMarketPulse();}
+      else{let h=document.getElementById('mp-head');if(h)h.innerHTML=_mpHeadInner();}
+    }
     _mpUpdated=d.updated;
   }).catch(e=>console.error('spy-pulse',e));
 }

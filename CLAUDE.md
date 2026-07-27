@@ -315,8 +315,10 @@ labels can be directional while `signal` is still HOLD.
   canal ±2σ vía `decorate.lines` — extensión de `scBuild`: series en eje DIARIO alineadas al
   final del ohlc (right-align/left-pad según ventana), solo se dibujan si `!data.timeVis`.
 - JS: `_mpData/_mpLoaded/_mpCollapsed/_mpPeriod`, `updateMarketPulse()` (lazy al entrar al
-  tab + REFRESH_MS; refresca solo el texto `#mp-head` si cambió `updated` — no re-monta el
-  stack para no romper el zoom del usuario). CSS `.mp-*`.
+  tab + REFRESH_MS; expandida refresca solo el texto `#mp-head` si cambió `updated` — no
+  re-monta el stack para no romper el zoom del usuario). **Arranca contraída**
+  (`_mpCollapsed=true`): barra de título + chips precio/Δ%/veredicto; clic expande y monta
+  el gráfico. CSS `.mp-*`.
 
 ## Dashboard Tabs
 1. **Escáner** — real-time stock scanner with signals
