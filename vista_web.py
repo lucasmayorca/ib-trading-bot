@@ -3722,11 +3722,29 @@ function scWindowDaily(chart,period){
   };
 }
 
+function _scRefitIfDegenerate(g){
+  // Autocura: si el stack se construyo con el contenedor oculto/ancho 0 (ej.
+  // tarjeta de Trades Históricos colapsada durante el fetch), fitContent se
+  // pierde y queda el barSpacing default anclado a la derecha: la mayor parte
+  // del panel vacia a la izquierda y las velas aplastadas en el borde. Se
+  // detecta (>20% de slots vacios a la izquierda con el final visible) y se
+  // re-encuadra cuando el ancho ya es real. No toca zoom/pan legitimos.
+  try{
+    let n=(g.times||[]).length;if(!n)return;
+    let c0=g.charts[0];if(!c0||!c0.el||c0.el.clientWidth<=0)return;
+    let r=c0.chart.timeScale().getVisibleLogicalRange();if(!r)return;
+    if(r.from<-(n*0.2+5)&&r.to>=n-1.5){
+      g.charts.forEach(c=>{try{if(c.el.clientWidth>0)c.chart.applyOptions({width:c.el.clientWidth});c.chart.timeScale().fitContent();}catch(e){}});
+    }
+  }catch(e){}
+}
+
 function _scEqualize(g){
   let apply=()=>{
     let mw=0;
     g.charts.forEach(c=>{try{let w=c.chart.priceScale('right').width();if(w>mw)mw=w;}catch(e){}});
     if(mw>0)g.charts.forEach(c=>{try{c.chart.applyOptions({rightPriceScale:{minimumWidth:Math.ceil(mw)}});}catch(e){}});
+    _scRefitIfDegenerate(g);
   };
   setTimeout(apply,60);setTimeout(apply,300);
   let host=document.getElementById('sc_stack_'+g.key);
@@ -3795,14 +3813,19 @@ function scBuild(key,data,decorate,heights){
 
     if(p.n==='candle'){
       let cs=chart.addCandlestickSeries({upColor:'#0b7a4b',downColor:'#c22436',borderUpColor:'#0b7a4b',borderDownColor:'#c22436',wickUpColor:'#0b7a4b99',wickDownColor:'#c2243699'});
-      cs.setData(ohlc);
+      // Velas con OHLC invalido (NaN del server llega como null, p.ej. la barra
+      // parcial del dia en curso de yfinance) van como whitespace: conservan el
+      // slot temporal (paneles alineados) sin envenenar el autoscale — una sola
+      // vela null en LW deja el panel vacio y el eje sin ticks.
+      let _vb=b=>b&&Number.isFinite(b.open)&&Number.isFinite(b.high)&&Number.isFinite(b.low)&&Number.isFinite(b.close);
+      cs.setData(ohlc.map(b=>_vb(b)?b:{time:b.time}));
       if(data.mas){for(let name of['sma200','sma100','sma50','sma20','ema9']){let vals=data.mas[name];if(!vals||!vals.length)continue;
         let line=chart.addLineSeries({color:SC_MA_COLORS[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
         line.setData(_scLine(times,vals));}}
       (decorate.priceLines||[]).forEach(pl=>{try{cs.createPriceLine(pl);}catch(e){}});
       if(decorate.markers&&decorate.markers.length){try{cs.setMarkers(decorate.markers);}catch(e){}}
       primary=cs;valAt=i=>{let b=ohlc[i];return b?b.close:null;};
-      fmt=i=>{let b=(i!=null)?ohlc[i]:ohlc[ohlc.length-1];if(!b)return '';return _scRi('O',b.open,'#6d7480')+_scRi('H',b.high,'#0b7a4b')+_scRi('L',b.low,'#c22436')+_scRi('C',b.close,'#111');};
+      fmt=i=>{let b=(i!=null)?ohlc[i]:null;if(!b){for(let j=ohlc.length-1;j>=0;j--){if(_vb(ohlc[j])){b=ohlc[j];break;}}}if(!b)return '';return _scRi('O',b.open,'#6d7480')+_scRi('H',b.high,'#0b7a4b')+_scRi('L',b.low,'#c22436')+_scRi('C',b.close,'#111');};
     } else if(p.n==='macd'){
       let hist=chart.addHistogramSeries({priceLineVisible:false,lastValueVisible:false});
       hist.setData(_scHist(times,data.macd.hist,'#0b7a4bcc','#c22436cc'));
@@ -5348,6 +5371,16 @@ function renderStrategyDetail(s,idx){
     '</div>';
   }
 
+  // Evolucion historica del precio del paquete completo (todas las patas juntas)
+  if(s.price_history&&s.price_history.length>=2){
+    html+='<div style="font-size:11px;font-weight:700;color:var(--text);margin:14px 0 8px">Evoluci&oacute;n del Precio de la Estrategia <span style="color:var(--muted);font-weight:600">(90d &middot; paquete completo)</span></div>';
+    html+='<div class="olab-payoff-chart" style="min-height:150px;padding:12px"><canvas id="stratpx-canvas-'+idx+'" style="width:100%;height:150px"></canvas></div>';
+    let extra=(s.name==='Covered Call'||s.name==='Protective Put')?' Incluye solo la pata de opciones (sin las acciones).':'';
+    html+='<div style="font-size:10px;color:var(--muted);margin-top:6px">C&oacute;mo cotizaba el paquete (&Sigma; patas compradas &minus; vendidas, estos mismos strikes y vencimientos) cada d&iacute;a'+
+      (s.market_priced?', anclado al mid real de hoy':' seg&uacute;n Black-Scholes con IV constante')+
+      '. Positivo = d&eacute;bito (pagas), negativo = cr&eacute;dito (cobras).'+extra+'</div>';
+  }
+
   html+='</div>';
 
   // Right: Greeks + Legs
@@ -5421,7 +5454,7 @@ function toggleOlabStrat(idx){
   let wasOpen=card.classList.contains('open');
   card.classList.toggle('open');
   if(!wasOpen){
-    setTimeout(()=>drawPayoffChart(idx),50);
+    setTimeout(()=>{drawPayoffChart(idx);drawStratHistory(idx);},50);
   }
 }
 
@@ -5608,6 +5641,71 @@ function drawPayoffChart(idx){
   ctx.fillText('Max +$'+_n(strat.max_profit,0),4,y(maxP)+12);
   ctx.fillStyle='#c22436';
   ctx.fillText('Max $'+_n(strat.max_loss,0),4,y(minP)-4);
+}
+
+// Evolucion historica del precio del paquete (todas las patas juntas, ver
+// _strategy_price_history en options_lab.py). Linea temporal -90d -> hoy.
+function drawStratHistory(idx){
+  let arr=((_olabData||{}).strategies||[]);
+  if(idx>=arr.length) return;
+  let pts=(arr[idx].price_history)||[];
+  if(pts.length<2) return;
+  let canvas=document.getElementById('stratpx-canvas-'+idx);
+  if(!canvas) return;
+  let ctx=canvas.getContext('2d');
+  let W=canvas.parentElement.clientWidth-24;
+  let H=150;
+  canvas.width=W*2;canvas.height=H*2;
+  canvas.style.width=W+'px';canvas.style.height=H+'px';
+  ctx.scale(2,2);
+
+  let xs=pts.map(p=>p.d),ys=pts.map(p=>p.v);
+  let minX=Math.min(...xs),maxX=Math.max(...xs);
+  let minV=Math.min(...ys),maxV=Math.max(...ys);
+  let rng=Math.max(maxV-minV,1e-6),padV=rng*0.15;
+  let minY=minV-padV,maxY=maxV+padV;
+  let L=8,R=56,T=10,B=16;
+  function x(v){return L+(v-minX)/Math.max(maxX-minX,1)*(W-L-R);}
+  function y(v){return T+(1-(v-minY)/(maxY-minY))*(H-T-B);}
+
+  // Grid horizontal
+  ctx.strokeStyle='rgba(22,24,29,0.08)';ctx.lineWidth=0.5;
+  for(let i=0;i<=3;i++){let yy=T+(H-T-B)*i/3;ctx.beginPath();ctx.moveTo(L,yy);ctx.lineTo(W-R,yy);ctx.stroke();}
+  // Ticks de tiempo cada 30 dias
+  ctx.font='9px sans-serif';
+  for(let d=Math.ceil(minX/30)*30;d<=0;d+=30){
+    let xx=x(d);
+    ctx.strokeStyle='rgba(22,24,29,0.06)';
+    ctx.beginPath();ctx.moveTo(xx,T);ctx.lineTo(xx,H-B);ctx.stroke();
+    ctx.fillStyle='rgba(22,24,29,0.45)';
+    ctx.fillText(d===0?'hoy':(d+'d'),d===0?xx-16:xx-9,H-4);
+  }
+  // Linea cero (cruce debito/credito)
+  if(minY<0&&maxY>0){
+    let y0=y(0);
+    ctx.strokeStyle='rgba(22,24,29,0.25)';ctx.setLineDash([4,4]);
+    ctx.beginPath();ctx.moveTo(L,y0);ctx.lineTo(W-R,y0);ctx.stroke();ctx.setLineDash([]);
+  }
+  // Area bajo la curva + linea
+  let grad=ctx.createLinearGradient(0,T,0,H-B);
+  grad.addColorStop(0,'rgba(36,86,230,0.16)');grad.addColorStop(1,'rgba(36,86,230,0.02)');
+  ctx.beginPath();ctx.moveTo(x(xs[0]),y(ys[0]));
+  for(let i=1;i<pts.length;i++)ctx.lineTo(x(xs[i]),y(ys[i]));
+  ctx.lineTo(x(xs[xs.length-1]),H-B);ctx.lineTo(x(xs[0]),H-B);ctx.closePath();
+  ctx.fillStyle=grad;ctx.fill();
+  ctx.beginPath();ctx.moveTo(x(xs[0]),y(ys[0]));
+  for(let i=1;i<pts.length;i++)ctx.lineTo(x(xs[i]),y(ys[i]));
+  ctx.strokeStyle='#2456e6';ctx.lineWidth=1.6;ctx.stroke();
+  // Punto de hoy + valor
+  let lx=x(xs[xs.length-1]),ly=y(ys[ys.length-1]);
+  ctx.fillStyle='#2456e6';
+  ctx.beginPath();ctx.arc(lx,ly,3.2,0,Math.PI*2);ctx.fill();
+  ctx.font='bold 10px sans-serif';
+  ctx.fillText('$'+ys[ys.length-1].toFixed(0),Math.min(lx+6,W-R+4),ly+3);
+  // Escala vertical (max/min del rango)
+  ctx.fillStyle='rgba(22,24,29,0.5)';ctx.font='9px sans-serif';
+  ctx.fillText('$'+maxV.toFixed(0),L+2,y(maxV)-4);
+  ctx.fillText('$'+minV.toFixed(0),L+2,y(minV)+11);
 }
 
 // Multi-symbol rendering
@@ -6001,18 +6099,25 @@ function _renderThTradeChart(idx,trade,chart){
   // Decoraciones: líneas de entrada/salida + flechas BUY/SELL en velas y
   // marcadores del mismo instante en los paneles de indicadores.
   let markers=[],events=[],priceLines=[];
+  // En opciones los precios de los fills son PRIMAS del contrato, no precios
+  // del subyacente — etiquetarlas como tales sobre las velas del subyacente.
+  let sameScale=(trade.type==='STK'||trade.type==='ETF');
+  let pxLbl=sameScale?'$':'prima $';
   if(trade.entry_date){
-    markers.push({time:trade.entry_date,position:'belowBar',color:'#0b7a4b',shape:'arrowUp',text:'BUY $'+trade.entry_price.toFixed(2)});
+    markers.push({time:trade.entry_date,position:'belowBar',color:'#0b7a4b',shape:'arrowUp',text:'BUY '+pxLbl+trade.entry_price.toFixed(2)});
     events.push({time:trade.entry_date,position:'aboveBar',color:'#0b7a4b',shape:'circle',text:'B'});
   }
   (trade.sell_fills||[]).forEach(sf=>{
-    markers.push({time:sf.date,position:'aboveBar',color:'#c22436',shape:'arrowDown',text:'SELL $'+sf.price.toFixed(2)});
+    markers.push({time:sf.date,position:'aboveBar',color:'#c22436',shape:'arrowDown',text:'SELL '+pxLbl+sf.price.toFixed(2)});
     events.push({time:sf.date,position:'aboveBar',color:'#c22436',shape:'circle',text:'S'});
   });
   markers.sort((a,b)=>a.time<b.time?-1:1);
   events.sort((a,b)=>a.time<b.time?-1:1);
-  if(trade.entry_price!=null)priceLines.push({price:trade.entry_price,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
-  if(trade.sell_fills&&trade.sell_fills.length>0){
+  // Lineas de entrada/salida SOLO para acciones/ETFs: en opciones dibujarlas
+  // estira la escala del panel de velas hasta hacerlas ilegibles (prima $0.20
+  // vs accion $300). Los marcadores (flechas con la prima) sí se mantienen.
+  if(sameScale&&trade.entry_price!=null)priceLines.push({price:trade.entry_price,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
+  if(sameScale&&trade.sell_fills&&trade.sell_fills.length>0){
     let lastSell=trade.sell_fills[trade.sell_fills.length-1];
     priceLines.push({price:lastSell.price,color:trade.pnl>=0?'#0b7a4b':'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Salida'});
   }
@@ -7839,6 +7944,13 @@ def _fetch_trade_chart_data(symbol, entry_date, exit_date):
         if "date" not in df.columns and "datetime" in df.columns:
             df["date"] = df["datetime"]
         df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+
+        # yfinance puede incluir la barra parcial del dia en curso con NaN:
+        # un solo OHLC nulo rompe la serie de velas en Lightweight Charts
+        # (panel vacio, eje sin ticks). Fuera antes de calcular indicadores.
+        df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+        if len(df) < 20:
+            return None
 
         # Calculate indicators
         ind = indicators.calculate_all(df)

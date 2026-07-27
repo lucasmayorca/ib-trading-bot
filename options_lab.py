@@ -749,6 +749,51 @@ def _apply_market_pricing(strat, market, S, T, r, sigma):
     return strat
 
 
+def _strategy_price_history(strat, closes, r, sigma, days=90):
+    """Evolucion historica del precio del paquete completo de la estrategia.
+
+    Para cada uno de los ultimos `days` dias habiles valua TODAS las patas con
+    Black-Scholes usando el cierre del subyacente de ese dia y el tiempo a
+    vencimiento que cada pata tenia ese dia (su DTE actual + los dias hacia
+    atras, en dias calendario ~365/252 por dia habil). El valor es
+    Σ(patas COMPRA) - Σ(patas VENTA) en $ por posicion (x100): un debito
+    (bull call spread) da valores positivos; un credito (iron condor) da el
+    valor negativo de la obligacion. Devuelve [{d: -N..0, v: $}] (0 = hoy).
+
+    Si la estrategia se valuo a mercado real, la serie se ancla con un shift
+    paralelo para que el punto de hoy coincida con el mid real del paquete
+    (BS teorico difiere del mid; el shift conserva la forma)."""
+    try:
+        n = min(int(days), len(closes))
+        if n < 20 or not strat.legs:
+            return []
+        tail = closes[-n:]
+        cal_per_bar = 365.0 / 252.0
+        pts = []
+        for i in range(n):
+            S_day = float(tail[i])
+            if not (S_day > 0):
+                continue
+            back = n - 1 - i
+            v = 0.0
+            for leg in strat.legs:
+                T = (leg.dte + back * cal_per_bar) / 365.0
+                sign = 1.0 if leg.action == "BUY" else -1.0
+                v += sign * bs_price(S_day, leg.strike, T, r, sigma, leg.right) * leg.qty
+            pts.append({"d": -back, "v": round(v * 100.0, 2)})
+        # Anclar el punto de HOY al precio real del paquete (la prima neta de la
+        # tarjeta): shift paralelo que conserva la forma. Cubre tanto el mid real
+        # de mercado como el drift teorico cuando el DTE se ajusto al vencimiento
+        # listado despues de calcular las primas.
+        if pts:
+            shift = -strat.net_premium - pts[-1]["v"]
+            if abs(shift) > 0.005:
+                pts = [{"d": p["d"], "v": round(p["v"] + shift, 2)} for p in pts]
+        return pts
+    except Exception:
+        return []
+
+
 def _estimate_expiry(dte):
     """Fecha estimada de vencimiento cuando no hay cadena real: el viernes mas
     cercano a hoy+dte (las opciones listadas vencen los viernes). Devuelve
@@ -1584,6 +1629,8 @@ def generate_options_lab(symbol, price, signal_data, closes, highs=None, lows=No
     for strat in top10:
         s = strat.to_dict()
         s["rank"] = getattr(strat, "rank", 0)
+        # Evolucion historica del precio del paquete (todas las patas juntas)
+        s["price_history"] = _strategy_price_history(strat, closes, r, sigma)
         # Simplificar backtest en cada estrategia (no repetir todo)
         s["backtest_result"] = {
             "similar_count": bt.get("similar_count", 0),

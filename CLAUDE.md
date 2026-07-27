@@ -102,6 +102,14 @@ labels can be directional while `signal` is still HOLD.
   Mi Cartera (`port_<sym>`) y Trades Históricos (`th_<idx>`). Alineación: todos los paneles usan las
   MISMAS marcas de tiempo (índice-paralelo a `ohlc`; nulls → whitespace para no desalinear el rango
   lógico) y se igualan los anchos de escala (`rightPriceScale.minimumWidth`).
+  **Gotchas del stack (costaron debugging)**: (1) una vela con OHLC null (NaN del server —
+  `_clean` de `to_json` mapea NaN→null; típico: barra parcial del día en curso de yfinance) NO es
+  whitespace para LW (null ≠ undefined) y rompe la serie en silencio → panel de precio vacío y eje
+  sin ticks mientras MACD/RSI pintan (sus arrays limpian NaN→0). `scBuild` mapea velas inválidas a
+  `{time}` (whitespace, mantiene alineación) y `_fetch_trade_chart_data` hace dropna del OHLC.
+  (2) si el stack se construye con el contenedor oculto/ancho 0, `fitContent` se pierde y queda el
+  barSpacing default anclado a la derecha (80% del panel vacío a la izquierda) — `_scRefitIfDegenerate`
+  (llamado desde `_scEqualize`) lo detecta y re-encuadra sin tocar zoom/pan legítimos.
 - **Frecuencia de velas por ventana** (`SC_INTRADAY`/`SC_DAILY_BARS` en el JS): ALL/5Y/1Y/3M → **diario**
   (ya no semanal — `toWeekly` se retiró; con LW el detalle renderiza ~1300 velas diarias sin problema),
   1M → 1h, 1W → 30min, 1D → 15min. Intradía vía `/api/bars/<sym>/<1h|30m|15m>` ("4h" legado): IB si está
@@ -255,6 +263,11 @@ labels can be directional while `signal` is still HOLD.
   "Vence <fecha> · Nd" en el header, columna Vencimiento (+ Bid/Ask e IV si hay precios reales) en Patas,
   y bloque "Orden para tu broker" con cada pata en texto operable (COMPRAR/VENDER n× SYM CALL/PUT $strike ·
   vence Vie DD Mes YYYY · límite ≈ mid). No usar `_n(strike,0)` para strikes (redondea 187.5→188): `olabStrike()`.
+- **Evolución del precio del paquete (`price_history`, 2026-07)**: `_strategy_price_history` valúa
+  las patas COMPLETAS (Σ compras − ventas) con BS día a día sobre los últimos 90 cierres, con el T
+  que cada pata tenía ese día; serie anclada (shift paralelo) para que HOY == −net_premium (coincide
+  con la prima de la tarjeta). Positivo = débito, negativo = crédito (obligación). UI: canvas
+  `stratpx-canvas-<idx>` (`drawStratHistory`, se dibuja junto al payoff al expandir la tarjeta).
 - Each stock in scanner has an "OPTIONS LAB" button to jump to deep single-symbol analysis
 - API: `/api/options-lab/<symbol>` (single), `/api/options-lab-top` (auto top 10)
 - Config: `OPTIONS_RISK_FREE_RATE`, `OPTIONS_DTE_TARGETS`, `OPTIONS_TOP_STRATEGIES`, `OPTIONS_BACKTEST_HORIZONS`
@@ -271,7 +284,10 @@ labels can be directional while `signal` is still HOLD.
 - Uses yfinance for OHLC (60d before entry → 30d after exit) + SPY context
 - Stack sincronizado (`scRenderStack`, key `th_<idx>`, período fijo `ALL`): velas (BUY/SELL markers,
   líneas de entrada/salida, SMA20/50) + MACD + RSI (zonas 30/70) + Koncorde, todos con eje y crosshair
-  comunes; los fills BUY/SELL se marcan también en los paneles de indicadores (`decorate.events`)
+  comunes; los fills BUY/SELL se marcan también en los paneles de indicadores (`decorate.events`).
+  **Líneas Entrada/Salida SOLO para STK/ETF**: en trades OPT/SPREAD esos precios son PRIMAS del
+  contrato, no precios del subyacente — dibujarlas estira la escala de velas hasta lo ilegible.
+  Los markers sí quedan, etiquetados "BUY/SELL prima $X".
 - Auto-generated thesis in Spanish from indicator values at entry/exit dates
 - API: `/api/trades-history` (cached 1hr), `/api/trades-history/chart/<trade_id>`
 - CSS classes prefixed `.th-`
