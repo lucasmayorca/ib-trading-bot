@@ -29,6 +29,7 @@ import yfinance as yf
 import portfolio
 import options_lab
 import enrichment
+import market_pulse
 
 CHART_BARS = 252  # ~1 year of trading days
 MA_PERIODS = [200, 100, 50, 20]  # SMA periods
@@ -1972,6 +1973,32 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 /* === TOP 3 RECOMMENDATIONS — ACCORDION === */
 .top3-section{padding:18px 32px;background:var(--bg);border-bottom:1px solid var(--border)}
 .top3-title{font-size:13px;font-weight:800;color:#2456e6;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+/* Pulso del Mercado (SPY) — tab ETF */
+.mp-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow-sm)}
+.mp-price-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.mp-px{font-size:22px;font-weight:800;letter-spacing:-.5px;color:var(--text)}
+.mp-chg{font-size:13px;font-weight:700}
+.mp-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.mp-upd{margin-left:auto;font-size:10px;color:var(--muted);letter-spacing:.3px}
+.mp-chip{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;letter-spacing:.4px;cursor:default;white-space:nowrap}
+.mp-chip.buy{background:rgba(11,122,75,.12);color:var(--buy)}
+.mp-chip.sell{background:rgba(194,36,54,.10);color:var(--sell)}
+.mp-chip.hold{background:rgba(180,83,9,.12);color:var(--hold)}
+.mp-chip.ghost{background:rgba(22,24,29,.05);color:var(--muted)}
+.mp-chip.buy.ghost{background:rgba(11,122,75,.07);color:var(--buy)}
+.mp-chip.sell.ghost{background:rgba(194,36,54,.06);color:var(--sell)}
+.mp-body{display:flex;flex-direction:column;gap:7px;margin-bottom:12px}
+.mp-row{display:flex;gap:12px;align-items:baseline}
+.mp-k{flex:0 0 76px;font-size:10px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.7px}
+.mp-v{font-size:12.5px;line-height:1.55;color:var(--text)}
+.mp-st{display:inline-block;padding:1px 8px;border-radius:10px;font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;vertical-align:1px}
+.mp-st.buy{background:rgba(11,122,75,.12);color:var(--buy)}
+.mp-st.sell{background:rgba(194,36,54,.10);color:var(--sell)}
+.mp-st.hold{background:rgba(180,83,9,.12);color:var(--hold)}
+.mp-sec{font-size:11.5px;color:var(--muted);margin-top:2px}
+.mp-period-bar{display:flex;gap:4px;margin-bottom:8px}
+.mp-err{font-size:12px;color:var(--muted);padding:8px 0}
+@media(max-width:700px){.mp-k{flex-basis:60px}.mp-upd{display:none}}
 .top3-title::before{content:'';display:inline-block;width:3px;height:16px;background:var(--accent);border-radius:2px}
 .top3-empty{color:var(--dim);font-size:12px;font-style:italic;padding:8px 0}
 .rec-details{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden;transition:all .3s ease}
@@ -2612,6 +2639,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 
 <!-- TAB: ETF SCANNER -->
 <div id="tab-etf" class="tab-content">
+<div id="market-pulse-section" class="top3-section" style="display:none"></div>
 <div id="etf-top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
   <div class="list-header" id="etf-list-header" style="display:none">
@@ -2774,6 +2802,7 @@ function switchTab(tab){
   if(tab==='trades'&&!_thLoaded){_thLoaded=true;loadTradesHistory();}
   if(tab==='optionslab'&&!_olabLoaded){_olabLoaded=true;loadOptionsLabTop();}
   if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}
+  if(tab==='etf'&&!_mpLoaded){_mpLoaded=true;updateMarketPulse();}
 }
 
 function loadPortfolio(){
@@ -3823,6 +3852,17 @@ function scBuild(key,data,decorate,heights){
         let line=chart.addLineSeries({color:SC_MA_COLORS[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
         line.setData(_scLine(times,vals));}}
       (decorate.priceLines||[]).forEach(pl=>{try{cs.createPriceLine(pl);}catch(e){}});
+      // Lineas superpuestas (ej. canal de regresion): decorate.lines=[{values,color,width,style}]
+      // con values en el eje DIARIO, alineadas al final del ohlc (right-align: son un
+      // sufijo del mismo eje temporal; se recortan o paddean por la izquierda segun la
+      // ventana del periodo). Solo en vistas diarias — en intradia el eje es otro.
+      if(!data.timeVis)(decorate.lines||[]).forEach(ln=>{try{
+        let vals=ln.values||[];
+        if(vals.length>times.length)vals=vals.slice(vals.length-times.length);
+        else if(vals.length<times.length)vals=new Array(times.length-vals.length).fill(null).concat(vals);
+        let s=chart.addLineSeries({color:ln.color||'#88888866',lineWidth:ln.width||1,lineStyle:(ln.style!=null?ln.style:LightweightCharts.LineStyle.Dashed),priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+        s.setData(_scLine(times,vals));
+      }catch(e){}});
       if(decorate.markers&&decorate.markers.length){try{cs.setMarkers(decorate.markers);}catch(e){}}
       primary=cs;valAt=i=>{let b=ohlc[i];return b?b.close:null;};
       fmt=i=>{let b=(i!=null)?ohlc[i]:null;if(!b){for(let j=ohlc.length-1;j>=0;j--){if(_vb(ohlc[j])){b=ohlc[j];break;}}}if(!b)return '';return _scRi('O',b.open,'#6d7480')+_scRi('H',b.high,'#0b7a4b')+_scRi('L',b.low,'#c22436')+_scRi('C',b.close,'#111');};
@@ -4692,6 +4732,120 @@ function renderEtfDetailCharts(idx,sym,period){
   _etfCharts[idx]=1;
 }
 
+/* === PULSO DEL MERCADO (SPY) — cabecera del tab ETF === */
+let _mpData=null,_mpLoaded=false,_mpCollapsed=false,_mpUpdated=null,_mpPeriod='1Y';
+const SC_LEGEND_MP='<span><i style="background:#0b7a4b"></i>Soporte</span><span><i style="background:#c22436"></i>Resistencia</span><span><i style="background:#2456e6;opacity:.4"></i>Canal &plusmn;2&sigma;</span><span><i style="background:#c22436"></i>SMA200</span><span><i style="background:#d4a017"></i>SMA50</span><span><i style="background:#2563eb"></i>SMA20</span>';
+
+function _mpEsc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function _mpChip(txt,cls,tooltip){return '<span class="mp-chip '+cls+'"'+(tooltip?' title="'+_mpEsc(tooltip)+'"':'')+'>'+txt+'</span>';}
+function _mpDirCls(d){return d==='alcista'?'buy':(d==='bajista'?'sell':'hold');}
+
+function updateMarketPulse(){
+  fetch('/api/spy-pulse').then(r=>r.json()).then(d=>{
+    let sec=document.getElementById('market-pulse-section');if(!sec)return;
+    if(!d||d.error){
+      if(!_mpData){sec.style.display='';sec.innerHTML='<div class="top3-title">Pulso del Mercado &middot; SPY</div><div class="mp-err">Analisis no disponible: '+_mpEsc((d&&d.error)||'sin datos')+'</div>';}
+      return;
+    }
+    let first=!_mpData;_mpData=d;
+    if(first){renderMarketPulse();}
+    else if(_mpUpdated!==d.updated){let h=document.getElementById('mp-head');if(h)h.innerHTML=_mpHeadInner();}
+    _mpUpdated=d.updated;
+  }).catch(e=>console.error('spy-pulse',e));
+}
+
+function _mpChipsHTML(d){
+  let chips=_mpChip(d.verdict.label,_mpDirCls(d.verdict.bias),'Score '+(d.verdict.score>=0?'+':'')+d.verdict.score+'\n'+(d.verdict.factors||[]).join('\n'));
+  let sysLbl=d.system&&d.system.label;
+  if(sysLbl&&sysLbl!=='NEUTRAL'){
+    let sCls=/COMPRA/.test(sysLbl)?'buy':(/VENTA/.test(sysLbl)?'sell':'hold');
+    chips+=_mpChip('Sistema: '+sysLbl,sCls+' ghost','Etiqueta del sistema MACD+RSI+Koncorde sobre SPY (misma logica que el escaner)');
+  }
+  let b=d.conditions&&d.conditions.buy,s=d.conditions&&d.conditions.sell;
+  if(b)chips+=_mpChip('Compra '+b.met+'/3',(b.met>=3?'buy':'ghost'),'Condiciones de COMPRA del sistema:\n'+b.items.map(i=>(i.ok?'[OK] ':'[ - ] ')+i.text).join('\n'));
+  if(s)chips+=_mpChip('Venta '+s.met+'/3',(s.met>=3?'sell':'ghost'),'Condiciones de VENTA del sistema:\n'+s.items.map(i=>(i.ok?'[OK] ':'[ - ] ')+i.text).join('\n'));
+  return chips;
+}
+
+function _mpFiguraHTML(p){
+  if(!p)return null;
+  let h=_mpEsc(p.text)+' <span class="mp-st '+_mpDirCls(p.direction)+'">'+_mpEsc(p.direction)+(p.status&&p.status!=='vigente'?' &middot; '+_mpEsc(p.status):'')+'</span>';
+  if(p.secondary)h+='<div class="mp-sec">Ademas: '+_mpEsc(p.secondary)+'</div>';
+  return h;
+}
+
+function _mpHeadInner(){
+  let d=_mpData;if(!d)return '';
+  let ch=d.change_pct,chCol=(ch!=null&&ch<0)?'var(--sell)':'var(--buy)';
+  let live=d.session&&d.session.is_live;
+  let when=live?'hoy':(d.session?('ult. rueda '+d.session.label):'');
+  let h='<div class="mp-price-row">'+
+    '<span class="mp-px">$'+_n(d.price,2)+'</span>'+
+    '<span class="mp-chg" style="color:'+chCol+'">'+(ch>=0?'+':'')+_n(ch,2)+'% <span style="font-weight:600;color:var(--muted)">'+when+'</span></span>'+
+    '<span class="mp-chips">'+_mpChipsHTML(d)+'</span>'+
+    '<span class="mp-upd">'+(live?'&#9679; sesion en vivo':'al cierre')+' &middot; act. '+_mpEsc((d.updated||'').slice(11,16))+' NY</span>'+
+  '</div>';
+  let rows=[
+    ['Momentum',d.momentum?_mpEsc(d.momentum.text):null],
+    ['Niveles',d.levels?_mpEsc(d.levels.text):null],
+    ['Figura',_mpFiguraHTML(d.pattern)],
+    ['Sesion',d.session?_mpEsc(d.session.text):null],
+    ['Lectura',d.reading?('<b>'+_mpEsc(d.reading)+'</b>'):null],
+  ];
+  h+='<div class="mp-body">';
+  for(let r of rows){if(!r[1])continue;h+='<div class="mp-row"><span class="mp-k">'+r[0]+'</span><span class="mp-v">'+r[1]+'</span></div>';}
+  h+='</div>';
+  return h;
+}
+
+function renderMarketPulse(){
+  let sec=document.getElementById('market-pulse-section');if(!sec||!_mpData)return;
+  sec.style.display='';
+  let d=_mpData;
+  let caret='<span class="t3-caret'+(_mpCollapsed?'':' open')+'">&#9660;</span>';
+  let sum='';
+  if(_mpCollapsed){
+    let ch=d.change_pct;
+    sum='<span class="t3-chips">'+_mpChip('$'+_n(d.price,2)+' '+(ch>=0?'+':'')+_n(ch,2)+'%',(ch!=null&&ch<0)?'sell ghost':'buy ghost')+_mpChip(d.verdict.label,_mpDirCls(d.verdict.bias))+'</span>';
+  }
+  let html='<div class="top3-title t3-clickable" onclick="toggleMarketPulse()" title="Mostrar/ocultar el pulso del mercado">Pulso del Mercado &middot; SPY <span class="t3-count">(S&amp;P 500)</span>'+caret+sum+'</div>';
+  if(!_mpCollapsed){
+    let btns=['ALL','5Y','1Y','3M','1M','1W','1D'].map(p=>'<button class="rec-period-btn'+(p===_mpPeriod?' active':'')+'" data-p="'+p+'" onclick="setMpPeriod(\''+p+'\')">'+p+'</button>').join('');
+    html+='<div class="mp-card">'+
+      '<div id="mp-head">'+_mpHeadInner()+'</div>'+
+      '<div class="mp-chart-wrap">'+
+        '<div class="mp-period-bar" id="mp-period-bar">'+btns+'</div>'+
+        scStackHTML('mp',SC_LEGEND_MP)+
+      '</div>'+
+    '</div>';
+  }
+  sec.innerHTML=html;
+  if(!_mpCollapsed)_mpMountChart();
+  else{scDestroy(_scReg['mp']);_scReg['mp']=null;}
+}
+
+function _mpDecorate(){
+  let ex=(_mpData&&_mpData.chart_extras)||{};
+  let pls=(ex.sr_lines||[]).map(s=>({price:s.level,color:(s.kind==='sup'?'#0b7a4baa':'#c22436aa'),lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:(s.kind==='sup'?'Sop':'Res')+' '+s.touches+'t'}));
+  let lines=[],chn=ex.channel;
+  if(chn&&chn.top&&chn.top.length){
+    lines.push({values:chn.top,color:'#2456e655',width:1});
+    lines.push({values:chn.bot,color:'#2456e655',width:1});
+  }
+  return {priceLines:pls,lines:lines};
+}
+function _mpMountChart(){
+  if(!_mpData||!_mpData.chart)return;
+  scRenderStack({key:'mp',symbol:'SPY',chart:_mpData.chart,period:_mpPeriod,decorate:_mpDecorate(),heights:{candle:280,ind:96},getPeriod:()=>_mpPeriod});
+}
+function toggleMarketPulse(){_mpCollapsed=!_mpCollapsed;renderMarketPulse();}
+function setMpPeriod(p){
+  _mpPeriod=p;
+  let bar=document.getElementById('mp-period-bar');
+  if(bar)bar.querySelectorAll('.rec-period-btn').forEach(b=>b.classList.toggle('active',b.dataset.p===p));
+  _mpMountChart();
+}
+
 function updateEtf(){
   fetch("/api/etf-data").then(r=>r.json()).then(data=>{
     _etfData=data;
@@ -4977,7 +5131,7 @@ function renderEtfTop3(top3){
 }
 
 // Auto-refresh ETF scanner every 5 min if active
-setInterval(function(){if(_activeTab==='etf'&&_etfLoaded)updateEtf();},REFRESH_MS);
+setInterval(function(){if(_activeTab==='etf'&&_etfLoaded)updateEtf();if(_activeTab==='etf'&&_mpLoaded)updateMarketPulse();},REFRESH_MS);
 
 // Auto-refresh portfolio every 5 min if active
 setInterval(function(){if(_activeTab==='portfolio'&&_portLoaded){_portLoaded=false;loadPortfolio();}},REFRESH_MS);
@@ -6451,6 +6605,15 @@ def _bars_payload_yf(symbol, period):
 def _fetch_bars_yf(symbol, period):
     """Compat: devuelve solo la lista OHLC (usado por callers legados)."""
     return _bars_payload_yf(symbol, period).get("ohlc", [])
+
+
+@flask_app.route("/api/spy-pulse")
+def api_spy_pulse():
+    """Pulso del Mercado (tarjeta del tab ETF): analisis tecnico del SPY via
+    market_pulse.py, cache 10 min. Server-side puro (yfinance), con o sin TWS.
+    No confundir con /api/market-pulse (quotes + sentimiento del briefing)."""
+    return Response(to_json(market_pulse.get_market_pulse()),
+                    mimetype="application/json")
 
 
 @flask_app.route("/api/bars/<symbol>/<period>")

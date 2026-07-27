@@ -293,6 +293,31 @@ labels can be directional while `signal` is still HOLD.
 - CSS classes prefixed `.th-`
 - JS state: `_thData`, `_thLoaded`, `_thFilter`, `_thCharts`
 
+## Pulso del Mercado — SPY (`market_pulse.py`, tarjeta en el tab ETFs)
+- Tarjeta colapsable arriba del ETF Scanner: análisis técnico conciso del SPY con veredicto
+  (score -9..+9 con factores explicables), condiciones del sistema en AMBAS direcciones
+  (chips `Compra x/3` / `Venta x/3` con tooltip de qué falta), momentum (MACD/RSI/Koncorde),
+  soportes/resistencias por pivotes fractales, figura técnica detectada por reglas y lectura
+  de la sesión en curso (gap, rango, RVOL proyectado).
+- **Figuras** (por prioridad): ruptura de nivel 2+ toques (umbral 0.25·ATR anti-ruido),
+  doble techo/suelo, triángulo/cuña (incluye "rota" si el precio salió de la figura hace ≤8
+  ruedas; más vieja se descarta — ya jugó), cruce dorado/muerte (≤20 ruedas), divergencia
+  RSI/precio en pivotes, fallback canal de regresión + estructura HH-HL/LH-LL (nunca vacío).
+  Cada figura sale con dirección, estado (en formacion/confirmada) y nivel que la anula.
+- Patrón `enrichment.py`: server-side puro vía yfinance (5y diario + 15m sesión), cache TTL
+  10 min, cero dependencia de TWS/bridge → local y cloud idénticos. Reutiliza
+  `indicators.calculate_all` + `signals.check_buy/sell_conditions` (paridad total de lecturas).
+- **Endpoint `/api/spy-pulse`** (local y espejo cloud con `@login_required`). ¡OJO!:
+  `/api/market-pulse` YA EXISTE y es OTRA cosa (quotes + sentimiento miedo/codicia del ticker
+  del header/briefing) — no reutilizar ese nombre.
+- Gráfico: stack sincronizado estándar (`scRenderStack` key `mp`, períodos ALL→1D) con los
+  S/R del análisis como `decorate.priceLines` (labels "Sop/Res Nt", también en intradía) y el
+  canal ±2σ vía `decorate.lines` — extensión de `scBuild`: series en eje DIARIO alineadas al
+  final del ohlc (right-align/left-pad según ventana), solo se dibujan si `!data.timeVis`.
+- JS: `_mpData/_mpLoaded/_mpCollapsed/_mpPeriod`, `updateMarketPulse()` (lazy al entrar al
+  tab + REFRESH_MS; refresca solo el texto `#mp-head` si cambió `updated` — no re-monta el
+  stack para no romper el zoom del usuario). CSS `.mp-*`.
+
 ## Dashboard Tabs
 1. **Escáner** — real-time stock scanner with signals
 2. **Mi Cartera** — portfolio positions with analysis

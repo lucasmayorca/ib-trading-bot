@@ -1,0 +1,895 @@
+"""Pulso del Mercado — analisis tecnico conciso del SPY (S&P 500).
+
+Compartido por local (vista_web.py) y cloud (cloud/server.py) siguiendo el
+patron de enrichment.py: corre server-side con datos de yfinance directo, sin
+depender de TWS, del bridge ni del ciclo del scanner (en cloud el bridge no se
+toca). Reutiliza indicators.py + signals.py para que las lecturas (MACD/RSI/
+Koncorde y las condiciones 3/3 en ambas direcciones) sean las MISMAS del resto
+del dashboard, y agrega capas propias:
+
+  - Pisos/techos horizontales por pivotes fractales (misma tecnica que
+    _find_sr_levels de vista_web, con indices para datar toques y rupturas).
+  - Canal de regresion (120 ruedas, ±2σ) con las series listas para dibujar
+    sobre las velas (chart_extras.channel, sufijo alineado al final del ohlc).
+  - Figuras tecnicas por reglas, cada una con direccion, estado (en formacion/
+    confirmada) y nivel que la confirma o anula: ruptura de nivel, doble
+    techo/suelo, triangulo/cuña, cruce dorado/de la muerte, divergencia
+    RSI/precio, estructura HH-HL/LH-LL + canal como fallback.
+  - Lectura de la sesion en curso o ultima rueda (gap, rango, RVOL proyectado).
+  - Veredicto agregado (score con factores explicables) + lectura operativa.
+
+API publica: get_market_pulse() -> dict listo para /api/market-pulse.
+Cache in-process con TTL; ante error de red devuelve el ultimo pulso valido.
+"""
+
+import math
+import threading
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
+
+import indicators
+import signals
+
+SYMBOL = "SPY"
+NAME = "S&P 500"
+_TTL_S = 600           # refresco del pulso (10 min)
+_NY = ZoneInfo("America/New_York")
+
+_cache = {"data": None, "ts": 0.0}
+_lock = threading.Lock()
+
+_DIAS = ["lun", "mar", "mie", "jue", "vie", "sab", "dom"]
+
+
+def _r(x, nd=2):
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return round(f, nd)
+
+
+def _fmt_usd(x):
+    return f"${x:,.2f}" if x is not None else "$--"
+
+
+def _pct(x, signed=True):
+    if x is None:
+        return "--%"
+    s = "+" if (signed and x >= 0) else ""
+    return f"{s}{x:.1f}%"
+
+
+# ══════════════════════════════════════════════════════════════
+#  DESCARGA (yfinance)
+# ══════════════════════════════════════════════════════════════
+
+def _download_daily():
+    """OHLCV diario 5A (warm-up sobrado para Koncorde EMA 255)."""
+    import yfinance as yf
+    h = yf.Ticker(SYMBOL).history(period="5y", interval="1d", auto_adjust=False)
+    if h is None or h.empty or len(h) < 260:
+        return None
+    df = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in h.index],
+        "open": h["Open"].astype(float).values,
+        "high": h["High"].astype(float).values,
+        "low": h["Low"].astype(float).values,
+        "close": h["Close"].astype(float).values,
+        "volume": h["Volume"].astype(float).fillna(0).values,
+    })
+    return df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+
+
+def _download_intraday():
+    """Velas 15m de los ultimos dias para leer la sesion (gap/rango)."""
+    import yfinance as yf
+    try:
+        h = yf.Ticker(SYMBOL).history(period="5d", interval="15m", auto_adjust=False)
+        if h is None or h.empty:
+            return None
+        return h
+    except Exception:
+        return None
+
+
+# ══════════════════════════════════════════════════════════════
+#  PRIMITIVAS: ATR, pivotes, niveles, canal
+# ══════════════════════════════════════════════════════════════
+
+def _atr(df, period=14):
+    h, l, c = df["high"].values, df["low"].values, df["close"].values
+    trs = []
+    for i in range(1, len(df)):
+        trs.append(max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])))
+    if len(trs) < period:
+        return None
+    return float(np.mean(trs[-period:]))
+
+
+def _pivots(df, lookback=252, window=3):
+    """Pivotes fractales (idx, precio) sobre las ultimas `lookback` ruedas.
+    Los indices son absolutos sobre el df completo."""
+    n = len(df)
+    start = max(window, n - lookback)
+    highs, lows = df["high"].values, df["low"].values
+    piv_h, piv_l = [], []
+    for i in range(start, n - window):
+        seg_h = highs[i - window:i + window + 1]
+        seg_l = lows[i - window:i + window + 1]
+        if highs[i] == seg_h.max():
+            piv_h.append((i, float(highs[i])))
+        if lows[i] == seg_l.min():
+            piv_l.append((i, float(lows[i])))
+    return piv_h, piv_l
+
+
+def _cluster_levels(pivots, tol):
+    """Agrupa pivotes en niveles: {level, touches, last_idx}."""
+    out = []
+    for idx, price in sorted(pivots, key=lambda p: p[1]):
+        if out and abs(price - out[-1]["level"]) <= tol:
+            c = out[-1]
+            c["level"] = (c["level"] * c["touches"] + price) / (c["touches"] + 1)
+            c["touches"] += 1
+            c["last_idx"] = max(c["last_idx"], idx)
+        else:
+            out.append({"level": price, "touches": 1, "last_idx": idx})
+    return out
+
+
+def _sr_levels(df, piv_h, piv_l, atr, price, mas):
+    """Soportes/resistencias con toques + etiqueta de confluencia con MAs."""
+    tol = max(0.5 * (atr or price * 0.01), price * 0.005)
+    all_levels = _cluster_levels(piv_h + piv_l, tol)
+
+    def _tag(level):
+        tags = []
+        for name in ("sma50", "sma200"):
+            v = mas.get(name)
+            if v and abs(level - v) <= tol:
+                tags.append(name.upper())
+        return tags
+
+    sups = [dict(c, kind="sup", tags=_tag(c["level"]))
+            for c in all_levels if c["level"] < price]
+    ress = [dict(c, kind="res", tags=_tag(c["level"]))
+            for c in all_levels if c["level"] > price]
+    sups.sort(key=lambda c: -c["level"])   # mas cercano abajo primero
+    ress.sort(key=lambda c: c["level"])    # mas cercano arriba primero
+
+    def _pick(side):
+        strong = [c for c in side if c["touches"] >= 2][:2]
+        if not strong and side:
+            strong = side[:1]              # al menos el mas cercano
+        return strong
+
+    return _pick(sups), _pick(ress), all_levels
+
+
+def _channel(df, lookback=120):
+    """Canal de regresion ±2σ. Devuelve dict con series top/bot (sufijo del
+    ohlc, largo=lookback) para dibujar, valores actuales y pendiente %/rueda."""
+    closes = df["close"].values[-lookback:]
+    n = len(closes)
+    if n < 40:
+        return None
+    xs = np.arange(n, dtype=float)
+    slope, intercept = np.polyfit(xs, closes, 1)
+    fit = intercept + slope * xs
+    resid = closes - fit
+    std = float(np.std(resid))
+    top = fit + 2 * std
+    bot = fit - 2 * std
+    price = float(closes[-1])
+    width = float(top[-1] - bot[-1])
+    pos = (price - float(bot[-1])) / width if width > 0 else 0.5
+    my = float(np.mean(closes))
+    return {
+        "top": [round(float(v), 2) for v in top],
+        "bot": [round(float(v), 2) for v in bot],
+        "upper": _r(top[-1]), "lower": _r(bot[-1]),
+        "slope_pct": _r(slope / my * 100 if my else 0.0, 4),
+        "pos": _r(pos, 2),
+        "lookback": n,
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  FIGURAS TECNICAS (reglas sobre pivotes/MAs/niveles)
+# ══════════════════════════════════════════════════════════════
+
+def _pat_breakout(df, all_levels, atr):
+    """Cierre cruzando un nivel de 2+ toques en las ultimas 5 ruedas."""
+    closes = df["close"].values
+    if len(closes) < 10 or not atr:
+        return None
+    c_now, c_ref = closes[-1], closes[-6]
+    min_move = 0.25 * atr               # cruce por menos de esto es ruido
+    best = None
+    for lvl in all_levels:
+        if lvl["touches"] < 2:
+            continue
+        L = lvl["level"]
+        if c_ref < L and c_now > L + min_move:
+            cand = ("alcista", lvl)
+        elif c_ref > L and c_now < L - min_move:
+            cand = ("bajista", lvl)
+        else:
+            continue
+        if best is None or lvl["touches"] > best[1]["touches"]:
+            best = cand
+    if not best:
+        return None
+    d, lvl = best
+    L = lvl["level"]
+    confirmed = ((closes[-2] > L and c_now > L + 0.4 * atr) if d == "alcista"
+                 else (closes[-2] < L and c_now < L - 0.4 * atr))
+    st = "confirmada" if confirmed else "por confirmar"
+    rol = "soporte" if d == "alcista" else "resistencia"
+    return {
+        "name": "Ruptura " + ("alcista" if d == "alcista" else "bajista"),
+        "direction": d, "status": st, "key_level": _r(L),
+        "priority": 90 if confirmed else 80,
+        "text": (f"{'Ruptura' if d == 'alcista' else 'Perdida'} del nivel "
+                 f"{_fmt_usd(_r(L))} ({lvl['touches']} toques), {st} — "
+                 f"ese nivel ahora actua de {rol}"),
+    }
+
+
+def _pat_double(df, piv_h, piv_l, atr):
+    """Doble techo / doble suelo con los dos ultimos pivotes del lado."""
+    if not atr:
+        return None
+    n = len(df)
+    closes = df["close"].values
+
+    def _check(pivs, is_top):
+        if len(pivs) < 2:
+            return None
+        (i1, p1), (i2, p2) = pivs[-2], pivs[-1]
+        if abs(p1 - p2) > 0.6 * atr or (i2 - i1) < 12 or i2 < n - 45:
+            return None
+        seg = df["low"].values[i1:i2 + 1] if is_top else df["high"].values[i1:i2 + 1]
+        neck = float(seg.min()) if is_top else float(seg.max())
+        depth = (min(p1, p2) - neck) if is_top else (neck - max(p1, p2))
+        if depth < 1.5 * atr:
+            return None
+        c = closes[-1]
+        if is_top:
+            if c < neck - 3 * atr:      # figura vieja, ya jugo
+                return None
+            confirmed = c < neck
+            d, nm = "bajista", "Doble techo"
+        else:
+            if c > neck + 3 * atr:
+                return None
+            confirmed = c > neck
+            d, nm = "alcista", "Doble suelo"
+        st = "confirmada" if confirmed else "en formacion"
+        lvl_txt = _fmt_usd(_r((p1 + p2) / 2))
+        conf_txt = (f"confirmado con cierre {'bajo' if is_top else 'sobre'} "
+                    f"el neckline {_fmt_usd(_r(neck))}") if confirmed else \
+                   (f"se confirma {'bajo' if is_top else 'sobre'} {_fmt_usd(_r(neck))}")
+        return {
+            "name": nm, "direction": d, "status": st,
+            "key_level": _r(neck), "priority": 85 if confirmed else 70,
+            "text": f"{nm} en {lvl_txt}, {conf_txt}",
+        }
+
+    return _check(piv_h, True) or _check(piv_l, False)
+
+
+def _pat_triangle(df, piv_h, piv_l, atr, price):
+    """Triangulo o cuña: rectas sobre pivotes H y L de ~90 ruedas convergiendo."""
+    if not atr:
+        return None
+    n = len(df)
+    ph = [(i, p) for i, p in piv_h if i >= n - 90]
+    pl = [(i, p) for i, p in piv_l if i >= n - 90]
+    if len(ph) < 3 or len(pl) < 3:
+        return None
+    xh, yh = np.array([p[0] for p in ph], float), np.array([p[1] for p in ph])
+    xl, yl = np.array([p[0] for p in pl], float), np.array([p[1] for p in pl])
+    sh, ih = np.polyfit(xh, yh, 1)
+    sl_, il = np.polyfit(xl, yl, 1)
+    x0 = float(min(xh.min(), xl.min()))
+    x1 = float(n - 1)
+    spread0 = (ih + sh * x0) - (il + sl_ * x0)
+    spread1 = (ih + sh * x1) - (il + sl_ * x1)
+    if spread0 <= 0 or spread1 <= 0.3 * atr or spread1 > 0.72 * spread0:
+        return None                     # no converge (o ya colapso)
+    shp = sh / price * 100              # % del precio por rueda
+    slp = sl_ / price * 100
+    FLAT = 0.025
+    res_now, sup_now = _r(ih + sh * x1), _r(il + sl_ * x1)
+    if shp < -FLAT and slp > FLAT:
+        nm, d = "Triangulo simetrico", "neutral"
+        txt = (f"Triangulo simetrico: compresion entre {_fmt_usd(sup_now)} y "
+               f"{_fmt_usd(res_now)} — la ruptura define la direccion")
+    elif abs(shp) <= FLAT and slp > FLAT:
+        nm, d = "Triangulo ascendente", "alcista"
+        txt = (f"Triangulo ascendente: pisos crecientes contra resistencia "
+               f"{_fmt_usd(res_now)} (sesgo de ruptura alcista)")
+    elif shp < -FLAT and abs(slp) <= FLAT:
+        nm, d = "Triangulo descendente", "bajista"
+        txt = (f"Triangulo descendente: techos decrecientes sobre soporte "
+               f"{_fmt_usd(sup_now)} (sesgo de quiebre bajista)")
+    elif shp > FLAT and slp > FLAT:
+        nm, d = "Cuña ascendente", "bajista"
+        txt = (f"Cuña ascendente: sube en compresion — figura de agotamiento, "
+               f"se activa bajo {_fmt_usd(sup_now)}")
+    elif shp < -FLAT and slp < -FLAT:
+        nm, d = "Cuña descendente", "alcista"
+        txt = (f"Cuña descendente: cae en compresion — suele resolver al alza, "
+               f"se activa sobre {_fmt_usd(res_now)}")
+    else:
+        return None
+
+    # ¿El precio sigue DENTRO de la figura? Si salio, es una figura rota
+    # (reciente = señal direccional; vieja = descartar, ya jugo).
+    margin = 0.25 * atr
+    line_h_now, line_l_now = ih + sh * x1, il + sl_ * x1
+    above = price > line_h_now + margin
+    below = price < line_l_now - margin
+    if above or below:
+        closes = df["close"].values
+        was_inside = False
+        for back in range(2, 9):
+            xb = n - back
+            cb = closes[xb]
+            if (il + sl_ * xb) - margin <= cb <= (ih + sh * xb) + margin:
+                was_inside = True
+                break
+        if not was_inside:
+            return None
+        d2 = "alcista" if above else "bajista"
+        lvl = _r(line_h_now if above else line_l_now)
+        return {"name": nm + " rota", "direction": d2, "status": "confirmada",
+                "key_level": lvl, "priority": 75,
+                "text": (f"{nm} rota {'al alza' if above else 'a la baja'}: "
+                         f"el precio salio de la figura "
+                         f"{'sobre' if above else 'bajo'} {_fmt_usd(lvl)}")}
+
+    return {"name": nm, "direction": d, "status": "en formacion",
+            "key_level": res_now if d != "bajista" else sup_now,
+            "priority": 60, "text": txt}
+
+
+def _pat_ma_cross(df, sma50, sma200):
+    """Cruce dorado / de la muerte en las ultimas 20 ruedas."""
+    if sma50 is None or sma200 is None:
+        return None
+    a, b = np.asarray(sma50, float), np.asarray(sma200, float)
+    if len(a) < 25 or len(b) < 25 or np.isnan(a[-25:]).any() or np.isnan(b[-25:]).any():
+        return None
+    diff = a - b
+    for back in range(1, 21):
+        if diff[-back] == 0:
+            continue
+        if np.sign(diff[-back]) != np.sign(diff[-1]):
+            golden = diff[-1] > 0
+            nm = "Cruce dorado" if golden else "Cruce de la muerte"
+            return {
+                "name": nm, "direction": "alcista" if golden else "bajista",
+                "status": "confirmada", "key_level": None, "priority": 50,
+                "text": (f"{nm} hace {back} ruedas (SMA50 "
+                         f"{'sobre' if golden else 'bajo'} SMA200) — señal de "
+                         f"tendencia de fondo {'alcista' if golden else 'bajista'}"),
+            }
+    return None
+
+
+def _pat_divergence(df, piv_h, piv_l, rsi_series):
+    """Divergencia RSI/precio entre los dos ultimos pivotes del lado activo."""
+    n = len(df)
+    rsi = np.asarray(rsi_series, float)
+
+    def _check(pivs, bearish):
+        recent = [(i, p) for i, p in pivs if i >= n - 60]
+        if len(recent) < 2:
+            return None
+        (i1, p1), (i2, p2) = recent[-2], recent[-1]
+        if i2 < n - 25 or i1 >= len(rsi) or i2 >= len(rsi):
+            return None
+        r1, r2 = rsi[i1], rsi[i2]
+        if np.isnan(r1) or np.isnan(r2):
+            return None
+        if bearish and p2 > p1 and r2 < r1 - 2:
+            return {"name": "Divergencia bajista", "direction": "bajista",
+                    "status": "vigente", "key_level": None, "priority": 45,
+                    "text": ("Divergencia bajista: el precio hizo un maximo mas alto "
+                             f"pero el RSI no acompaño ({r1:.0f} → {r2:.0f}) — "
+                             "el impulso pierde fuerza")}
+        if not bearish and p2 < p1 and r2 > r1 + 2:
+            return {"name": "Divergencia alcista", "direction": "alcista",
+                    "status": "vigente", "key_level": None, "priority": 45,
+                    "text": ("Divergencia alcista: el precio hizo un minimo mas bajo "
+                             f"pero el RSI subio ({r1:.0f} → {r2:.0f}) — "
+                             "la caida pierde fuerza")}
+        return None
+
+    return _check(piv_h, True) or _check(piv_l, False)
+
+
+def _structure(piv_h, piv_l):
+    """Estructura de tendencia por pivotes: HH/HL, LH/LL o mixta."""
+    def _dir(pivs):
+        if len(pivs) < 2:
+            return 0
+        vals = [p for _, p in pivs[-3:]]
+        ups = sum(1 for i in range(1, len(vals)) if vals[i] > vals[i - 1])
+        downs = len(vals) - 1 - ups
+        return 1 if ups > downs else (-1 if downs > ups else 0)
+
+    dh, dl = _dir(piv_h), _dir(piv_l)
+    if dh > 0 and dl >= 0:
+        return 1, "maximos y minimos crecientes"
+    if dh <= 0 and dl < 0:
+        return -1, "maximos y minimos decrecientes"
+    return 0, "estructura mixta (sin tendencia clara de pivotes)"
+
+
+def _pat_channel_fallback(channel, struct_dir, struct_txt):
+    """Canal/estructura como figura por defecto (siempre hay algo que decir)."""
+    if not channel:
+        return {"name": "Estructura", "direction": "neutral", "status": "vigente",
+                "key_level": None, "priority": 20, "text": struct_txt.capitalize()}
+    sp = channel["slope_pct"] or 0
+    pos = channel["pos"] if channel["pos"] is not None else 0.5
+    meses = max(1, round(channel["lookback"] / 21))
+    if sp >= 0.04:
+        nm, d = "Canal alcista", "alcista"
+    elif sp <= -0.04:
+        nm, d = "Canal bajista", "bajista"
+    else:
+        nm, d = "Rango lateral", "neutral"
+    if pos >= 0.8:
+        ptxt = "pegado al techo del canal"
+    elif pos <= 0.2:
+        ptxt = "apoyado en el piso del canal"
+    elif pos >= 0.5:
+        ptxt = "en la mitad superior del canal"
+    else:
+        ptxt = "en la mitad inferior del canal"
+    return {"name": nm, "direction": d, "status": "vigente",
+            "key_level": channel["lower"] if d == "alcista" else channel["upper"],
+            "priority": 30,
+            "text": f"{nm} de ~{meses} meses, precio {ptxt}; {struct_txt}"}
+
+
+def _detect_patterns(df, piv_h, piv_l, all_levels, atr, price,
+                     sma50_arr, sma200_arr, rsi_series, channel):
+    struct_dir, struct_txt = _structure(piv_h, piv_l)
+    cands = [
+        _pat_breakout(df, all_levels, atr),
+        _pat_double(df, piv_h, piv_l, atr),
+        _pat_triangle(df, piv_h, piv_l, atr, price),
+        _pat_ma_cross(df, sma50_arr, sma200_arr),
+        _pat_divergence(df, piv_h, piv_l, rsi_series),
+        _pat_channel_fallback(channel, struct_dir, struct_txt),
+    ]
+    cands = sorted([c for c in cands if c], key=lambda c: -c["priority"])
+    main = cands[0]
+    secondary = next((c for c in cands[1:] if c["priority"] >= 45), None)
+    if secondary:
+        main = dict(main)
+        main["secondary"] = secondary["text"]
+    return main, struct_dir, struct_txt
+
+
+# ══════════════════════════════════════════════════════════════
+#  CONDICIONES DEL SISTEMA (compra y venta, con "que falta")
+# ══════════════════════════════════════════════════════════════
+
+def _condition_items(ind):
+    macd_df, rsi_df, konc_df = ind["macd"], ind["rsi"], ind["koncorde"]
+    hist, hist_prev = float(macd_df["hist"].iloc[-1]), float(macd_df["hist"].iloc[-2])
+    rsi_v, rsi_prev3 = float(rsi_df["rsi"].iloc[-1]), float(rsi_df["rsi"].iloc[-4])
+    marron = float(konc_df["marron"].iloc[-1])
+    marron_prev = float(konc_df["marron"].iloc[-2])
+    media = float(konc_df["media"].iloc[-1])
+
+    _, bd = signals.check_buy_conditions(konc_df, macd_df, rsi_df)
+    _, sd = signals.check_sell_conditions(konc_df, macd_df, rsi_df)
+
+    def _buy_items():
+        items = []
+        if bd.get("macd_ok"):
+            t = f"MACD: hist {hist:+.2f} negativo y girando al alza (cumple)"
+        elif hist >= 0:
+            t = f"MACD: hist {hist:+.2f} positivo — necesita zona negativa"
+            if hist < hist_prev:
+                t += ", viene cayendo (acercandose)"
+        else:
+            t = f"MACD: hist {hist:+.2f} negativo pero aun cayendo — falta el giro"
+        items.append({"name": "MACD", "ok": bool(bd.get("macd_ok")), "text": t})
+        if bd.get("rsi_ok"):
+            t = f"RSI {rsi_v:.0f} < 30 (cumple)"
+        else:
+            t = f"RSI {rsi_v:.0f} — necesita <30"
+            if rsi_v < 40 and rsi_v < rsi_prev3:
+                t += " (acercandose)"
+        items.append({"name": "RSI", "ok": bool(bd.get("rsi_ok")), "text": t})
+        if bd.get("konc_ok"):
+            t = "Koncorde: marron bajo media y girando al alza (cumple)"
+        elif marron >= media:
+            t = f"Koncorde: marron {marron:.1f} sobre media {media:.1f} — necesita zona baja"
+        else:
+            t = "Koncorde: marron bajo media pero sin giro al alza todavia"
+        items.append({"name": "Koncorde", "ok": bool(bd.get("konc_ok")), "text": t})
+        return items
+
+    def _sell_items():
+        items = []
+        if sd.get("macd_ok"):
+            t = f"MACD: hist {hist:+.2f} positivo y girando a la baja (cumple)"
+        elif hist <= 0:
+            t = f"MACD: hist {hist:+.2f} negativo — necesita zona positiva"
+        else:
+            t = f"MACD: hist {hist:+.2f} positivo pero aun subiendo — falta el giro"
+            if hist < hist_prev:
+                t = f"MACD: hist {hist:+.2f} positivo y aflojando (acercandose)"
+        items.append({"name": "MACD", "ok": bool(sd.get("macd_ok")), "text": t})
+        if sd.get("rsi_ok"):
+            t = f"RSI {rsi_v:.0f} > 70 (cumple)"
+        else:
+            t = f"RSI {rsi_v:.0f} — necesita >70"
+            if rsi_v > 60 and rsi_v > rsi_prev3:
+                t += " (acercandose)"
+        items.append({"name": "RSI", "ok": bool(sd.get("rsi_ok")), "text": t})
+        if sd.get("konc_ok"):
+            t = "Koncorde: marron sobre media y girando a la baja (cumple)"
+        elif marron <= media:
+            t = f"Koncorde: marron {marron:.1f} bajo media {media:.1f} — necesita zona alta"
+        else:
+            t = "Koncorde: marron sobre media pero sin giro a la baja todavia"
+        items.append({"name": "Koncorde", "ok": bool(sd.get("konc_ok")), "text": t})
+        return items
+
+    buy_items, sell_items = _buy_items(), _sell_items()
+    return (
+        {"met": int(bd.get("conditions_met", 0)), "items": buy_items},
+        {"met": int(sd.get("conditions_met", 0)), "items": sell_items},
+    )
+
+
+# ══════════════════════════════════════════════════════════════
+#  SESION (intradia) Y VEREDICTO
+# ══════════════════════════════════════════════════════════════
+
+def _session_fraction():
+    now = datetime.now(_NY)
+    open_t = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_t = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    if now <= open_t:
+        return None
+    if now >= close_t:
+        return 1.0
+    return max((now - open_t).total_seconds() / (6.5 * 3600), 0.12)
+
+
+def _session_read(df, intra):
+    """Gap, posicion en el rango y RVOL de la sesion en curso o ultima rueda."""
+    closes, vols = df["close"].values, df["volume"].values
+    last_date = df["date"].iloc[-1]
+    prev_close = float(closes[-2])
+    d = datetime.strptime(last_date, "%Y-%m-%d")
+    today_ny = datetime.now(_NY).date()
+    frac = _session_fraction()
+    is_today = (d.date() == today_ny)
+    is_live = bool(is_today and frac is not None and frac < 1.0)
+    label = "hoy" if is_today else f"{_DIAS[d.weekday()]} {d.day:02d}/{d.month:02d}"
+
+    o = float(df["open"].iloc[-1])
+    hi, lo = float(df["high"].iloc[-1]), float(df["low"].iloc[-1])
+    c = float(closes[-1])
+    if intra is not None and not intra.empty:
+        try:
+            day = intra[intra.index.date == d.date()]
+            if len(day) >= 2:
+                o = float(day["Open"].iloc[0])
+                hi = float(day["High"].max())
+                lo = float(day["Low"].min())
+                c = float(day["Close"].iloc[-1])
+        except Exception:
+            pass
+
+    gap = (o / prev_close - 1) * 100 if prev_close else None
+    vs_open = (c / o - 1) * 100 if o else None
+    rng = hi - lo
+    range_pos = ((c - lo) / rng * 100) if rng > 0 else None
+
+    avg_vol = float(np.mean(vols[-21:-1])) if len(vols) >= 21 else None
+    rvol = None
+    if avg_vol:
+        v = float(vols[-1])
+        if is_live and frac:
+            v = v / frac
+        rvol = v / avg_vol
+
+    parts = []
+    if gap is not None and abs(gap) >= 0.15:
+        parts.append(f"abrio con gap {_pct(gap)}")
+    else:
+        parts.append("abrio plano")
+    if vs_open is not None:
+        parts.append(f"opera {_pct(vs_open)} desde la apertura" if is_live
+                     else f"cerro {_pct(vs_open)} desde la apertura")
+    if range_pos is not None:
+        parts.append(f"en el {range_pos:.0f}% del rango del dia")
+    if rvol is not None:
+        vol_tag = " (volumen alto)" if rvol >= 1.5 else \
+                  (" (volumen bajo)" if rvol <= 0.6 else "")
+        parts.append(f"RVOL {rvol:.1f}x{vol_tag}")
+    prefix = "Sesion en curso" if is_live else f"Ultima rueda ({label})"
+    return {
+        "date": last_date, "label": label, "is_live": is_live,
+        "gap_pct": _r(gap, 2), "vs_open_pct": _r(vs_open, 2),
+        "range_pos": _r(range_pos, 0), "rvol": _r(rvol, 2),
+        "text": f"{prefix}: " + ", ".join(parts),
+    }
+
+
+def _verdict(price, mas, channel, hist, hist_prev, rsi_v, struct_dir, pattern):
+    score, factors = 0, []
+
+    def add(pts, txt):
+        nonlocal score
+        score += pts
+        factors.append(f"{txt} ({pts:+d})")
+
+    if mas.get("sma200"):
+        add(2 if price > mas["sma200"] else -2,
+            "Precio " + ("sobre" if price > mas["sma200"] else "bajo") + " SMA200")
+    if mas.get("sma50"):
+        add(1 if price > mas["sma50"] else -1,
+            "Precio " + ("sobre" if price > mas["sma50"] else "bajo") + " SMA50")
+    if channel and channel["slope_pct"] is not None:
+        if channel["slope_pct"] >= 0.04:
+            add(1, "Canal de tendencia ascendente")
+        elif channel["slope_pct"] <= -0.04:
+            add(-1, "Canal de tendencia descendente")
+    add(1 if hist > 0 else -1, "MACD hist " + ("positivo" if hist > 0 else "negativo"))
+    add(1 if hist > hist_prev else -1,
+        "Momentum MACD " + ("mejorando" if hist > hist_prev else "empeorando"))
+    if rsi_v >= 55:
+        add(1, f"RSI {rsi_v:.0f} en zona alta")
+    elif rsi_v <= 45:
+        add(-1, f"RSI {rsi_v:.0f} en zona baja")
+    if struct_dir:
+        add(2 * struct_dir, "Estructura de pivotes " +
+            ("alcista" if struct_dir > 0 else "bajista"))
+    if pattern and pattern["name"].startswith("Divergencia"):
+        add(1 if pattern["direction"] == "alcista" else -1, pattern["name"])
+
+    if score >= 5:
+        bias, label = "alcista", "SESGO ALCISTA FUERTE"
+    elif score >= 2:
+        bias, label = "alcista", "SESGO ALCISTA"
+    elif score <= -5:
+        bias, label = "bajista", "SESGO BAJISTA FUERTE"
+    elif score <= -2:
+        bias, label = "bajista", "SESGO BAJISTA"
+    else:
+        bias, label = "neutral", "SIN SESGO CLARO"
+    return {"bias": bias, "label": label, "score": score, "factors": factors}
+
+
+def _build_reading(verdict, sups, ress, sig, buy_c, sell_c, price, high_52w):
+    frases = []
+    # 1) sesgo con sus factores mas fuertes en la direccion del score
+    sign = "+" if verdict["score"] >= 0 else "-"
+
+    def _decap(f):
+        return f[0].lower() + f[1:] if len(f) > 1 and f[1].islower() else f
+
+    fac = [_decap(f.rsplit(" (", 1)[0]) for f in verdict["factors"]
+           if f"({sign}" in f][:3]
+    if verdict["bias"] == "neutral":
+        frases.append("Cuadro mixto: " + (", ".join(fac[:2])
+                      if fac else "señales cruzadas entre tendencia y momentum") + ".")
+    else:
+        frases.append(f"Sesgo {verdict['bias']}: " + ", ".join(fac) + ".")
+
+    # 2) niveles operativos
+    sup = sups[0] if sups else None
+    res = ress[0] if ress else None
+    if verdict["bias"] == "neutral" and sup and res:
+        frases.append(
+            f"Rango operativo {_fmt_usd(_r(sup['level']))}–{_fmt_usd(_r(res['level']))}: "
+            f"la ruptura de un extremo define la proxima pierna.")
+    elif verdict["bias"] == "bajista":
+        if res and sup:
+            frases.append(
+                f"Mientras no recupere {_fmt_usd(_r(res['level']))} el rebote es "
+                f"vulnerable; bajo {_fmt_usd(_r(sup['level']))} se acelera la caida.")
+        elif sup:
+            frases.append(f"El piso a vigilar es {_fmt_usd(_r(sup['level']))} "
+                          f"({sup['touches']} toques): perderlo abre mas caida.")
+    else:
+        if sup and res:
+            frases.append(
+                f"Mientras aguante {_fmt_usd(_r(sup['level']))} ({sup['touches']} toques) "
+                f"el cuadro sigue constructivo; sobre {_fmt_usd(_r(res['level']))} "
+                f"hay continuacion, perder el piso lo anula.")
+        elif sup:
+            extra = ""
+            if high_52w and price >= 0.99 * high_52w:
+                extra = " — precio en zona de maximos del año, sin techos por encima"
+            frases.append(f"Soporte clave {_fmt_usd(_r(sup['level']))} "
+                          f"({sup['touches']} toques){extra}.")
+
+    # 3) estado del sistema (señal 3/3 o cuanto falta)
+    if sig["signal"] == "BUY":
+        frases.append("El sistema tiene señal de COMPRA activa (3/3 condiciones).")
+    elif sig["signal"] == "SELL":
+        frases.append("El sistema tiene señal de VENTA activa (3/3 condiciones).")
+    else:
+        b, s = buy_c["met"], sell_c["met"]
+        if b >= 2:
+            falta = next((i["text"] for i in buy_c["items"] if not i["ok"]), "")
+            frases.append(f"Al sistema le falta 1 condicion para señal de compra: {falta}.")
+        elif s >= 2:
+            falta = next((i["text"] for i in sell_c["items"] if not i["ok"]), "")
+            frases.append(f"Al sistema le falta 1 condicion para señal de venta: {falta}.")
+    return " ".join(frases)
+
+
+# ══════════════════════════════════════════════════════════════
+#  PULSO COMPLETO
+# ══════════════════════════════════════════════════════════════
+
+def _build_pulse():
+    df = _download_daily()
+    if df is None:
+        return {"error": "yfinance no devolvio datos para SPY"}
+    intra = _download_intraday()
+
+    ind = indicators.calculate_all(df)
+    sig = signals.generate_signal(ind)
+
+    closes = df["close"]
+    price = float(closes.iloc[-1])
+    prev_close = float(closes.iloc[-2])
+    change_pct = (price / prev_close - 1) * 100 if prev_close else None
+    atr = _atr(df)
+    n = len(df)
+
+    # MAs (series completas para el chart, ultimo valor para el analisis)
+    mas_payload, mas_val = {}, {}
+    for p in (20, 50, 200):
+        s = indicators.sma(closes, p)
+        mas_payload[f"sma{p}"] = [_r(x) for x in s.tolist()]
+        v = _r(s.iloc[-1])
+        mas_payload[f"sma{p}_val"] = v
+        mas_val[f"sma{p}"] = v
+
+    piv_h, piv_l = _pivots(df)
+    sups, ress, all_levels = _sr_levels(df, piv_h, piv_l, atr, price, mas_val)
+    channel = _channel(df)
+    rsi_series = ind["rsi"]["rsi"].values
+    pattern, struct_dir, struct_txt = _detect_patterns(
+        df, piv_h, piv_l, all_levels, atr, price,
+        mas_payload["sma50"], mas_payload["sma200"], rsi_series, channel)
+
+    hist = float(ind["macd"]["hist"].iloc[-1])
+    hist_prev = float(ind["macd"]["hist"].iloc[-2])
+    rsi_v = float(ind["rsi"]["rsi"].iloc[-1])
+    marron = float(ind["koncorde"]["marron"].iloc[-1])
+    media = float(ind["koncorde"]["media"].iloc[-1])
+    azul = float(ind["koncorde"]["azul"].iloc[-1])
+
+    buy_c, sell_c = _condition_items(ind)
+    session = _session_read(df, intra)
+    verdict = _verdict(price, mas_val, channel, hist, hist_prev, rsi_v,
+                       struct_dir, pattern)
+    high_52w = float(df["high"].iloc[-252:].max()) if n >= 252 else None
+
+    # --- textos de las lineas ---
+    rsi_zone = ("sobreventa" if rsi_v < 30 else "zona baja" if rsi_v < 45 else
+                "neutral" if rsi_v < 55 else "neutral-alto" if rsi_v < 65 else
+                "alto" if rsi_v <= 70 else "sobrecompra")
+    mom = (f"MACD hist {hist:+.2f} {'subiendo' if hist > hist_prev else 'cayendo'} · "
+           f"RSI {rsi_v:.0f} ({rsi_zone}) · Koncorde: manos fuertes "
+           f"{'comprando' if azul > 0 else 'vendiendo'} (azul {azul:+.1f}), "
+           f"marron {'sobre' if marron > media else 'bajo'} su media")
+
+    def _lvl_txt(c, kind):
+        dist = (c["level"] / price - 1) * 100
+        tags = (" + " + "/".join(c["tags"])) if c.get("tags") else ""
+        return (f"{'Soporte' if kind == 'sup' else 'Resistencia'} "
+                f"{_fmt_usd(_r(c['level']))} ({c['touches']} toques{tags}) "
+                f"a {_pct(dist)}")
+
+    lvl_parts = []
+    if sups:
+        lvl_parts.append(_lvl_txt(sups[0], "sup"))
+    if ress:
+        lvl_parts.append(_lvl_txt(ress[0], "res"))
+    else:
+        lvl_parts.append("sin techos en el ultimo año — precio en zona de maximos")
+    levels_text = " · ".join(lvl_parts)
+
+    reading = _build_reading(verdict, sups, ress, sig, buy_c, sell_c, price, high_52w)
+
+    # --- payload de chart (mismo shape que el scanner + extras del pulso) ---
+    ohlc = [{"time": df["date"].iloc[i],
+             "open": _r(df["open"].iloc[i]), "high": _r(df["high"].iloc[i]),
+             "low": _r(df["low"].iloc[i]), "close": _r(df["close"].iloc[i])}
+            for i in range(n)]
+    macd_df, rsi_df, konc_df = ind["macd"], ind["rsi"], ind["koncorde"]
+    chart = {
+        "ohlc": ohlc,
+        "mas": mas_payload,
+        "macd": {k: [_r(x) for x in macd_df[k].tolist()]
+                 for k in ("macd", "signal", "hist")},
+        "rsi": [_r(x, 1) for x in rsi_df["rsi"].tolist()],
+        "koncorde": {k: [_r(x, 1) for x in konc_df[k].tolist()]
+                     for k in ("verde", "marron", "azul", "media")},
+    }
+    sr_lines = ([{"level": _r(c["level"]), "touches": c["touches"], "kind": c["kind"]}
+                 for c in sups + ress])
+
+    return {
+        "symbol": SYMBOL, "name": NAME,
+        "updated": datetime.now(_NY).strftime("%Y-%m-%d %H:%M:%S"),
+        "price": _r(price), "prev_close": _r(prev_close),
+        "change_pct": _r(change_pct, 2),
+        "high_52w": _r(high_52w),
+        "verdict": verdict,
+        "system": {"signal": sig["signal"], "label": sig["signal_label"],
+                   "strength": _r(sig.get("strength"), 1)},
+        "momentum": {"macd_hist": _r(hist), "rsi": _r(rsi_v, 1),
+                     "koncorde_azul": _r(azul, 1), "text": mom},
+        "levels": {"supports": [{"level": _r(c["level"]), "touches": c["touches"],
+                                 "tags": c.get("tags", [])} for c in sups],
+                   "resistances": [{"level": _r(c["level"]), "touches": c["touches"],
+                                    "tags": c.get("tags", [])} for c in ress],
+                   "text": levels_text},
+        "pattern": pattern,
+        "conditions": {"buy": buy_c, "sell": sell_c},
+        "session": session,
+        "reading": reading,
+        "chart": chart,
+        "chart_extras": {
+            "sr_lines": sr_lines,
+            "channel": {"top": channel["top"], "bot": channel["bot"]} if channel else None,
+        },
+    }
+
+
+def get_market_pulse(force=False):
+    """Pulso cacheado (TTL 10 min). Ante error devuelve el ultimo valido."""
+    now = time.time()
+    if not force and _cache["data"] and now - _cache["ts"] < _TTL_S:
+        return _cache["data"]
+    with _lock:
+        if not force and _cache["data"] and time.time() - _cache["ts"] < _TTL_S:
+            return _cache["data"]
+        try:
+            data = _build_pulse()
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+        if data.get("error") and _cache["data"] and not _cache["data"].get("error"):
+            return _cache["data"]      # stale > nada
+        _cache["data"] = data
+        _cache["ts"] = time.time()
+        return data
+
+
+if __name__ == "__main__":
+    import json
+    p = get_market_pulse()
+    slim = {k: v for k, v in p.items() if k not in ("chart", "chart_extras")}
+    print(json.dumps(slim, indent=2, ensure_ascii=False, default=str))
+    if p.get("chart"):
+        print(f"\nchart: {len(p['chart']['ohlc'])} velas | "
+              f"sr_lines: {p['chart_extras']['sr_lines']} | "
+              f"channel: {'si' if p['chart_extras']['channel'] else 'no'}")

@@ -30,6 +30,7 @@ import config
 import options_lab
 import calibration
 import enrichment
+import market_pulse
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -1201,6 +1202,16 @@ def api_calibration():
     _calibration_cache["data"] = result
     _calibration_cache["ts"] = time.time()
     return Response(to_json(result), mimetype="application/json")
+
+
+@app.route("/api/spy-pulse")
+@login_required
+def api_spy_pulse():
+    """Pulso del Mercado (tarjeta del tab ETF): analisis tecnico del SPY via
+    market_pulse.py, cache 10 min global — el SPY es el mismo para todos los
+    usuarios. No confundir con /api/market-pulse (quotes + sentimiento)."""
+    return Response(to_json(market_pulse.get_market_pulse()),
+                    mimetype="application/json")
 
 
 @app.route("/api/options-lab/<symbol>")
