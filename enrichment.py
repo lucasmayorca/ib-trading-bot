@@ -169,6 +169,7 @@ def _fetch_wallst(sym):
     except Exception:
         info = {}
     out = {"ts": time.time()}
+    out["name"] = info.get("longName") or info.get("shortName") or None
     out["an_mean"] = _clean(info.get("recommendationMean"), 2)
     out["an_key"] = info.get("recommendationKey") or None
     n = info.get("numberOfAnalystOpinions")

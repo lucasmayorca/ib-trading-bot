@@ -1849,7 +1849,7 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 .content{padding:0 32px 20px;overflow-x:auto}
 .lh-groups,.lh-cols,.stock-row{
   display:grid;
-  grid-template-columns:20px 76px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 56px 44px 78px 52px 46px 92px 84px;
+  grid-template-columns:20px 150px 86px 120px 48px 52px 52px 52px 52px 52px 56px 48px 56px 44px 54px 56px 56px 56px 44px 78px 52px 46px 92px 84px;
   gap:4px;align-items:center;
 }
 .stock-row{padding:9px 14px;min-width:1548px}
@@ -1882,6 +1882,7 @@ summary:hover .stock-row{background:rgba(36,86,230,.035)}
 .sym-cell{display:flex;flex-direction:column;line-height:1.2;min-width:0}
 .sym-cell b{font-weight:800;color:var(--text);font-size:13.5px;letter-spacing:-.3px}
 .sym-cell small{font-size:9px;color:var(--dim);font-family:'JetBrains Mono',monospace;font-weight:600}
+.sym-cell .sym-name{font-family:'Inter',system-ui,sans-serif;font-size:10px;color:var(--muted);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:142px}
 /* Precio con variacion diaria */
 .px-cell{display:flex;flex-direction:column;align-items:flex-end;line-height:1.2;font-family:'JetBrains Mono',monospace}
 .px-cell b{font-weight:600;color:#3a3f48;font-size:12.5px}
@@ -3300,8 +3301,12 @@ function fdv(v){
 }
 function fsym(sym,r){
   let dv=fdv(r?r.dollar_vol:null);
-  let t=dv?' title="Volumen promedio en dolares (20d): '+dv+'"':'';
-  return'<span class="sym-cell"'+t+'><b>'+sym+'</b>'+(dv?'<small>'+dv+' vol</small>':'')+'</span>';
+  let nm=(r&&r.ext&&r.ext.name)?r.ext.name:'';
+  let tip=(nm?nm+' — ':'')+(dv?'Volumen promedio en dólares (20d): '+dv:'');
+  let t=tip?' title="'+tip.replace(/"/g,'&quot;')+'"':'';
+  // 2ª línea: nombre de la empresa (si enrichment ya lo trajo); sino el $vol como antes
+  let sub=nm?('<small class="sym-name">'+nm+'</small>'):(dv?'<small>'+dv+' vol</small>':'');
+  return'<span class="sym-cell"'+t+'><b>'+sym+'</b>'+sub+'</span>';
 }
 function fpx(r){
   if(!r||r.price==null)return'<span class="px-cell"><b>---</b></span>';
@@ -5199,6 +5204,30 @@ function renderBacktest(d){
   document.getElementById('olab-backtest').innerHTML=html;
 }
 
+function olabFmtExp(iso){ // '2026-08-14' -> '14 Ago 2026'
+  if(!iso) return '';
+  let p=iso.split('-'); if(p.length!==3) return iso;
+  let M=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  return parseInt(p[2],10)+' '+(M[parseInt(p[1],10)-1]||p[1])+' '+p[0];
+}
+function olabFmtExpDay(iso){ // '2026-08-14' -> 'Vie 14 Ago 2026'
+  if(!iso) return '';
+  let D=['Dom','Lun','Mar','Mie','Jue','Vie','Sab'];
+  let d=new Date(iso+'T12:00:00');
+  return (isNaN(d)?'':D[d.getDay()]+' ')+olabFmtExp(iso);
+}
+function olabStrike(k){ // strike sin redondear: 187.5 -> "187.50" seria feo, 188 seria ERROR
+  return (k!=null&&isFinite(k))?String(parseFloat(k.toFixed(2))):'--';
+}
+function olabExpChip(s){ // chip de vencimiento del header de cada estrategia
+  if(!s.expiry) return s.dte?' <span style="font-size:10px;color:var(--muted);font-weight:400">'+s.dte+'d</span>':'';
+  let est=!!s.expiry_estimated;
+  let tip=est
+    ?'Vencimiento ESTIMADO (viernes mas cercano a '+s.dte+' dias; no habia cadena de opciones disponible). Usa el vencimiento listado mas cercano en tu broker.'
+    :'Vencimiento real del contrato, tomado de la cadena de opciones del mercado.';
+  return ' <span title="'+tip+'" style="font-size:10px;font-weight:700;color:var(--accent);background:rgba(36,86,230,.08);border:1px solid rgba(36,86,230,.18);padding:1px 7px;border-radius:4px;white-space:nowrap">Vence '+(est?'&asymp;':'')+olabFmtExp(s.expiry)+' &middot; '+s.dte+'d</span>';
+}
+
 function renderStrategies(d){
   let strats=d.strategies||[];
   let html='<div class="olab-section-title">Top 10 Estrategias Recomendadas</div>';
@@ -5227,7 +5256,7 @@ function renderStrategies(d){
         '<div class="olab-strat-rank '+rankCls+'">'+rank+'</div>'+
         '<div class="olab-strat-info">'+
           '<div class="olab-strat-name">'+s.name+' <span class="olab-bias '+biasCls+'">'+biasLabel+'</span>'+
-            (s.dte?' <span style="font-size:10px;color:var(--muted);font-weight:400">'+s.dte+'d</span>':'')+priceBadge+
+            olabExpChip(s)+priceBadge+
           '</div>'+
           '<div class="olab-strat-desc">'+s.description+'</div>'+
         '</div>'+
@@ -5253,7 +5282,7 @@ function renderStrategyDetail(s,idx){
 
   // Left: Payoff chart
   html+='<div>'+
-    '<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:8px">Diagrama P&L al Vencimiento</div>'+
+    '<div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:8px">Diagrama P&L al Vencimiento'+(s.expiry?' <span style="color:var(--muted);font-weight:600">('+(s.expiry_estimated?'&asymp;':'')+olabFmtExp(s.expiry)+')</span>':'')+'</div>'+
     '<div class="olab-payoff-chart"><canvas id="payoff-canvas-'+idx+'" class="olab-payoff-canvas"></canvas></div>'+
     '<div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap">';
   if(s.breakevens&&s.breakevens.length){
@@ -5301,14 +5330,44 @@ function renderStrategyDetail(s,idx){
 
   // Legs table
   if(s.legs&&s.legs.length){
+    let hasMkt=s.legs.some(l=>l.bid!=null&&l.ask!=null);
     html+='<div style="font-size:11px;font-weight:700;color:var(--text);margin:12px 0 6px">Patas de la Estrategia</div>';
-    html+='<table class="olab-legs-table"><thead><tr><th>Accion</th><th>Tipo</th><th>Strike</th><th>Prima</th><th>Delta</th><th>Qty</th></tr></thead><tbody>';
+    html+='<table class="olab-legs-table"><thead><tr><th>Accion</th><th>Tipo</th><th>Strike</th><th>Vencimiento</th>'+
+      '<th title="'+(hasMkt?'Mid real del bid/ask de mercado':'Prima teorica Black-Scholes')+'">Prima</th>'+
+      (hasMkt?'<th>Bid / Ask</th><th title="Volatilidad implicita del contrato real">IV</th>':'')+
+      '<th>Delta</th><th>Qty</th></tr></thead><tbody>';
     for(let leg of s.legs){
       let ac=leg.action==='BUY'?'<span style="color:#0b7a4b">COMPRA</span>':'<span style="color:#c22436">VENTA</span>';
       let tipo=leg.right==='C'?'Call':'Put';
-      html+='<tr><td>'+ac+'</td><td>'+tipo+'</td><td>$'+_n(leg.strike,0)+'</td><td>$'+_n(leg.premium,2)+'</td><td>'+_n((leg.greeks_data||{}).delta||0,3)+'</td><td>'+leg.qty+'</td></tr>';
+      let ven=leg.expiry
+        ?(s.expiry_estimated?'&asymp;':'')+olabFmtExp(leg.expiry)+' <span style="color:var(--muted)">('+leg.dte+'d)</span>'
+        :(s.dte?s.dte+'d':'---');
+      html+='<tr><td>'+ac+'</td><td>'+tipo+'</td><td>$'+olabStrike(leg.strike)+'</td><td style="white-space:nowrap">'+ven+'</td>'+
+        '<td>$'+_n(leg.premium,2)+'</td>'+
+        (hasMkt?'<td style="color:var(--muted);white-space:nowrap">'+(leg.bid!=null?'$'+_n(leg.bid,2)+' / $'+_n(leg.ask,2):'---')+'</td>'+
+          '<td>'+(leg.iv!=null?_n(leg.iv*100,0)+'%':'---')+'</td>':'')+
+        '<td>'+_n((leg.greeks_data||{}).delta||0,3)+'</td><td>'+leg.qty+'</td></tr>';
     }
     html+='</tbody></table>';
+
+    // Orden lista para el broker: el contrato EXACTO a operar, pata por pata
+    let sym=(_olabData||{}).symbol||'';
+    html+='<div style="font-size:11px;font-weight:700;color:var(--text);margin:12px 0 6px">Orden para tu broker</div>';
+    html+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:11px;line-height:1.9">';
+    for(let leg of s.legs){
+      let verb=leg.action==='BUY'?'COMPRAR':'VENDER';
+      let vc=leg.action==='BUY'?'#0b7a4b':'#c22436';
+      let px=(leg.bid!=null&&leg.ask!=null)
+        ?'limite &asymp; <strong>$'+_n(leg.premium,2)+'</strong> <span style="color:var(--muted)">(mid del bid $'+_n(leg.bid,2)+' / ask $'+_n(leg.ask,2)+')</span>'
+        :'prima teorica &asymp; $'+_n(leg.premium,2)+' <span style="color:var(--muted)">(confirma el precio en la cadena de tu broker)</span>';
+      html+='<div><strong style="color:'+vc+'">'+verb+' '+leg.qty+'&times;</strong> <strong>'+sym+' '+(leg.right==='C'?'CALL':'PUT')+' $'+olabStrike(leg.strike)+'</strong>'+
+        ' &middot; vence <strong>'+(s.expiry_estimated?'&asymp;':'')+olabFmtExpDay(leg.expiry)+'</strong>'+(leg.dte?' <span style="color:var(--muted)">('+leg.dte+'d)</span>':'')+
+        ' &middot; '+px+'</div>';
+    }
+    if(s.name==='Covered Call') html+='<div style="color:var(--muted)">+ Requiere tener '+(100*((s.legs[0]||{}).qty||1))+' acciones de '+sym+' (cubren el call vendido).</div>';
+    if(s.name==='Protective Put') html+='<div style="color:var(--muted)">+ Asegura '+(100*((s.legs[0]||{}).qty||1))+' acciones de '+sym+' que ya tengas en cartera.</div>';
+    if(s.expiry_estimated) html+='<div style="color:#b45309;margin-top:4px">&#x26A0; Vencimientos estimados (sin cadena real disponible): usa el vencimiento listado mas cercano a esa fecha.</div>';
+    html+='</div>';
   }
   html+='</div></div>';
 
@@ -5626,7 +5685,7 @@ function toggleOlabMulti(idx,sym){
       let biasLbl=s.bias==='bullish'?'ALC':(s.bias==='bearish'?'BAJ':'NEU');
       html+='<tr>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);font-weight:700">'+(s.rank||'')+'</td>'+
-        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle)">'+s.name+' <span style="color:var(--muted)">'+s.dte+'d</span></td>'+
+        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle)">'+s.name+' <span style="color:var(--muted)">'+(s.expiry?(s.expiry_estimated?'&asymp;':'')+olabFmtExp(s.expiry)+' &middot; ':'')+s.dte+'d</span></td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:center"><span class="olab-bias '+biasCls+'">'+biasLbl+'</span></td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#0b7a4b">$'+_n(s.max_profit,0)+'</td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#c22436">$'+_n(s.max_loss,0)+'</td>'+
@@ -8150,11 +8209,12 @@ def main():
                                   "enrichment_cache.json"),
     )
 
-    print(f"\nDashboard en: http://localhost:5050")
+    port = int(os.environ.get("PORT", 5050))
+    print(f"\nDashboard en: http://localhost:{port}")
     print("Ctrl+C para detener\n")
 
     try:
-        flask_app.run(host="0.0.0.0", port=5050, debug=False, use_reloader=False)
+        flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         pass
     finally:
