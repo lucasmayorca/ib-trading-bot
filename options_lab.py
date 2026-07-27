@@ -51,8 +51,16 @@ class OptionMarket:
             return None
         return self.dte_map[d].get("dte")
 
+    def real_expiry(self, dte):
+        """Fecha de vencimiento (YYYY-MM-DD) del contrato usado para este DTE objetivo."""
+        d = self._nearest_dte(dte)
+        if d is None:
+            return None
+        return self.dte_map[d].get("expiry")
+
     def lookup(self, dte, right, strike):
-        """Devuelve (strike_real, mid, half_spread, iv) del strike mas cercano, o None.
+        """Devuelve (strike_real, mid, half_spread, iv, bid, ask) del strike mas
+        cercano, o None.
 
         Devuelve el strike realmente disponible para que el llamador snapee la pata
         a el (premium y strike deben corresponder al MISMO contrato)."""
@@ -73,7 +81,7 @@ class OptionMarket:
         if mid <= 0:
             return None
         half_spread = max(0.0, (ask - bid) / 2.0)
-        return (k, mid, half_spread, iv)
+        return (k, mid, half_spread, iv, bid, ask)
 
 
 def fetch_option_market(symbol, dte_targets, spot=None):
@@ -385,6 +393,11 @@ class OptionLeg:
     qty: int = 1
     premium: float = 0.0
     greeks_data: dict = field(default_factory=dict)
+    dte: int = 0                        # dias al vencimiento de ESTA pata (calendar: cada una el suyo)
+    expiry: str = ""                    # fecha de vencimiento YYYY-MM-DD (real de la cadena o estimada)
+    bid: Optional[float] = None         # bid real del contrato (solo con cadena de mercado)
+    ask: Optional[float] = None         # ask real del contrato (solo con cadena de mercado)
+    iv: Optional[float] = None          # IV real del contrato (solo con cadena de mercado)
 
     def net_premium(self):
         mult = -1 if self.action == "BUY" else 1
@@ -415,6 +428,8 @@ class Strategy:
     expected_value: float = 0.0     # EV en $ (media del Monte Carlo, neto de spread)
     market_priced: bool = False     # True si las patas se valuaron con precios reales de mercado
     spread_cost: float = 0.0        # coste estimado de cruzar el spread bid/ask ($ por posicion)
+    expiry: str = ""                # vencimiento principal YYYY-MM-DD (pata mas corta en calendar)
+    expiry_estimated: bool = False  # True si la fecha es estimada (sin cadena real: viernes ~DTE)
 
     def to_dict(self):
         d = asdict(self)
@@ -566,11 +581,72 @@ def _derive_metrics(legs, S, T, r, sigma):
     }
 
 
+def _mixed_expiry_metrics(legs, S, r, sigma):
+    """Metricas para estrategias con patas de DISTINTO vencimiento (calendar).
+
+    _derive_metrics asume que todas las patas vencen en el mismo T. Aqui el
+    payoff se evalua al vencimiento de la pata CORTA: las patas que vencen ahi
+    valen su intrinseco y las mas largas su valor Black-Scholes remanente
+    (mismo criterio que calendar_spread)."""
+    net = sum(leg.net_premium() for leg in legs) / 100  # per-share
+    short_dte = min(leg.dte for leg in legs)
+    T_short = short_dte / 365.0
+
+    def pnl_at_short_expiry(price):
+        pnl = 0.0
+        for leg in legs:
+            if leg.dte <= short_dte:
+                val = max(price - leg.strike, 0) if leg.right == "C" else max(leg.strike - price, 0)
+            else:
+                rem_T = (leg.dte - short_dte) / 365.0
+                val = bs_price(price, leg.strike, rem_T, r, sigma, leg.right)
+            sign = 1 if leg.action == "BUY" else -1
+            pnl += sign * (val - leg.premium) * leg.qty
+        return pnl
+
+    step = _strike_step(S)
+    payoff = [{"price": round(float(p), 2), "pnl": round(pnl_at_short_expiry(float(p)), 2)}
+              for p in np.arange(S * 0.85, S * 1.15, step * 0.2)]
+
+    pnls = [p["pnl"] for p in payoff]
+    max_profit = max(pnls) * 100
+    max_loss = min(pnls) * 100
+    breakevens = _find_breakevens(payoff)
+
+    # Monte Carlo log-normal a T_short valuando igual que el payoff (2K sims:
+    # cada una llama bs_price escalar por pata larga, 10K seria innecesariamente caro)
+    n_sims = 2000
+    np.random.seed(42)
+    drift = (r - 0.5 * sigma ** 2) * T_short
+    diffusion = sigma * math.sqrt(T_short) * np.random.randn(n_sims)
+    sim_pnls = [pnl_at_short_expiry(float(fp)) for fp in S * np.exp(drift + diffusion)]
+    prob_profit = round(sum(1 for p in sim_pnls if p > 0) / n_sims * 100, 1)
+    expected_value = (sum(sim_pnls) / n_sims) * 100
+
+    risk_reward = round(abs(max_profit / max_loss), 2) if max_loss != 0 else 99.0
+    capital = abs(max_loss) if max_loss < 0 else abs(net * 100)
+
+    return {
+        "net": net,
+        "payoff": payoff,
+        "max_profit": round(max_profit, 2),
+        "max_loss": round(max_loss, 2),
+        "breakevens": breakevens,
+        "prob_profit": prob_profit,
+        "expected_value": round(expected_value, 2),
+        "risk_reward": risk_reward,
+        "capital": round(abs(capital), 2),
+        "net_premium": round(net * 100, 2),
+        "greeks_agg": _aggregate_greeks(legs),
+    }
+
+
 def _build_strategy(name, name_es, legs, S, T, r, sigma, bias, dte,
                     description="", complexity=1, iv_edge=""):
     """Construye Strategy completa con payoff, greeks, breakevens, etc."""
     # Calcular premiums y greeks teoricos (Black-Scholes) para cada pata
     for leg in legs:
+        leg.dte = dte
         leg.premium = bs_price(S, leg.strike, T, r, sigma, leg.right)
         leg.greeks_data = greeks(S, leg.strike, T, r, sigma, leg.right)
 
@@ -609,32 +685,52 @@ def _apply_market_pricing(strat, market, S, T, r, sigma):
     if market is None:
         return strat
 
-    # Usar el DTE REAL del vencimiento elegido (no el objetivo): los premios reales
-    # corresponden a ese vencimiento, asi que payoff/PoP/EV/griegas deben usar su T.
-    real_dte = market.real_dte(strat.dte)
-    if real_dte and real_dte > 0:
-        strat.dte = int(real_dte)
-        T = real_dte / 365.0
+    # Usar el DTE/vencimiento REAL del contrato elegido (no el objetivo) — por pata,
+    # porque un calendar tiene dos vencimientos distintos. Se resuelve ANTES del
+    # chequeo de liquidez: aunque el pricing quede teorico, el contrato a operar
+    # (fecha de vencimiento) es el real de la cadena.
+    for leg in strat.legs:
+        target = leg.dte or strat.dte
+        real_dte = market.real_dte(target)
+        if real_dte and real_dte > 0:
+            leg.dte = int(real_dte)
+            leg.expiry = market.real_expiry(target) or ""
+    leg_dtes = [leg.dte for leg in strat.legs if leg.dte > 0]
+    if leg_dtes:
+        strat.dte = int(min(leg_dtes))
+        strat.expiry = next((l.expiry for l in strat.legs if l.dte == strat.dte and l.expiry),
+                            strat.expiry)
+        T = strat.dte / 365.0
 
     reals = []
     total_half_spread = 0.0
     for leg in strat.legs:
-        res = market.lookup(strat.dte, leg.right, leg.strike)
+        # Cada pata busca precio en la cadena de SU vencimiento (calendar: la pata
+        # larga se valua en su propio expiry, no en el corto)
+        res = market.lookup(leg.dte or strat.dte, leg.right, leg.strike)
         if res is None:
             return strat   # falta liquidez en alguna pata -> conservar teorico
-        real_strike, mid, half_spread, _iv = res
-        reals.append((leg, real_strike, mid))
+        real_strike, mid, half_spread, iv_leg, bid, ask = res
+        reals.append((leg, real_strike, mid, iv_leg, bid, ask))
         total_half_spread += half_spread * leg.qty
 
     # Todas las patas tienen precio real: aplicar (snapear strike al contrato real
     # para que premium y strike correspondan al mismo contrato)
-    for leg, real_strike, mid in reals:
+    for leg, real_strike, mid, iv_leg, bid, ask in reals:
         leg.strike = real_strike
         leg.premium = mid
+        leg.bid = round(bid, 2)
+        leg.ask = round(ask, 2)
+        leg.iv = round(iv_leg, 4) if iv_leg and 0.01 < iv_leg < 5.0 else None
         # Griegas: recomputar con la IV de mercado (sigma ya es la IV ATM real)
-        leg.greeks_data = greeks(S, leg.strike, T, r, sigma, leg.right)
+        # y el T propio de cada pata
+        leg_T = (leg.dte or strat.dte) / 365.0
+        leg.greeks_data = greeks(S, leg.strike, leg_T, r, sigma, leg.right)
 
-    m = _derive_metrics(strat.legs, S, T, r, sigma)
+    if len({leg.dte for leg in strat.legs}) > 1:
+        m = _mixed_expiry_metrics(strat.legs, S, r, sigma)
+    else:
+        m = _derive_metrics(strat.legs, S, T, r, sigma)
     spread_cost = round(total_half_spread * 100, 2)   # $ por posicion (round trip aprox una via)
 
     strat.max_profit = m["max_profit"]
@@ -651,6 +747,21 @@ def _apply_market_pricing(strat, market, S, T, r, sigma):
     strat.spread_cost = spread_cost
     strat.market_priced = True
     return strat
+
+
+def _estimate_expiry(dte):
+    """Fecha estimada de vencimiento cuando no hay cadena real: el viernes mas
+    cercano a hoy+dte (las opciones listadas vencen los viernes). Devuelve
+    (YYYY-MM-DD, dias_reales_hasta_esa_fecha) para mantener fecha y DTE coherentes."""
+    import datetime as _dt
+    today = _dt.date.today()
+    d = today + _dt.timedelta(days=int(dte))
+    fwd = (4 - d.weekday()) % 7
+    back = (d.weekday() - 4) % 7
+    d = d + _dt.timedelta(days=fwd) if fwd <= back else d - _dt.timedelta(days=back)
+    if d <= today:
+        d += _dt.timedelta(days=7)
+    return d.strftime("%Y-%m-%d"), (d - today).days
 
 
 # ---------- Individual strategy generators ----------
@@ -864,9 +975,9 @@ def calendar_spread(S, T_short, T_long, r, sigma, dte_short, dte_long):
     greeks_long = greeks(S, K, T_long, r, sigma, "C")
 
     leg_short = OptionLeg(right="C", strike=K, action="SELL", premium=prem_short,
-                          greeks_data=greeks_short)
+                          greeks_data=greeks_short, dte=dte_short)
     leg_long = OptionLeg(right="C", strike=K, action="BUY", premium=prem_long,
-                         greeks_data=greeks_long)
+                         greeks_data=greeks_long, dte=dte_long)
 
     net = (prem_short - prem_long) * 100
     capital = abs(net)
@@ -1382,6 +1493,31 @@ def generate_options_lab(symbol, price, signal_data, closes, highs=None, lows=No
                 _apply_market_pricing(strat, option_market, S, strat.dte / 365.0, r, sigma)
             except Exception:
                 pass
+
+    # 3c. Vencimiento SIEMPRE resuelto por pata: real (de la cadena, fijado en
+    #     _apply_market_pricing) o estimado al viernes ~DTE. La UI necesita decir
+    #     QUE contrato operar (fecha concreta), no solo "Nd".
+    for strat in all_strategies:
+        estimated = False
+        for leg in strat.legs:
+            if not leg.dte:
+                leg.dte = strat.dte
+            if not leg.expiry:
+                leg.expiry, leg.dte = _estimate_expiry(leg.dte)
+                estimated = True
+        if not strat.expiry and strat.legs:
+            short = min(strat.legs, key=lambda l: l.dte)
+            strat.expiry = short.expiry
+            strat.dte = short.dte
+            strat.expiry_estimated = estimated
+        # La descripcion del calendar cita ambos DTE: regenerarla con los reales
+        # (el snap a la cadena pudo moverlos, ej. 21/45 objetivo -> 18/46 reales)
+        if strat.name == "Calendar Spread" and len(strat.legs) == 2:
+            sl = min(strat.legs, key=lambda l: l.dte)
+            ll = max(strat.legs, key=lambda l: l.dte)
+            strat.description = (
+                f"Vende Call ${sl.strike:.0f} a {sl.dte}d / Compra Call ${ll.strike:.0f} "
+                f"a {ll.dte}d. Gana con theta y si precio queda cerca de ${sl.strike:.0f}.")
 
     # 4. Score and rank all strategies
     for strat in all_strategies:

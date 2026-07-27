@@ -247,6 +247,14 @@ labels can be directional while `signal` is still HOLD.
 - Historical backtesting: finds similar indicator conditions in 5Y data, measures outcomes at 5/10/20/30/45 day horizons with distribution histograms and percentiles
 - Monte Carlo (10K sims, log-normal) for probability of profit per strategy
 - Per-strategy detail: payoff diagram (canvas), Greeks table, breakevens, max profit/loss, capital required, net premium, leg details
+- **Vencimiento concreto por estrategia y por pata (2026-07)**: `Strategy.expiry`/`expiry_estimated` +
+  `OptionLeg.dte/expiry/bid/ask/iv`. Con cadena real, `_apply_market_pricing` resuelve fecha y precio por
+  PATA en la cadena de SU vencimiento (antes el calendar valuaba la pata larga en el expiry corto → net ~0)
+  y `_mixed_expiry_metrics` recalcula payoff/PoP/EV para vencimientos mixtos. Sin cadena, `_estimate_expiry`
+  aproxima al viernes mas cercano a hoy+DTE y marca `expiry_estimated` (UI antepone "≈"). UI: chip
+  "Vence <fecha> · Nd" en el header, columna Vencimiento (+ Bid/Ask e IV si hay precios reales) en Patas,
+  y bloque "Orden para tu broker" con cada pata en texto operable (COMPRAR/VENDER n× SYM CALL/PUT $strike ·
+  vence Vie DD Mes YYYY · límite ≈ mid). No usar `_n(strike,0)` para strikes (redondea 187.5→188): `olabStrike()`.
 - Each stock in scanner has an "OPTIONS LAB" button to jump to deep single-symbol analysis
 - API: `/api/options-lab/<symbol>` (single), `/api/options-lab-top` (auto top 10)
 - Config: `OPTIONS_RISK_FREE_RATE`, `OPTIONS_DTE_TARGETS`, `OPTIONS_TOP_STRATEGIES`, `OPTIONS_BACKTEST_HORIZONS`
