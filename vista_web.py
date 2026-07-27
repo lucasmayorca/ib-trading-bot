@@ -2515,6 +2515,9 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .th-trade:hover{border-color:rgba(36,86,230,.2)}
 .th-trade-header{padding:14px 18px;display:flex;align-items:center;gap:14px;cursor:pointer}
 .th-trade-sym{font-size:16px;font-weight:900;color:var(--text);min-width:60px}
+.th-trade-name{font-size:11px;color:var(--muted);font-weight:600;max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.olab-name{font-size:11px;color:var(--muted);font-weight:600;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle}
+@media(max-width:900px){.th-trade-name,.olab-name{display:none}}
 .th-trade-badge{padding:3px 10px;border-radius:5px;font-size:10px;font-weight:700;letter-spacing:.3px}
 .th-trade-badge.win{background:rgba(11,122,75,.15);color:#0b7a4b;border:1px solid rgba(11,122,75,.3)}
 .th-trade-badge.loss{background:rgba(194,36,54,.15);color:#c22436;border:1px solid rgba(194,36,54,.3)}
@@ -3299,6 +3302,34 @@ function fdv(v){
   if(v>=1e6)return'$'+(v/1e6).toFixed(0)+'M';
   return'';
 }
+// Nombre de empresa para un ticker, buscando en los caches ya cargados:
+// escáner acciones / ETF (ext.name via enrichment) y Mi Cartera (fundamentals).
+function symName(sym){
+  try{
+    let r=_data&&_data.results?_data.results[sym]:null;
+    if(r&&r.ext&&r.ext.name)return r.ext.name;
+    let e=_etfData&&_etfData.results?_etfData.results[sym]:null;
+    if(e&&e.ext&&e.ext.name)return e.ext.name;
+    if(_portData&&_portData.positions){
+      for(let p of _portData.positions){
+        if(p.symbol===sym&&p.analysis&&p.analysis.fundamentals&&p.analysis.fundamentals.name)return p.analysis.fundamentals.name;
+      }
+    }
+  }catch(err){}
+  return'';
+}
+
+// Completa los spans de nombre vacíos (Trades Históricos / Options Lab) cuando
+// el nombre llega DESPUÉS de renderizar esas listas (se renderizan una sola vez;
+// re-renderizarlas colapsaría tarjetas abiertas). Se llama tras cada update().
+function _syncNames(){
+  document.querySelectorAll('.th-trade-name[data-sym],.olab-name[data-sym]').forEach(el=>{
+    if(el.textContent)return;
+    let n=symName(el.dataset.sym);
+    if(n){el.textContent=n;el.title=n;}
+  });
+}
+
 function fsym(sym,r){
   let dv=fdv(r?r.dollar_vol:null);
   let nm=(r&&r.ext&&r.ext.name)?r.ext.name:'';
@@ -4473,6 +4504,7 @@ function update(){
     });
     // Restore scroll position after DOM update
     requestAnimationFrame(()=>{window.scrollTo(0,scrollY);});
+    _syncNames();
   }).catch(err=>console.error("Error:",err));
 }
 
@@ -4773,6 +4805,7 @@ function updateEtf(){
         if(this.open)renderEtfDetailCharts(i,s,_etfPeriods[i]||'1Y');else destroyEtfDetailCharts(i);
       });
     });
+    _syncNames();
   }).catch(err=>console.error("ETF Error:",err));
 }
 
@@ -4990,10 +5023,11 @@ function renderOptionsLab(d){
   // Summary
   let sigColor=d.signal==='BUY'?'#0b7a4b':(d.signal==='SELL'?'#c22436':'#4262d9');
   let sigIcon=d.signal==='BUY'?'&#x25B2;':(d.signal==='SELL'?'&#x25BC;':'&#x25C6;');
+  let _onm=symName(d.symbol);
   document.getElementById('olab-summary').innerHTML=
     '<div class="olab-summary-icon" style="color:'+sigColor+'">'+sigIcon+'</div>'+
     '<div class="olab-summary-text">'+
-      '<h3>'+d.symbol+' &mdash; '+d.signal_label+' (fuerza '+(d.strength||0).toFixed(1)+')</h3>'+
+      '<h3>'+d.symbol+(_onm?' <span class="olab-name">'+_onm+'</span>':'')+' &mdash; '+d.signal_label+' (fuerza '+(d.strength||0).toFixed(1)+')</h3>'+
       '<p>'+d.summary+'</p>'+
     '</div>';
 
@@ -5598,6 +5632,7 @@ function renderOptionsLabMulti(opportunities){
     html+='<div class="olab-multi-card" id="olab-multi-'+i+'">'+
       '<div class="olab-multi-header" onclick="toggleOlabMulti('+i+',\''+d.symbol+'\')">'+
         '<span style="font-size:18px;font-weight:900;color:'+sigColor+'">'+d.symbol+'</span>'+
+        '<span class="olab-name" data-sym="'+d.symbol+'">'+symName(d.symbol)+'</span>'+
         '<span style="font-size:12px;color:var(--muted)">$'+(d.price||0).toFixed(2)+'</span>'+
         '<span class="olab-bias '+biasCls+'" style="font-size:9px">'+(d.signal_label||d.signal)+'</span>'+
         (pl.target?'<span style="font-size:11px;font-weight:700;color:'+tgtColor+'">&#x2192; $'+pl.target.toFixed(0)+' ('+tgtDir+tgtPct.toFixed(1)+'%)'+(pl.horizon_weeks?' '+pl.horizon_weeks:'')+'</span>':'')+
@@ -5851,6 +5886,10 @@ function renderThList(trades){
     h+='<div class="th-trade" id="th-trade-'+i+'">';
     h+='<div class="th-trade-header" onclick="toggleThTrade('+i+')">';
     h+='<span class="th-trade-sym">'+t.symbol+'</span>';
+    let _tnm=symName(t.symbol);
+    // span siempre presente (data-sym): _syncNames() lo completa cuando el
+    // nombre llega después (el escáner puede seguir llenándose tras render)
+    h+='<span class="th-trade-name" data-sym="'+t.symbol+'"'+(_tnm?' title="'+_tnm.replace(/"/g,'&quot;')+'"':'')+'>'+_tnm+'</span>';
     h+='<span class="th-trade-badge '+typeBadge+'">'+t.type+'</span>';
     if(t.estimated_entry)h+='<span class="th-trade-badge estimated">ENTRADA EST.</span>';
     h+=optDetail;
