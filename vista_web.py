@@ -2052,7 +2052,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-thesis-meta{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
 .rec-thesis-horizon{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(36,86,230,.12);color:var(--accent)}
 .rec-thesis-target{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(11,122,75,.12);color:var(--buy)}
-.rec-sell .rec-thesis-target{background:rgba(194,36,54,.12);color:var(--sell)}
+.rec-sell .rec-thesis-target,.rec-thesis-target.neg{background:rgba(194,36,54,.12);color:var(--sell)}
 /* Research row (below chart) */
 .rec-research-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:16px}
 .rec-research-panel{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:16px;min-height:80px}
@@ -3237,7 +3237,7 @@ function renderPortAnalysisList(positions){
       html+='<div class="rec-thesis-text">'+rec.thesis+'</div>';
       html+='<div class="rec-thesis-meta">';
       if(rec.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+rec.horizon+'</span>';
-      if(rec.target_pct){let sgn=sig==='SELL'?'-':'+';html+='<span class="rec-thesis-target">Objetivo: '+sgn+Math.abs(rec.target_pct).toFixed(0)+'%</span>';}
+      if(rec.target_pct){let bearT=_labelIsBearish(rec.signal_label||sig);html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(rec.target_pct).toFixed(0)+'%</span>';}
       html+='</div></div>';
     }
 
@@ -3255,23 +3255,25 @@ function renderPortAnalysisList(positions){
     html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml">Cantidad</span><span class="rec-mv">'+(p.cantidad||0).toFixed(0)+'</span></div>';
     html+='<div class="rec-m"><span class="rec-ml">Valor</span><span class="rec-mv">$'+fmtN(p.valor_mercado||0)+'</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">P&L</span><span class="rec-mv" style="color:'+pnlCol+'">'+(pnlPct>=0?'+':'')+'$'+fmtN(Math.abs(p.pnl||0))+'</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml">P&L</span><span class="rec-mv" style="color:'+pnlCol+'">'+((p.pnl||0)>=0?'+':'-')+'$'+fmtN(Math.abs(p.pnl||0))+'</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Retorno promedio historico de este setup en el backtest 5A — no es el retorno de tu posicion">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
+    let bearPos=_labelIsBearish(rec.signal_label||sig);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Costo Prom.</span><span class="rec-lv lv-entry">$'+avgCost.toFixed(2)+'</span></div>';
     html+='<div class="rec-lr"><span class="rec-ll">Precio Actual</span><span class="rec-lv">$'+curPrice.toFixed(2)+'</span></div>';
     if(rec.target){
-      let tSign=sig==='SELL'?'-':'+';
+      let tSign=bearPos?'-':'+';
       let tPct=rec.target_pct?(' ('+tSign+Math.abs(rec.target_pct).toFixed(0)+'%)'):'';
-      html+='<div class="rec-lr"><span class="rec-ll">'+(sig==='SELL'?'Obj. (baja)':'Target')+'</span><span class="rec-lv lv-target">$'+rec.target.toFixed(2)+tPct+'</span></div>';
+      html+='<div class="rec-lr"><span class="rec-ll">'+(bearPos?'Riesgo a la baja':'Objetivo (alza)')+'</span><span class="rec-lv" style="color:'+(bearPos?'var(--sell)':'var(--buy)')+'">$'+rec.target.toFixed(2)+tPct+'</span></div>';
       html+=recWhy(_objWhy(rec));
     }
-    if(rec.stop_loss){html+='<div class="rec-lr"><span class="rec-ll">Stop Loss sug.</span><span class="rec-lv lv-stop">$'+rec.stop_loss.toFixed(2)+'</span></div>';
-      html+=recWhy(rec.stop_basis?('Ubicado '+rec.stop_basis+' — si se pierde, la tesis se invalida'):'');}
+    if(rec.stop_loss){html+='<div class="rec-lr"><span class="rec-ll">'+(bearPos?'Invalidación (techo)':'Stop Loss sug.')+'</span><span class="rec-lv'+(bearPos?'':' lv-stop')+'">$'+rec.stop_loss.toFixed(2)+'</span></div>';
+      html+=recWhy(rec.stop_basis?('Ubicado '+rec.stop_basis+(bearPos?' — si el precio lo supera, la lectura bajista se anula':' — si se pierde, la tesis se invalida')):'');}
     if(p.stop_loss)html+='<div class="rec-lr"><span class="rec-ll">Stop IB activo</span><span class="rec-lv" style="color:#c22436">$'+p.stop_loss.toFixed(2)+'</span></div>';
     if(p.take_profit)html+='<div class="rec-lr"><span class="rec-ll">Take-Profit IB</span><span class="rec-lv" style="color:#0b7a4b">$'+p.take_profit.toFixed(2)+'</span></div>';
-    if(rec.risk_reward)html+='<div class="rec-lr"><span class="rec-ll">R/R</span><span class="rec-lv lv-rr">'+rec.risk_reward.toFixed(1)+':1</span></div>';
+    if(rec.risk_reward){html+='<div class="rec-lr"><span class="rec-ll">R/R</span><span class="rec-lv lv-rr">'+rec.risk_reward.toFixed(1)+':1</span></div>';
+      if(bearPos)html+=recWhy('R/R del setup de venta del sistema (recorrido a la baja vs. distancia a la invalidación), no de tu posición larga');}
     html+='</div>';
     // Research: analistas/insiders/fundamentales (apilados en la columna derecha)
     html+=researchRow(rec.fundamentals||{},curPrice);
@@ -4232,8 +4234,8 @@ function renderTop3(top3){
         html+='<span class="rec-thesis-horizon">Horizonte: '+r.horizon+'</span>';
       }
       if(r.target_pct){
-        let sign=r.signal==='SELL'?'-':'+';
-        html+='<span class="rec-thesis-target">Objetivo: '+sign+Math.abs(r.target_pct).toFixed(0)+'%</span>';
+        let bearT=_labelIsBearish(r.signal_label||r.signal);
+        html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(r.target_pct).toFixed(0)+'%</span>';
       }
       html+='</div>';
       html+='</div>';
@@ -4259,9 +4261,10 @@ function renderTop3(top3){
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
-    let tSign=r.signal==='SELL'?'-':'+';
+    let bearT2=_labelIsBearish(r.signal_label||r.signal);
+    let tSign=bearT2?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
-    html+='<div class="rec-lr"><span class="rec-ll">'+(r.signal==='SELL'?'Obj. (baja)':'Objetivo')+'</span><span class="rec-lv lv-target">$'+r.target.toFixed(2)+tPct+'</span></div>';
+    html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Obj. (baja)':'Objetivo')+'</span><span class="rec-lv '+(bearT2?'lv-stop':'lv-target')+'">$'+r.target.toFixed(2)+tPct+'</span></div>';
     html+=recWhy(_objWhy(r));
     html+='<div class="rec-lr"><span class="rec-ll">Stop Loss</span><span class="rec-lv lv-stop">$'+r.stop_loss.toFixed(2)+'</span></div>';
     html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+' — si se pierde, la tesis se invalida'):'');
@@ -5080,7 +5083,7 @@ function renderEtfTop3(top3){
       html+='<div class="rec-thesis-text">'+r.thesis+'</div>';
       html+='<div class="rec-thesis-meta">';
       if(r.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+r.horizon+'</span>';
-      if(r.target_pct){let sign=(sl.includes('VENTA')||sl.includes('SOBRECOMPRA'))?'-':'+';html+='<span class="rec-thesis-target">Objetivo: '+sign+Math.abs(r.target_pct).toFixed(0)+'%</span>';}
+      if(r.target_pct){let bearT=_labelIsBearish(sl);html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(r.target_pct).toFixed(0)+'%</span>';}
       html+='</div></div>';
     }
 
@@ -5101,9 +5104,10 @@ function renderEtfTop3(top3){
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
-    let tSign=(sl.includes('VENTA')||sl.includes('SOBRECOMPRA'))?'-':'+';
+    let bearT2=_labelIsBearish(sl);
+    let tSign=bearT2?'-':'+';
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
-    html+='<div class="rec-lr"><span class="rec-ll">Objetivo</span><span class="rec-lv lv-target">$'+r.target.toFixed(2)+tPct+'</span></div>';
+    html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Obj. (baja)':'Objetivo')+'</span><span class="rec-lv '+(bearT2?'lv-stop':'lv-target')+'">$'+r.target.toFixed(2)+tPct+'</span></div>';
     html+=recWhy(_objWhy(r));
     html+='<div class="rec-lr"><span class="rec-ll">Stop Loss</span><span class="rec-lv lv-stop">$'+r.stop_loss.toFixed(2)+'</span></div>';
     html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+' — si se pierde, la tesis se invalida'):'');
@@ -5328,7 +5332,8 @@ function renderForecastBar(price,pl,isBear){
 }
 
 function _labelIsBearish(label){
-  return /VENTA|BAJISTA|BEARISH/i.test(label);
+  // Espejo de _label_is_bearish (Python): VENTA* y SOBRECOMPRA son lecturas bajistas
+  return /VENTA|SOBRECOMPRA|BAJISTA|BEARISH/i.test(label||'');
 }
 
 function renderIVSection(d){
@@ -6730,10 +6735,12 @@ def _compute_position_verdict(data, position, levels=None):
     """Veredicto multi-factor que replica los mismos indicadores del escaner:
     MACD (histograma + slope), RSI (nivel + slope), Koncorde (marron vs media,
     flujo institucional azul), medias móviles (precio vs SMA200/50/20, golden/
-    death cross), pisos/techos horizontales (via target_basis), y backtest 5Y.
-    Cada factor aporta a un puntaje bull o bear ponderado; el veredicto se
-    combina con la situacion de la posicion (costo, P&L, distancia al stop IB
-    y al target sugerido).
+    death cross), y backtest 5Y — MAS la estructura tecnica del grafico:
+    pisos/techos horizontales reales (_find_sr_levels), canal de regresion
+    ±2σ (_regression_channel) y la asimetria de aguantar una lectura bajista
+    (caida proyectada vs. distancia a la invalidacion). Cada factor aporta a
+    un puntaje bull o bear ponderado; el veredicto se combina con la situacion
+    de la posicion (costo, P&L, distancia al stop IB y al target sugerido).
 
     Returns dict:
       verdict: 'SELL' | 'REDUCE' | 'HOLD' | 'ADD'
@@ -6759,11 +6766,13 @@ def _compute_position_verdict(data, position, levels=None):
     avg_cost = pos.get("costo_promedio") or 0
     sl_ib = pos.get("stop_loss")   # SL activo en IB
     tp_ib = pos.get("take_profit")  # TP activo en IB
+    # Precio vivo de IB para todo lo que se compara con el P&L de la posicion
+    # (data["price"] es el cierre del analisis y puede diferir intradia)
+    px_live = pos.get("precio_actual") or price
 
     lv = levels or {}
     target_sug = lv.get("target") or 0
     stop_sug = lv.get("stop_loss") or 0
-    target_basis = (lv.get("target_basis") or "").lower()
 
     factors = []   # list of dicts {name, detail, side, weight}
     bull = 0.0
@@ -6896,22 +6905,63 @@ def _compute_position_verdict(data, position, levels=None):
         elif pct < -3:
             bear += _f("Precio vs SMA50", f"precio {pct:.1f}% bajo SMA50", "bear", 2)
 
-    # 9) Pisos / techos horizontales — cercania a soporte fuerte o resistencia (peso 6)
-    if target_sug and price:
-        dist_pct = (target_sug - price) / price * 100  # positivo = precio bajo target
-        if "piso" in target_basis or "soporte" in target_basis:
-            # Target apunta hacia abajo (soporte) — cercania es riesgo si estamos largos
-            if -3 < dist_pct < 0:
-                bear += _f("Nivel horizontal", f"precio {abs(dist_pct):.1f}% sobre piso ${target_sug:.2f} (soporte critico)", "bear", 6)
-        elif "techo" in target_basis or "resistencia" in target_basis:
-            # Target apunta hacia arriba (resistencia)
-            if 0 < dist_pct < 3:
-                bear += _f("Nivel horizontal", f"precio a {dist_pct:.1f}% del techo ${target_sug:.2f} (freno tecnico)", "bear", 4)
-            elif 3 < dist_pct < 10:
-                bull += _f("Nivel horizontal", f"resistencia a {dist_pct:.1f}% de camino al target ${target_sug:.2f}", "bull", 3)
+    # 9) Estructura tecnica del grafico (analisis "de chartista", complementa
+    #    al sistema MACD/RSI/Koncorde): pisos/techos horizontales REALES
+    #    (_find_sr_levels), canal de regresion ±2σ, y asimetria de AGUANTAR
+    #    (caida proyectada vs. distancia a invalidar la lectura bajista).
+    is_bearish = _label_is_bearish(sig_label)
+    ohlc = chart.get("ohlc") or []
+    atr = _compute_atr(ohlc) if len(ohlc) >= 15 else None
+    if (atr is None or atr <= 0) and price:
+        atr = price * 0.02
+    techo_f = piso_f = None
+    chan_up = chan_lo = None
+    chan_slope = 0.0
+    if price and atr and len(ohlc) >= 30:
+        try:
+            techos, pisos = _find_sr_levels(ohlc, atr, price)
+            techo_f = next((c for c in techos if c["touches"] >= 2), None)
+            piso_f = next((c for c in pisos if c["touches"] >= 2), None)
+            chan_up, chan_lo, chan_slope = _regression_channel(ohlc)
+        except Exception:
+            pass
+        atr_pct = atr / price * 100
+        # 9a) Techo fuerte pegado por arriba = freno tecnico (riesgo para el largo)
+        if techo_f:
+            d_pct = (techo_f["level"] - price) / price * 100
+            if d_pct <= 2 * atr_pct:
+                bear += _f("Techo cercano", f"precio a {d_pct:.1f}% del techo ${techo_f['level']:.2f} ({techo_f['touches']} toques)", "bear", 6)
+        # 9b) Piso fuerte cercano por abajo = colchon de soporte
+        if piso_f:
+            d_pct = (price - piso_f["level"]) / price * 100
+            if d_pct <= 2 * atr_pct:
+                bull += _f("Piso cercano", f"piso ${piso_f['level']:.2f} ({piso_f['touches']} toques) a {d_pct:.1f}% da soporte", "bull", 5)
+        # 9c) Posicion dentro del canal de regresion + su pendiente
+        if chan_up is not None and chan_lo is not None and chan_up > chan_lo:
+            pos_in = (price - chan_lo) / (chan_up - chan_lo)
+            if pos_in >= 1.0:
+                bear += _f("Canal de tendencia", "precio por ENCIMA del canal ±2σ (sobre-extendido)", "bear", 5)
+            elif pos_in >= 0.8:
+                bear += _f("Canal de tendencia", "precio en el techo del canal de tendencia", "bear", 3)
+            elif pos_in <= 0.0:
+                bull += _f("Canal de tendencia", "precio por DEBAJO del canal ±2σ (castigado)", "bull", 5)
+            elif pos_in <= 0.2:
+                bull += _f("Canal de tendencia", "precio en el piso del canal de tendencia", "bull", 3)
+            if chan_slope > 0.08:
+                bull += _f("Pendiente del canal", f"canal ascendente ({chan_slope:+.2f}%/dia)", "bull", 3)
+            elif chan_slope < -0.08:
+                bear += _f("Pendiente del canal", f"canal descendente ({chan_slope:+.2f}%/dia)", "bear", 3)
+    # 9d) Asimetria de aguantar con lectura bajista: cuanto puede caer hasta el
+    #     proximo nivel vs. cuanto falta para que la lectura se anule por arriba
+    if is_bearish and price and target_sug and stop_sug and target_sug < price < stop_sug:
+        downside = (price - target_sug) / price * 100
+        to_invalid = (stop_sug - price) / price * 100
+        if to_invalid > 0 and downside / to_invalid >= 1.3:
+            bear += _f("Asimetria de aguantar",
+                       f"caida proyectada -{downside:.0f}% hasta ${target_sug:.2f} contra +{to_invalid:.0f}% para anular la lectura",
+                       "bear", 6)
 
     # 10) Backtest 5Y (peso 10)
-    is_bearish = _label_is_bearish(sig_label)
     if is_bearish:
         wr = bt.get("sell_win_rate") or 0
         exp = bt.get("sell_expectancy") or 0
@@ -6939,13 +6989,13 @@ def _compute_position_verdict(data, position, levels=None):
     else:
         trend = "flat"
 
-    # Distancia al target/stop (contexto para el mensaje)
-    dist_to_target_pct = ((target_sug - price) / price * 100) if (target_sug and price) else None
-    dist_to_stop_ib_pct = ((price - sl_ib) / price * 100) if (sl_ib and price and sl_ib > 0) else None
+    # Distancia al target/stop (contexto para el mensaje) — contra precio vivo
+    dist_to_target_pct = ((target_sug - px_live) / px_live * 100) if (target_sug and px_live) else None
+    dist_to_stop_ib_pct = ((px_live - sl_ib) / px_live * 100) if (sl_ib and px_live and sl_ib > 0) else None
 
     def _pnl_text():
         if avg_cost > 0:
-            return f"Costo ${avg_cost:.2f}, precio ${price:.2f} ({pnl_pct:+.1f}%)"
+            return f"Costo ${avg_cost:.2f}, precio ${px_live:.2f} ({pnl_pct:+.1f}%)"
         return f"P&L {pnl_pct:+.1f}%"
 
     # === DETERMINAR VEREDICTO ===
@@ -6974,7 +7024,7 @@ def _compute_position_verdict(data, position, levels=None):
     elif dist_to_stop_ib_pct is not None and 0 < dist_to_stop_ib_pct < 3:
         verdict = "REDUCE"; urgency = "high"
         headline = "STOP CERCA — DECIDIR"
-        override_reason = (f"Precio ${price:.2f} a {dist_to_stop_ib_pct:.1f}% del stop-loss activo en IB "
+        override_reason = (f"Precio ${px_live:.2f} a {dist_to_stop_ib_pct:.1f}% del stop-loss activo en IB "
                           f"(${sl_ib:.2f}). {_pnl_text()}. Decidi si aguantas o cerras a mano.")
     # Cerca del target con ganancia grande
     elif pnl_pct >= 15 and dist_to_target_pct is not None and 0 < dist_to_target_pct < 5:
@@ -6997,6 +7047,11 @@ def _compute_position_verdict(data, position, levels=None):
             headline = "HOLD — RECUPERANDO"
         else:
             headline = "HOLD (alcista)"
+    # Cuadro de venta armandose (2/3) con los factores tecnicos del lado bajista:
+    # HOLD pero en alerta — el usuario debe saber que la salida puede activarse
+    elif "VENTA INMINENTE" in sig_label.upper() and bear > bull:
+        verdict = "HOLD"; urgency = "medium"
+        headline = "HOLD — ALERTA DE VENTA"
     # Perdida grande sin señal que la respalde
     elif pnl_pct <= -15 and bull < 30:
         verdict = "REDUCE"; urgency = "medium"
@@ -7017,8 +7072,10 @@ def _compute_position_verdict(data, position, levels=None):
     if override_reason:
         reason = override_reason
     else:
-        # Elegir los 3 factores mas relevantes en la direccion del veredicto
-        target_side = "bear" if verdict in ("SELL", "REDUCE") else "bull"
+        # Elegir los 3 factores mas relevantes en la direccion del veredicto.
+        # Un HOLD con el peso tecnico del lado bajista debe explicar los
+        # factores bajistas (no citar los alcistas y contradecir la tesis).
+        target_side = "bear" if (verdict in ("SELL", "REDUCE") or bear > bull) else "bull"
         rel = [f for f in factors if f["side"] == target_side and f["weight"] > 0]
         rel.sort(key=lambda f: f["weight"], reverse=True)
         top3 = rel[:3]
@@ -7039,6 +7096,16 @@ def _compute_position_verdict(data, position, levels=None):
         "bull_score": round(bull, 1),
         "bear_score": round(bear, 1),
         "factors": factors,
+        # Estructura tecnica del grafico — la narrativa la reutiliza para no
+        # recomputar S/R y canal (mismos numeros en veredicto y recomendacion)
+        "tech": {
+            "techo": techo_f,
+            "piso": piso_f,
+            "chan_up": chan_up,
+            "chan_lo": chan_lo,
+            "chan_slope": chan_slope,
+            "atr": atr,
+        },
     }
 
 
@@ -7050,15 +7117,20 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
          cuanto tiempo llevas y como viene.
       2. El cuadro tecnico HOY — signal_label + que cumple / que falta
          (via _system_status, el mismo motor de la tesis del escaner) +
-         tendencia de fondo.
-      3. Niveles y ventana — techo/piso relevante, target y horizonte.
-      4. Recomendacion condicionada — la accion, atada a niveles concretos.
+         tendencia de fondo coherente (precio vs SMA200 Y el cross juntos) +
+         estructura del grafico (techos/pisos con toques, canal de tendencia).
+      3. Niveles y ventana — SIEMPRE desde la optica del TENEDOR: con lectura
+         bajista el target de abajo es riesgo de caida y el "stop" de arriba es
+         el techo que ANULA la lectura (no un piso que se "pierde").
+      4. Recomendacion condicionada — la accion, atada a los mismos niveles.
     """
     sig_label = (data.get("signal_label") or data.get("signal") or "NEUTRAL")
     sig = data.get("signal", "HOLD")
     is_bearish = _label_is_bearish(sig_label)
-    price = data.get("price") or 0
     pos = position or {}
+    # Precio vivo de IB: "hoy cotiza" debe coincidir con el pnl_pct de la
+    # posicion (data["price"] es el cierre del analisis y puede diferir)
+    price = pos.get("precio_actual") or data.get("price") or 0
     pnl_pct = pos.get("pnl_pct", 0) or 0
     avg_cost = pos.get("costo_promedio") or 0
     cantidad = pos.get("cantidad", 0) or 0
@@ -7069,6 +7141,10 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
     target_pct = lv.get("target_pct") or 0
     horizon = lv.get("horizon_weeks") or ""
     mas = (data.get("chart") or {}).get("mas") or {}
+    tech = (verdict or {}).get("tech") or {}
+    techo_f = tech.get("techo")
+    piso_f = tech.get("piso")
+    atr_v = tech.get("atr") or lv.get("atr") or 0
 
     action = verdict.get("verdict", "HOLD")
     parts = []
@@ -7123,28 +7199,74 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
         p2 += "."
     else:
         p2 = f"El cuadro tecnico esta {sig_label.lower()}, sin condiciones del sistema activas en ninguna direccion."
-    # Tendencia de fondo en la misma lectura
+    # Tendencia de fondo en la misma lectura — coherente: precio vs SMA200 y el
+    # cross se leen JUNTOS (antes "alcista (death cross)" se contradecia solo)
     sma200 = mas.get("sma200_val")
     sma50 = mas.get("sma50_val")
     trend_bits = []
+    pct200 = None
     if sma200 and price:
         pct200 = (price - sma200) / sma200 * 100
         trend_bits.append(f"precio {pct200:+.0f}% vs SMA200")
-    if sma50 and sma200:
-        trend_bits.append("golden cross" if sma50 > sma200 else "death cross")
+    golden = (sma50 > sma200) if (sma50 and sma200) else None
+    if golden is not None:
+        trend_bits.append("golden cross" if golden else "death cross")
     if trend_bits:
-        fondo = "alcista" if (sma200 and price and price > sma200) else "bajista"
-        p2 += f" La tendencia de fondo es {fondo} ({', '.join(trend_bits)})."
+        if pct200 is not None and golden is not None:
+            if pct200 > 0 and golden:
+                fondo = "alcista"
+            elif pct200 > 0 and not golden:
+                fondo = ("alcista en el corto plazo, aunque el death cross "
+                         "(SMA50 bajo SMA200) muestra que la recuperacion es reciente")
+            elif pct200 <= 0 and golden:
+                fondo = "fragil: el golden cross sigue activo pero el precio perdio la SMA200"
+            else:
+                fondo = "bajista"
+        else:
+            fondo = "alcista" if (pct200 is not None and pct200 > 0) else "bajista"
+        paren = ", ".join(trend_bits)
+        if pct200 is not None and golden is not None and (pct200 > 0) != golden:
+            paren = trend_bits[0]  # el cross ya esta narrado en el texto del fondo
+        p2 += f" La tendencia de fondo es {fondo} ({paren})."
+    # Estructura del grafico: techos/pisos con historia y canal de tendencia
+    # (el mismo analisis tecnico que pondera el veredicto)
+    struct_bits = []
+    if techo_f and price:
+        d_t = (techo_f["level"] - price) / price * 100
+        struct_bits.append(f"un techo con historia en ${techo_f['level']:.2f} "
+                           f"({techo_f['touches']} toques, {d_t:+.1f}% arriba)")
+    if piso_f and price:
+        d_p = (price - piso_f["level"]) / price * 100
+        struct_bits.append(f"el piso relevante mas cercano en ${piso_f['level']:.2f} "
+                           f"({piso_f['touches']} toques, {d_p:.1f}% abajo)")
+    slope = tech.get("chan_slope") or 0
+    if abs(slope) >= 0.03:
+        struct_bits.append("canal de tendencia " + ("ascendente" if slope > 0 else "descendente"))
+    if struct_bits:
+        p2 += " En el grafico: " + "; ".join(struct_bits) + "."
     parts.append(p2)
 
-    # ── 3. NIVELES Y VENTANA ──
+    # ── 3. NIVELES Y VENTANA (optica del tenedor) ──
     p3_bits = []
     if target and price:
-        tdir = "abajo" if target < price else "arriba"
-        p3_bits.append(f"el proximo nivel tecnico relevante esta en ${target:.2f} "
-                       f"({abs(target_pct):.0f}% {tdir}" + (f", {lv.get('target_basis')}" if lv.get("target_basis") else "") + ")")
+        basis_txt = f", {lv.get('target_basis')}" if lv.get("target_basis") else ""
+        if is_bearish and target < price:
+            p3_bits.append(f"si el giro bajista se confirma, la caida proyectada es hacia "
+                           f"${target:.2f} (-{abs(target_pct):.0f}%{basis_txt})")
+        elif (not is_bearish) and target > price:
+            p3_bits.append(f"el objetivo al alza esta en ${target:.2f} "
+                           f"(+{abs(target_pct):.0f}%{basis_txt})")
+        else:
+            tdir = "abajo" if target < price else "arriba"
+            p3_bits.append(f"el proximo nivel tecnico relevante esta en ${target:.2f} "
+                           f"({abs(target_pct):.0f}% {tdir}{basis_txt})")
     if stop_sug:
-        p3_bits.append(f"el piso de invalidación del análisis en ${stop_sug:.2f}")
+        sb_txt = f" ({lv.get('stop_basis')})" if lv.get("stop_basis") else ""
+        if is_bearish and stop_sug > price:
+            p3_bits.append(f"la lectura bajista se ANULA si el precio supera ${stop_sug:.2f}{sb_txt} "
+                           f"— por encima de ese techo, via libre para la posicion")
+        else:
+            p3_bits.append(f"la tesis se invalida si el precio pierde ${stop_sug:.2f}{sb_txt}")
     if sl_ib:
         p3_bits.append(f"tu stop activo en IB esta en ${sl_ib:.2f}")
     if p3_bits:
@@ -7152,6 +7274,22 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
         if horizon:
             p3 += f" La ventana estimada para este movimiento es de {horizon}."
         parts.append(p3)
+
+    # Nivel de proteccion POR DEBAJO del precio para el tenedor largo. OJO: el
+    # stop_sug de una lectura bajista queda ARRIBA del precio (invalida el
+    # setup de venta) y NO sirve como stop de la posicion — usar piso fuerte
+    # cercano o 2·ATR bajo el precio.
+    protect = None
+    protect_txt = ""
+    if (not is_bearish) and stop_sug and price and stop_sug < price:
+        protect = stop_sug
+        protect_txt = lv.get("stop_basis") or "stop sugerido del analisis"
+    elif piso_f and atr_v and price and (price - piso_f["level"]) <= 3 * atr_v:
+        protect = piso_f["level"] - 0.5 * atr_v
+        protect_txt = f"bajo el piso de ${piso_f['level']:.2f} ({piso_f['touches']} toques)"
+    elif atr_v and price:
+        protect = price - 2 * atr_v
+        protect_txt = "2 ATR bajo el precio actual"
 
     # ── 4. RECOMENDACION CONDICIONADA ──
     if action == "SELL":
@@ -7177,7 +7315,7 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
             p4 = (f"Recomendacion: PROTEGER. El cuadro se esta dando vuelta con la posicion {pnl_pct:+.0f}% arriba: "
                   f"{cond} y subir el stop a tu breakeven (${avg_cost:.2f}) mantiene la ganancia si el giro se confirma.")
         else:
-            floor_ref = stop_sug or sl_ib
+            floor_ref = protect or sl_ib
             p4 = (f"Recomendacion: REDUCIR. El peso de los indicadores esta del lado bajista y no hay "
                   f"señal de compra que respalde aguantar")
             if floor_ref:
@@ -7189,7 +7327,7 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
                   f"tecnico no da señal de venta")
             if not is_bearish and missing:
                 p4 += f" y hay condiciones de compra formandose ({missing[0] if missing else ''})"
-            floor_ref = stop_sug or sl_ib
+            floor_ref = protect or sl_ib
             if floor_ref:
                 p4 += f". Definir el limite: si pierde ${floor_ref:.2f} se corta; mientras lo sostenga, se aguanta"
             p4 += "."
@@ -7198,11 +7336,11 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
                 # Cuadro de venta ARMANDOSE sobre posicion ganadora — el matiz importa
                 p4 = (f"Recomendacion: PREPARAR LA SALIDA. Llevas {pnl_pct:+.0f}% y el cuadro de venta "
                       f"se esta armando — solo falta {missing[0]}. Subir el stop ya "
-                      f"(breakeven ${avg_cost:.2f}" + (f" o el piso de ${stop_sug:.2f}" if stop_sug else "") + ") "
+                      f"(breakeven ${avg_cost:.2f}" + (f" o ${protect:.2f}, {protect_txt}" if protect else "") + ") "
                       f"y si la señal se completa, tomar la ganancia sin dudar.")
-            elif stop_sug:
+            elif protect:
                 p4 = (f"Recomendacion: MANTENER Y PROTEGER. Llevas {pnl_pct:+.0f}% y el cuadro no marca venta; "
-                      f"subir el stop (breakeven ${avg_cost:.2f} o el piso de ${stop_sug:.2f}) deja correr la "
+                      f"subir el stop (breakeven ${avg_cost:.2f} o ${protect:.2f}, {protect_txt}) deja correr la "
                       f"ganancia sin regalarla.")
             else:
                 p4 = (f"Recomendacion: MANTENER Y PROTEGER. Llevas {pnl_pct:+.0f}% y el cuadro no marca venta; "
@@ -7211,12 +7349,27 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
             p4 = "Recomendacion: MANTENER. "
             if missing and not is_bearish:
                 p4 += f"El proximo evento a vigilar es {missing[0]}"
-                if target:
-                    p4 += f"; si se completa la señal con precio cerca de ${target:.2f}, reevaluar tomar ganancias"
+                if target and price and target > price:
+                    p4 += (f". El recorrido al alza apunta a ${target:.2f} "
+                           f"(+{abs(target_pct):.0f}%); cerca de ese nivel, reevaluar tomar ganancias")
                 p4 += "."
             elif missing and is_bearish:
                 p4 += (f"Ojo: se esta armando un cuadro de venta — falta {missing[0]}. "
                        f"Si se completa, el sistema va a recomendar salir.")
+                # Plan atado a los MISMOS niveles del panel: que anula la lectura,
+                # hacia donde apunta la caida y donde protegerse mientras tanto
+                plan_bits = []
+                if stop_sug and price and stop_sug > price:
+                    plan_bits.append(f"si el precio supera ${stop_sug:.2f} el cuadro de venta queda anulado "
+                                     f"y se sigue manteniendo con normalidad")
+                if target and price and target < price:
+                    plan_bits.append(f"si el giro se confirma, la caida proyectada es hacia ${target:.2f} "
+                                     f"(-{abs(target_pct):.0f}%)")
+                if protect:
+                    plan_bits.append(f"para no depender del timing, un stop propio en ${protect:.2f} "
+                                     f"({protect_txt}) limita el golpe")
+                if plan_bits:
+                    p4 += " Plan: " + "; ".join(plan_bits) + "."
             else:
                 p4 += "Sin condiciones tecnicas cerca de activarse; revisar en el proximo ciclo."
     parts.append(p4)

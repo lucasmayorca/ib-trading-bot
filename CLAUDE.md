@@ -121,6 +121,24 @@ labels can be directional while `signal` is still HOLD.
 - `compute_top3()` muestra `config.TOP_RECOMMENDATIONS` (5) recomendaciones en cada scanner
   (acciones y ETFs, local y cloud). El nombre `top3`/`renderTop3` se conserva por historia;
   el render itera sobre la longitud del array, no asume 3.
+- **Mi Cartera — veredicto y narrativa coherentes (2026-07)**: `_compute_position_verdict` pondera,
+  además del sistema, la **estructura del gráfico** (techos/pisos reales vía `_find_sr_levels`,
+  canal de regresión ±2σ, asimetría de aguantar una lectura bajista: caída proyectada vs. distancia
+  a la invalidación) y expone `verdict["tech"]` para que `_generate_position_recommendation` cite
+  LOS MISMOS niveles (no recomputa). VENTA INMINENTE con `bear > bull` ⇒ headline "HOLD — ALERTA DE
+  VENTA" y los factores dominantes del reason salen del lado bajista (no citar factores alcistas
+  contradiciendo la tesis). La narrativa habla desde la óptica del TENEDOR largo: con label bajista
+  el target de abajo es "caída proyectada" y el stop de arriba es el techo que ANULA la lectura
+  (nunca "piso de invalidación"); el stop de protección del largo se calcula aparte (piso fuerte
+  cercano −0.5·ATR, o 2·ATR bajo el precio) porque el `stop_sug` bajista queda ARRIBA del precio y
+  no sirve como stop de la posición. Usa `position["precio_actual"]` (vivo de IB) para "hoy cotiza"
+  y P&L, no `data["price"]` (cierre del análisis) — antes mezclaba y los % no cuadraban. La
+  tendencia de fondo lee JUNTOS precio-vs-SMA200 y el cross ("alcista... aunque death cross"), no
+  "alcista (death cross)". **JS**: todo signo/etiqueta/color de objetivo sale de
+  `_labelIsBearish(signal_label)` (espejo del Python, incluye SOBRECOMPRA) — NUNCA de
+  `signal==='SELL'`, que mostraba "+12%" verde en una VENTA INMINENTE (signal HOLD). El P&L en $
+  lleva signo explícito (antes `Math.abs` sin '-'). El panel de posición rotula "Riesgo a la baja"
+  / "Invalidación (techo)" cuando el label es bajista.
 - **Tabla del scanner (rediseño 2026-07)**: header en dos niveles — fila de grupos (`.lh-groups`:
   Activo · Precio vs media móvil · Momentum · Backtest 5A · Tend., con `grid-column:span N`) sobre
   la fila de columnas (`.lh-cols`). El grid de 18 columnas vive en `.lh-groups,.lh-cols,.stock-row`
