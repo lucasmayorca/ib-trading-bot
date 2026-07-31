@@ -822,7 +822,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
 @login_required
 def api_portfolio():
     from portfolio import (
-        extract_sl_tp_by_symbol, _classify_position,
+        extract_sl_tp_by_symbol, extract_pending_entries, _classify_position,
         _generate_portfolio_alerts, _compute_portfolio_metrics,
     )
 
@@ -837,6 +837,32 @@ def api_portfolio():
     active_positions = [p for p in raw_positions if p.get("position", 0) != 0]
 
     sl_tp_map = extract_sl_tp_by_symbol(open_orders)
+
+    # Ordenes de ENTRADA cargadas en IB sin posicion todavia (paridad con
+    # portfolio.py local — mismo helper, mismo criterio parent_id==0)
+    held_symbols = {p.get("symbol", "") for p in active_positions}
+    pending_entries = extract_pending_entries(open_orders, held_symbols)
+    pending_orders_enriched = []
+    for pe in pending_entries:
+        sym = pe["symbol"]
+        es_etf, sector = _classify_position(sym)
+        stub = {
+            "symbol": sym, "tipo": "STK", "cuenta": "", "moneda": "USD",
+            "cantidad": 0, "costo_promedio": 0, "precio_actual": None,
+            "costo_total": 0, "valor_mercado": 0, "pnl": 0, "pnl_pct": 0,
+            "pnl_realizado": 0, "es_etf": es_etf, "sector": sector,
+            "peso_portafolio": 0, "stop_loss": None, "take_profit": None,
+            "is_pending": True, "pending_order": pe,
+        }
+        try:
+            deep = _build_cloud_position_analysis(sym, stub, analysis.get(sym), live_trades)
+            if deep:
+                stub["analysis"] = deep
+                if not stub["precio_actual"]:
+                    stub["precio_actual"] = deep.get("price") or None
+        except Exception as e:
+            print(f"[PORTFOLIO_PENDING] Error for {sym}: {e}", flush=True)
+        pending_orders_enriched.append(stub)
 
     positions_enriched = []
     total_value = 0.0
@@ -955,6 +981,7 @@ def api_portfolio():
     return Response(
         to_json({
             "positions": positions_enriched,
+            "pending_orders": pending_orders_enriched,
             "total_value": round(total_value, 2),
             "total_cost": round(total_cost, 2),
             "total_pnl": round(total_pnl, 2),

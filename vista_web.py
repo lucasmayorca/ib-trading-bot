@@ -2225,6 +2225,8 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .port-analysis{margin-top:12px}
 .port-analysis-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;letter-spacing:-.2px}
 .port-analysis-list-empty{font-size:13px;color:var(--muted);padding:24px;text-align:center;background:var(--card);border:1px dashed var(--border);border-radius:var(--radius)}
+.port-pending-hint{font-size:11px;font-weight:600;color:var(--muted);text-transform:none;letter-spacing:0;margin-left:8px}
+.port-pending-badge{background:rgba(180,83,9,.14);color:#b45309;border:1px solid rgba(180,83,9,.3)}
 
 /* Holdings table */
 .port-holdings{margin-bottom:24px}
@@ -2701,6 +2703,12 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <div id="port-analysis-list"></div>
     </div>
 
+    <!-- Ordenes cargadas en IBKR que aun no se ejecutaron (sin posicion) -->
+    <div class="port-analysis" id="port-pending-section" style="display:none">
+      <div class="port-analysis-title">Órdenes pendientes en IBKR <span class="port-pending-hint">cargadas, aún sin ejecutar</span></div>
+      <div id="port-pending-list"></div>
+    </div>
+
   </div>
 </div>
 </div>
@@ -2909,6 +2917,9 @@ function renderPortfolio(d){
   sumHtml+='<div class="port-card"><div class="port-card-label">Costo Total</div><div class="port-card-value" style="color:var(--muted)">$'+fmtN(d.total_cost)+'</div></div>';
   sumHtml+='<div class="port-card"><div class="port-card-label">P&L No Realizado</div><div class="port-card-value" style="color:'+pnlCol+'">'+pnlSign+'$'+fmtN(Math.abs(d.total_pnl))+'</div><div class="port-card-sub" style="color:'+pnlCol+'">'+pnlSign+d.total_pnl_pct.toFixed(2)+'%</div></div>';
   sumHtml+='<div class="port-card"><div class="port-card-label">Posiciones</div><div class="port-card-value" style="color:var(--text)">'+d.num_positions+'</div></div>';
+  if(d.pending_orders&&d.pending_orders.length>0){
+    sumHtml+='<div class="port-card"><div class="port-card-label">Ordenes Pendientes</div><div class="port-card-value" style="color:#b45309">'+d.pending_orders.length+'</div><div class="port-card-sub" style="color:var(--muted)">Cargadas en IB, sin ejecutar</div></div>';
+  }
   let acct=d.account||{};
   if(acct.NetLiquidation){
     sumHtml+='<div class="port-card"><div class="port-card-label">Liquidacion Neta</div><div class="port-card-value" style="color:var(--text)">$'+fmtN(acct.NetLiquidation.value)+'</div></div>';
@@ -2997,6 +3008,9 @@ function renderPortfolio(d){
 
   // Análisis profundo por posicion (accordions estilo Top 3 Pick)
   renderPortAnalysisList(positions);
+
+  // Ordenes cargadas en IBKR sin ejecutar todavia (sin posicion)
+  renderPendingOrdersList(d.pending_orders||[]);
 }
 
 function _betaClass(b){
@@ -3108,13 +3122,24 @@ let _portAnalCharts={};
 let _portAnalPeriods={};
 
 function _portAnalDecorate(rec,pos){
-  // Devuelve {priceLines, markers} para el panel de velas (Costo/Target/Stop + fills de compra)
+  // Devuelve {priceLines, markers} para el panel de velas (Costo/Target/Stop
+  // del sistema + SL/TP REALES activos en IB + orden pendiente + fills)
   let priceLines=[],markers=[];
   try{
     let avgCost=pos?pos.costo_promedio:null;
     if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Costo Prom.'});
     if(rec.target)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
     if(rec.stop_loss)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
+    // SL/TP REALES cargados en IB (bracket order) — distintos de Target/Stop
+    // del sistema arriba, que son solo la sugerencia del analisis tecnico
+    if(pos&&pos.stop_loss)priceLines.push({price:pos.stop_loss,color:'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'SL IB'});
+    if(pos&&pos.take_profit)priceLines.push({price:pos.take_profit,color:'#0b7a4b',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'TP IB'});
+    // Orden de ENTRADA pendiente (cargada en IB, sin posicion todavia)
+    if(pos&&pos.is_pending&&pos.pending_order&&pos.pending_order.price){
+      let po=pos.pending_order;
+      let isSell=(po.action||'').toUpperCase()==='SELL';
+      priceLines.push({price:po.price,color:'#b45309',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Orden '+(isSell?'VENDER':'COMPRAR')+' pend.'});
+    }
   }catch(e){}
   try{
     let fills=(rec&&rec.entry_fills)||[];
@@ -3297,6 +3322,136 @@ function renderPortAnalysisList(positions){
     det.addEventListener('toggle',function(){
       if(det.open){setTimeout(()=>renderPortAnalCharts(sym,pos.analysis||{},pos),50);}
       else{_portAnalDestroy(sym);}
+    });
+  });
+}
+
+// ===== Ordenes pendientes en IBKR (cargadas, sin posicion todavia) =====
+let _portPendCharts={};
+let _portPendPeriods={};
+
+function _findPortPending(sym){
+  if(!_portData||!_portData.pending_orders)return null;
+  for(let p of _portData.pending_orders){if(p.symbol===sym)return p;}
+  return null;
+}
+
+function _portPendDestroy(sym){scDestroy(_scReg['pend_'+sym]);_scReg['pend_'+sym]=null;delete _portPendCharts[sym];}
+
+function renderPortPendCharts(sym,rec,p,period){
+  if(!rec)return;
+  if(!period)period=_portPendPeriods[sym]||'1Y';
+  _portPendPeriods[sym]=period;
+  let bar=document.getElementById('portpend_pb_'+sym);
+  if(bar)bar.querySelectorAll('.rec-period-btn').forEach(b=>b.classList.toggle('active',b.dataset.p===period));
+  let fullData=(_data&&_data.results)?_data.results[sym]:null;
+  let ch=fullData?fullData.chart:null;
+  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
+  scRenderStack({key:'pend_'+sym,symbol:sym,chart:ch,period:period,
+    decorate:_portAnalDecorate(rec,p),heights:{candle:380,ind:124},
+    getPeriod:()=>_portPendPeriods[sym]});
+  _portPendCharts[sym]=1;
+}
+
+function setPortPendPeriod(sym,period){
+  _portPendPeriods[sym]=period;
+  let p=_findPortPending(sym);
+  if(!p)return;
+  renderPortPendCharts(sym,p.analysis||{},p,period);
+}
+
+function renderPendingOrdersList(pending){
+  let section=document.getElementById('port-pending-section');
+  let container=document.getElementById('port-pending-list');
+  for(let s in _portPendCharts)_portPendDestroy(s);
+  _portPendCharts={};
+  if(!pending||pending.length===0){
+    section.style.display='none';
+    container.innerHTML='';
+    return;
+  }
+  section.style.display='';
+  let periods=['ALL','5Y','1Y','3M','1M','1W','1D'];
+  let html='';
+  for(let p of pending){
+    let sym=p.symbol;
+    let rec=p.analysis||{};
+    let po=p.pending_order||{};
+    let sig=rec.signal||'HOLD';
+    let sc=sig==='BUY'?'rec-buy':(sig==='SELL'?'rec-sell':'rec-hold');
+    let curP=_portPendPeriods[sym]||'1Y';
+    let curPrice=(p.precio_actual||rec.price||0);
+    let isSell=(po.action||'').toUpperCase()==='SELL';
+    let actionCls=isSell?'rb-sell':'rb-buy';
+    let priceTxt=po.price?('$'+po.price.toFixed(2)):'a mercado';
+
+    html+='<details class="rec-details '+sc+'" id="port-pend-'+sym+'" data-sym="'+sym+'">';
+    html+='<summary>';
+    html+='<span class="rec-arrow">&#9654;</span>';
+    html+='<span class="rec-rank-badge port-pending-badge" style="min-width:70px;text-align:center">PENDIENTE</span>';
+    html+='<span class="rec-sym">'+sym+'</span>';
+    let _coName=(rec.fundamentals&&rec.fundamentals.name)?rec.fundamentals.name:'';
+    if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
+    if(curPrice)html+='<span class="rec-price">$'+curPrice.toFixed(2)+'</span>';
+    html+='<span class="rec-badge '+actionCls+'">'+(po.action||'')+' '+(po.order_type||'')+'</span>';
+    html+='<span class="rec-sum-metrics">';
+    html+='<span class="rec-sm"><span class="lab">Orden</span><span class="val">'+priceTxt+'</span></span>';
+    html+='<span class="rec-sm"><span class="lab">Cantidad</span><span class="val">'+(po.quantity||0).toFixed(0)+'</span></span>';
+    html+='<span class="rec-sm"><span class="lab">Estado IB</span><span class="val">'+(po.status||'')+'</span></span>';
+    if(rec.strength!=null)html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val">'+(rec.strength||0).toFixed(1)+'</span></span>';
+    html+='</span>';
+    html+='</summary>';
+    html+='<div class="rec-body">';
+
+    html+='<div class="rec-thesis" style="border-left:4px solid #b45309">';
+    html+='<div class="rec-thesis-title">Orden cargada en IBKR &mdash; <span style="color:#b45309">sin ejecutar</span></div>';
+    html+='<div class="rec-thesis-text">'+(isSell?'VENDER':'COMPRAR')+' '+(po.quantity||0).toFixed(0)+' '+sym+' '+(po.order_type||'')+
+      (po.price?(' a $'+po.price.toFixed(2)):' a mercado')+'. Estado en IB: '+(po.status||'desconocido')+
+      '. Mientras no se llene, no es una posicion — el precio actual y la distancia al limite definen cuando podria ejecutarse.</div>';
+    html+='</div>';
+
+    if(rec.thesis){
+      html+='<div class="rec-thesis">';
+      html+='<div class="rec-thesis-title">Tesis Tecnica (motivo de la orden)</div>';
+      html+='<div class="rec-thesis-text">'+rec.thesis+'</div>';
+      html+='</div>';
+    }
+
+    html+='<div class="rec-period-bar" id="portpend_pb_'+sym+'">';
+    for(let per of periods){
+      html+='<button class="rec-period-btn'+(per===curP?' active':'')+'" data-p="'+per+'" onclick="setPortPendPeriod(\''+sym+'\',\''+per+'\')">'+per+'</button>';
+    }
+    html+='</div>';
+
+    html+='<div class="rec-2col">';
+    html+='<div class="rec-2col-left">'+scStackHTML('pend_'+sym,SC_LEGEND_FULL)+'</div>';
+    html+='<div class="rec-2col-right">';
+    html+='<div class="rec-levels"><div class="rec-lt">Niveles</div>';
+    html+='<div class="rec-lr"><span class="rec-ll">Orden '+(po.action||'')+'</span><span class="rec-lv" style="color:#b45309">'+priceTxt+'</span></div>';
+    if(rec.target)html+='<div class="rec-lr"><span class="rec-ll">Target sistema</span><span class="rec-lv lv-target">$'+rec.target.toFixed(2)+'</span></div>';
+    if(rec.stop_loss)html+='<div class="rec-lr"><span class="rec-ll">Stop sistema</span><span class="rec-lv lv-stop">$'+rec.stop_loss.toFixed(2)+'</span></div>';
+    html+='</div>';
+    html+=researchRow(rec.fundamentals||{},curPrice);
+    html+='</div>'; // end right
+    html+='</div>'; // end 2col
+
+    if(rec.rationale&&rec.rationale.length>0){
+      html+='<div class="rec-rat"><div class="rec-rt">Detalle del Análisis</div>';
+      for(let l of rec.rationale)html+='<div class="rec-ri">'+l+'</div>';
+      html+='</div>';
+    }
+
+    html+='</div></details>';
+  }
+  container.innerHTML=html;
+
+  container.querySelectorAll('.rec-details').forEach(det=>{
+    let sym=det.dataset.sym;
+    let p=_findPortPending(sym);
+    if(!p)return;
+    det.addEventListener('toggle',function(){
+      if(det.open){setTimeout(()=>renderPortPendCharts(sym,p.analysis||{},p),50);}
+      else{_portPendDestroy(sym);}
     });
   });
 }
@@ -4266,8 +4421,8 @@ function renderTop3(top3){
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
     html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Obj. (baja)':'Objetivo')+'</span><span class="rec-lv '+(bearT2?'lv-stop':'lv-target')+'">$'+r.target.toFixed(2)+tPct+'</span></div>';
     html+=recWhy(_objWhy(r));
-    html+='<div class="rec-lr"><span class="rec-ll">Stop Loss</span><span class="rec-lv lv-stop">$'+r.stop_loss.toFixed(2)+'</span></div>';
-    html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+' — si se pierde, la tesis se invalida'):'');
+    html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Invalidación (techo)':'Stop Loss')+'</span><span class="rec-lv'+(bearT2?'':' lv-stop')+'">$'+r.stop_loss.toFixed(2)+'</span></div>';
+    html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+(bearT2?' — si el precio lo supera, la lectura bajista se anula':' — si se pierde, la tesis se invalida')):'');
     html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
     if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
       html+=recWhy('Estimado por volatilidad (ATR·√t) para recorrer la distancia al objetivo');}
@@ -5109,8 +5264,8 @@ function renderEtfTop3(top3){
     let tPct=r.target_pct?(' ('+tSign+Math.abs(r.target_pct).toFixed(0)+'%)'):'';
     html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Obj. (baja)':'Objetivo')+'</span><span class="rec-lv '+(bearT2?'lv-stop':'lv-target')+'">$'+r.target.toFixed(2)+tPct+'</span></div>';
     html+=recWhy(_objWhy(r));
-    html+='<div class="rec-lr"><span class="rec-ll">Stop Loss</span><span class="rec-lv lv-stop">$'+r.stop_loss.toFixed(2)+'</span></div>';
-    html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+' — si se pierde, la tesis se invalida'):'');
+    html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Invalidación (techo)':'Stop Loss')+'</span><span class="rec-lv'+(bearT2?'':' lv-stop')+'">$'+r.stop_loss.toFixed(2)+'</span></div>';
+    html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+(bearT2?' — si el precio lo supera, la lectura bajista se anula':' — si se pierde, la tesis se invalida')):'');
     html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
     if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
       html+=recWhy('Estimado por volatilidad (ATR·√t) para recorrer la distancia al objetivo');}

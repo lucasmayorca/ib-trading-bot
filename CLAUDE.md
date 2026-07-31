@@ -138,7 +138,34 @@ labels can be directional while `signal` is still HOLD.
   `_labelIsBearish(signal_label)` (espejo del Python, incluye SOBRECOMPRA) — NUNCA de
   `signal==='SELL'`, que mostraba "+12%" verde en una VENTA INMINENTE (signal HOLD). El P&L en $
   lleva signo explícito (antes `Math.abs` sin '-'). El panel de posición rotula "Riesgo a la baja"
-  / "Invalidación (techo)" cuando el label es bajista.
+  / "Invalidación (techo)" cuando el label es bajista (misma corrección aplicada en Top
+  Recomendaciones y ETF Top Recomendaciones: "Stop Loss" plano por "Invalidación (techo)" cuando
+  `_labelIsBearish` da bajista).
+- **Órdenes pendientes en IBKR (2026-07)**: `reqAllOpenOrders` ya se pedía (`portfolio.fetch_open_orders`)
+  pero solo se leía para extraer SL/TP de posiciones YA existentes (`extract_sl_tp_by_symbol`) — una
+  orden de ENTRADA cargada en IB sin fill (sin posición todavía, p.ej. un LMT de compra que no llegó
+  al precio) se pedía y parseaba pero se descartaba en silencio (el campo `entry_limit` quedaba
+  calculado y sin usar). `extract_pending_entries(open_orders, held_symbols)` (`portfolio.py`) cierra
+  ese hueco: toma las órdenes con `parent_id==0` (no son hijas SL/TP de un bracket, ver
+  `bot.py create_bracket_order` — el parent nace con `parentId=0`, los hijos con `parentId=<id del
+  parent>`) para símbolos SIN posición. `analyze_portfolio()` pide `open_orders` **antes** del early
+  return de "sin posiciones" (antes solo se pedía dentro del branch con posiciones activas, así que
+  una cartera vacía con una orden cargada nunca la mostraba) y arma `pending_orders` reusando
+  `build_position_analysis_fn` sobre un stub de posición (`cantidad=0`, `costo_promedio=0`) — el
+  pipeline de veredicto/narrativa ya tolera esos campos en 0/None con gracia. `cloud/server.py`
+  duplica el wiring (mismo `extract_pending_entries` importado de `portfolio.py`, no hace falta
+  duplicar la función) usando `_build_cloud_position_analysis` + `analysis.get(sym)` del store
+  alimentado por el bridge — el bridge ya reenvía `open_orders` completo en `portfolio_data`, cero
+  cambios ahí. **UI**: sección nueva "Órdenes pendientes en IBKR" en Mi Cartera (`renderPendingOrdersList`,
+  oculta si `pending_orders` está vacío), un accordion por orden con el MISMO stack de charts
+  sincronizado (`scRenderStack` key `pend_<sym>`) que las posiciones reales — sin veredicto/CTA
+  (mostrar `verdict_reason`/`_generate_position_recommendation` sería engañoso: esa narrativa asume
+  que ya se entró, dice "Entraste en X" — para pendientes solo se usa `rec.thesis`, el racional
+  técnico neutro del escáner). `_portAnalDecorate` dibuja además la línea de la orden pendiente
+  (ámbar, `pos.is_pending && pos.pending_order.price`) y, para posiciones reales, el SL/TP **real**
+  activo en IB (`pos.stop_loss`/`pos.take_profit`, punteado) — antes esos dos niveles solo se
+  mostraban como texto en el panel lateral, nunca en el gráfico (el Target/Stop sólido del chart es
+  la sugerencia del sistema, no la orden real cargada).
 - **Tabla del scanner (rediseño 2026-07)**: header en dos niveles — fila de grupos (`.lh-groups`:
   Activo · Precio vs media móvil · Momentum · Backtest 5A · Tend., con `grid-column:span N`) sobre
   la fila de columnas (`.lh-cols`). El grid de 18 columnas vive en `.lh-groups,.lh-cols,.stock-row`

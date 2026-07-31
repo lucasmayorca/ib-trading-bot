@@ -427,6 +427,91 @@ def extract_sl_tp_by_symbol(open_orders):
     return result
 
 
+def extract_pending_entries(open_orders, held_symbols):
+    """Ordenes de ENTRADA cargadas en IBKR que AUN NO se ejecutaron: sin
+    posicion abierta para ese simbolo. Distinto de extract_sl_tp_by_symbol,
+    que solo lee SL/TP de posiciones YA existentes.
+
+    Un bracket (bot.py create_bracket_order) tiene parent con parentId=0 +
+    hijos SL/TP con parentId=<id del parent>. Si el parent ya se lleno, el
+    simbolo aparece en `held_symbols` y sus hijos se leen via
+    extract_sl_tp_by_symbol; si el parent AUN no lleno, no hay posicion y
+    esta es la unica funcion que lo detecta (antes se descartaba en
+    silencio: se pedia a IB pero nunca se exponia si el simbolo no tenia
+    posicion — ver `entry_limit`, que quedaba calculado y sin usar).
+
+    Returns: [{symbol, action, order_type, price, quantity, status, order_id}]
+    una entrada por simbolo (la de mayor cantidad si hay varias ordenes)."""
+    active_statuses = {"Submitted", "PreSubmitted", "PendingSubmit", "ApiPending"}
+    held_upper = {s.upper() for s in held_symbols}
+    by_symbol = {}
+
+    for o in open_orders:
+        status = o.get("status", "")
+        if status and status not in active_statuses:
+            continue
+        sym = o.get("symbol", "")
+        if not sym or sym.upper() in held_upper:
+            continue
+        if o.get("parent_id", 0):
+            continue  # hijo de un bracket (SL/TP) — no es una entrada nueva
+
+        otype = (o.get("order_type") or "").upper()
+        if otype == "LMT":
+            price = o.get("lmt_price") or 0
+        elif otype in ("STP", "STP LMT", "TRAIL", "TRAIL LIMIT"):
+            price = o.get("aux_price") or 0
+        else:
+            price = 0  # MKT u otro tipo sin precio fijo
+
+        qty = o.get("quantity", 0) or 0
+        existing = by_symbol.get(sym.upper())
+        if existing is None or qty > existing["quantity"]:
+            by_symbol[sym.upper()] = {
+                "symbol": sym,
+                "action": o.get("action", ""),
+                "order_type": otype,
+                "price": round(price, 2) if price else None,
+                "quantity": qty,
+                "status": status,
+                "order_id": o.get("order_id"),
+            }
+
+    return list(by_symbol.values())
+
+
+def _enrich_pending_orders(pending_entries, build_position_analysis_fn):
+    """Adjunta analisis profundo (chart, tesis, niveles, backtest) a cada
+    orden pendiente, reutilizando EL MISMO pipeline que las posiciones
+    abiertas (build_position_analysis_fn = _build_position_deep_analysis de
+    vista_web.py). Se arma un stub de 'position' con cantidad=0 / sin costo
+    promedio: el resto del pipeline (veredicto, narrativa) ya tolera esos
+    campos en 0/None con gracia (ver pos.get(..., 0) or 0 en vista_web.py)."""
+    enriched = []
+    for pe in pending_entries:
+        sym = pe["symbol"]
+        es_etf, sector = _classify_position(sym)
+        stub = {
+            "symbol": sym, "tipo": "STK", "cuenta": "", "moneda": "USD",
+            "cantidad": 0, "costo_promedio": 0, "precio_actual": None,
+            "costo_total": 0, "valor_mercado": 0, "pnl": 0, "pnl_pct": 0,
+            "pnl_realizado": 0, "es_etf": es_etf, "sector": sector,
+            "peso_portafolio": 0, "stop_loss": None, "take_profit": None,
+            "is_pending": True, "pending_order": pe,
+        }
+        if build_position_analysis_fn is not None:
+            try:
+                deep = build_position_analysis_fn(sym, stub)
+                if deep:
+                    stub["analysis"] = deep
+                    if not stub["precio_actual"]:
+                        stub["precio_actual"] = deep.get("price") or None
+            except Exception as e:
+                print(f"  [Portfolio] Error deep analysis orden pendiente {sym}: {e}")
+        enriched.append(stub)
+    return enriched
+
+
 # ══════════════════════════════════════════════════════════════
 #  EXECUTIONS (historial persistente de fills)
 # ══════════════════════════════════════════════════════════════
@@ -1201,9 +1286,26 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
     # Merge: account_values tiene datos de updateAccountValue, account_summary de reqAccountSummary
     merged_account = {**account_values, **account_summary}
 
+    # Ordenes abiertas: se piden SIEMPRE aca (incluso sin posiciones todavia)
+    # para no perder ordenes de ENTRADA que IB ya tiene cargadas pero aun no
+    # se llenaron — antes solo se pedian mas abajo, dentro del branch con
+    # posiciones activas, asi que una cartera vacia con una orden pendiente
+    # nunca las mostraba.
+    try:
+        open_orders = fetch_open_orders(app)
+    except Exception as e:
+        print(f"  [Portfolio] Error obteniendo open orders: {e}")
+        open_orders = []
+    held_symbols = {p["symbol"] for p in raw_positions if p.get("cantidad")}
+    pending_entries = extract_pending_entries(open_orders, held_symbols)
+    if pending_entries:
+        print(f"  [Portfolio] {len(pending_entries)} orden(es) de entrada cargada(s) en IB sin ejecutar aun.")
+    pending_orders_enriched = _enrich_pending_orders(pending_entries, build_position_analysis_fn)
+
     if not raw_positions:
         result = {
             "positions": [],
+            "pending_orders": pending_orders_enriched,
             "total_value": 0,
             "total_cost": 0,
             "total_pnl": 0,
@@ -1235,15 +1337,15 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
     # 2. Enriquecer posiciones (precios y P&L ya vienen de IB via updatePortfolio)
     symbols = list(set(p["symbol"] for p in active_positions))
 
-    # 2b. Traer ordenes abiertas para extraer SL / TP por simbolo
+    # 2b. SL / TP por simbolo (open_orders ya se pidio arriba, antes del
+    # filtro de posiciones activas, justamente para no perder ordenes de
+    # entrada sin posicion todavia — ver pending_orders_enriched)
     try:
-        open_orders = fetch_open_orders(app)
         sl_tp_map = extract_sl_tp_by_symbol(open_orders)
         print(f"  [Portfolio] Ordenes abiertas: {len(open_orders)} "
               f"({sum(1 for v in sl_tp_map.values() if v.get('stop_loss') or v.get('take_profit'))} con SL/TP)")
     except Exception as e:
-        print(f"  [Portfolio] Error obteniendo open orders: {e}")
-        open_orders = []
+        print(f"  [Portfolio] Error extrayendo SL/TP: {e}")
         sl_tp_map = {}
 
     # 2c. Acumular ejecuciones (para marcadores en charts)
@@ -1428,6 +1530,7 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
     # Resultado final
     result = {
         "positions": positions_enriched,
+        "pending_orders": pending_orders_enriched,
         "total_value": round(total_value, 2),
         "total_cost": round(total_cost, 2),
         "total_pnl": round(total_pnl, 2),
