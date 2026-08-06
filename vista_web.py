@@ -1898,6 +1898,15 @@ body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,-apple
 #stock-list details,#etf-list details{min-width:1548px}
 .trend-spark{width:100%;height:20px;display:block}
 .tspark-na{color:var(--dim);font-size:10px;text-align:center}
+.list-toolbar{padding:10px 14px 0;min-width:1548px;display:flex;align-items:center;gap:8px}
+.ticker-search{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 12px 6px 30px;border-radius:6px;font-size:12px;width:220px;font-family:inherit}
+.ticker-search:focus{outline:none;border-color:var(--accent)}
+.ticker-search::placeholder{color:var(--dim)}
+.list-toolbar{position:relative}
+.list-toolbar .ts-icon{position:absolute;left:22px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:12px;pointer-events:none}
+.ticker-search-clear{position:absolute;left:236px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:0 6px;line-height:1;display:none}
+.ticker-search-clear.show{display:block}
+.list-toolbar .ts-count{font-size:11px;color:var(--dim)}
 .list-header{
   background:var(--surface);
   border-bottom:1px solid var(--accent);color:var(--muted);
@@ -2645,6 +2654,12 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="tab-scanner" class="tab-content active">
 <div id="top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
+  <div class="list-toolbar" id="stock-search-wrap" style="display:none">
+    <span class="ts-icon">&#128269;</span>
+    <input type="text" class="ticker-search" id="stock-search" placeholder="Buscar ticker o compania..." oninput="filterStockList(this.value)">
+    <button class="ticker-search-clear" id="stock-search-clear" onclick="document.getElementById('stock-search').value='';filterStockList('')" title="Limpiar">&times;</button>
+    <span class="ts-count" id="stock-search-count"></span>
+  </div>
   <div class="list-header" id="list-header" style="display:none">
     <div class="lh-groups">
       <span class="lh-g" style="grid-column:span 5">Activo</span>
@@ -2683,6 +2698,12 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <div id="market-pulse-section" class="top3-section" style="display:none"></div>
 <div id="etf-top3-section" class="top3-section" style="display:none"></div>
 <div class="content">
+  <div class="list-toolbar" id="etf-search-wrap" style="display:none">
+    <span class="ts-icon">&#128269;</span>
+    <input type="text" class="ticker-search" id="etf-search" placeholder="Buscar ticker o nombre..." oninput="filterEtfList(this.value)">
+    <button class="ticker-search-clear" id="etf-search-clear" onclick="document.getElementById('etf-search').value='';filterEtfList('')" title="Limpiar">&times;</button>
+    <span class="ts-count" id="etf-search-count"></span>
+  </div>
   <div class="list-header" id="etf-list-header" style="display:none">
     <div class="lh-groups">
       <span class="lh-g" style="grid-column:span 5">Activo</span>
@@ -2838,6 +2859,12 @@ let _olabLoaded=false;
 let _etfData=null,_etfCharts={},_etfPeriods={};
 let _etfLoaded=false;
 let _etfSortCol='vol',_etfSortDir='desc';
+let _etfSearch='';
+function filterEtfList(val){
+  _etfSearch=(val||'').trim().toLowerCase();
+  document.getElementById('etf-search-clear').classList.toggle('show',!!_etfSearch);
+  if(_etfData)updateEtf();
+}
 
 function switchTab(tab){
   _activeTab=tab;
@@ -3773,6 +3800,18 @@ function _trendPct(r,nDays){
 }
 let _sortCol='vol'; // default sort by dollar volume
 let _sortDir='desc';
+let _stockSearch='';
+function filterStockList(val){
+  _stockSearch=(val||'').trim().toLowerCase();
+  document.getElementById('stock-search-clear').classList.toggle('show',!!_stockSearch);
+  if(_data)update();
+}
+function _matchesSearch(sym,r,q){
+  if(!q)return true;
+  if(sym.toLowerCase().includes(q))return true;
+  let nm=r&&r.ext&&r.ext.name?r.ext.name.toLowerCase():'';
+  return nm.includes(q);
+}
 
 function _getSortVal(r,col){
   if(!r)return null;
@@ -4640,6 +4679,7 @@ function update(){
     renderTop3(data.top3);
 
     let sorted=sortEntries(entries);
+    if(_stockSearch)sorted=sorted.filter(sym=>_matchesSearch(sym,entries[sym],_stockSearch));
     let openSet=new Set();
     document.querySelectorAll('details[open]').forEach(d=>{if(d.dataset.sym)openSet.add(d.dataset.sym);});
     for(let k in _charts)destroyDetailCharts(k);
@@ -4739,10 +4779,16 @@ function update(){
     }
     if(!html&&total===0){
       html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div>';
+    }else if(!html&&_stockSearch){
+      html='<div class="tab-loading"><div class="tab-loading-text">Sin resultados para "'+_stockSearch+'"</div></div>';
     }
     // Header visible solo cuando hay filas (evita el header flotando sobre el spinner)
     let _lh=document.getElementById('list-header');
     if(_lh)_lh.style.display=total>0?'':'none';
+    let _sw=document.getElementById('stock-search-wrap');
+    if(_sw)_sw.style.display=total>0?'flex':'none';
+    let _sc=document.getElementById('stock-search-count');
+    if(_sc)_sc.textContent=_stockSearch?(sorted.length+' de '+total):'';
     document.getElementById("stock-list").innerHTML=html;
 
     // Draw RSI sparklines for stocks with observations
@@ -5077,6 +5123,7 @@ function updateEtf(){
     renderEtfTop3(data.top3);
 
     let sorted=sortEtfEntries(entries);
+    if(_etfSearch)sorted=sorted.filter(sym=>_matchesSearch(sym,entries[sym],_etfSearch));
     let openSet=new Set();
     document.querySelectorAll('#tab-etf details[open]').forEach(d=>{if(d.dataset.sym)openSet.add(d.dataset.sym);});
     for(let k in _etfCharts)destroyEtfDetailCharts(k);
@@ -5172,10 +5219,16 @@ function updateEtf(){
     }
     if(!html&&total===0){
       html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div>';
+    }else if(!html&&_etfSearch){
+      html='<div class="tab-loading"><div class="tab-loading-text">Sin resultados para "'+_etfSearch+'"</div></div>';
     }
     // Header visible solo cuando hay filas (evita el header flotando sobre el spinner)
     let _elh=document.getElementById('etf-list-header');
     if(_elh)_elh.style.display=total>0?'':'none';
+    let _ew=document.getElementById('etf-search-wrap');
+    if(_ew)_ew.style.display=total>0?'flex':'none';
+    let _ec=document.getElementById('etf-search-count');
+    if(_ec)_ec.textContent=_etfSearch?(sorted.length+' de '+total):'';
     document.getElementById("etf-list").innerHTML=html;
 
     document.querySelectorAll('#tab-etf details[open]').forEach(d=>{
