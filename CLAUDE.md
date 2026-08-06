@@ -253,8 +253,15 @@ labels can be directional while `signal` is still HOLD.
   `stop_basis` y el racional lo muestra ("Stop: $X — bajo piso $Y (n toques)").
 - **Transparencia del sistema en tesis y racional**: `_system_status(data, is_bearish)` evalúa
   las 3 condiciones en la dirección del label y devuelve (cumplidas, faltantes) con umbral,
-  valor actual y detección de "ACERCANDOSE" (pendiente de las series del chart — ej. "RSI 36
-  ACERCANDOSE a <30"). La **tesis** (`_generate_thesis`) lo usa en la línea 1 para estados
+  valor actual y detección de "ACERCANDOSE" (pendiente de las **últimas 5 ruedas** — 1 semana,
+  acorde al horizonte swing mensual del usuario; era 3 y leía ruido de un par de días — ej.
+  "RSI 36 ACERCANDOSE a <30"). **Ventanas por capa (decisión deliberada, 2026-08)**: las
+  condiciones de giro de `signals.py` (hist[-1] vs [-2], marrón vs media) quedan en 1 barra —
+  son el GATILLO de entrada que el backtest calibra y suavizarlas cambia el sistema y rompe
+  paridad con `bridge/signals.py`; los factores del veredicto de Mi Cartera espejan esas mismas
+  condiciones (misma ventana, para no contradecir el label); solo las capas de COMENTARIO
+  (ACERCANDOSE) leen 5 ruedas. `_compute_position_trend` se eliminó (dead code sin callers; el
+  `trend` del veredicto sale de los scores bull/bear). La **tesis** (`_generate_thesis`) lo usa en la línea 1 para estados
   pre-señal ("ya cumple MACD girando al alza y Koncorde girando desde piso. Para confirmar la
   senal de compra falta: RSI 43 (necesita <30)") y el **racional** (`_generate_rationale`)
   muestra lo mismo en bullets. Importante: COMPRA/VENTA INMINENTE = 2/3 condiciones (el RSI
@@ -368,6 +375,13 @@ labels can be directional while `signal` is still HOLD.
 - Patrón `enrichment.py`: server-side puro vía yfinance (5y diario + 15m sesión), cache TTL
   10 min, cero dependencia de TWS/bridge → local y cloud idénticos. Reutiliza
   `indicators.calculate_all` + `signals.check_buy/sell_conditions` (paridad total de lecturas).
+- **Análisis al cierre confirmado (2026-08)**: `_build_pulse` separa `df_full` (barra viva) de
+  `df = _drop_partial_bar(df_full)` (espejo propio, fechas YYYY-MM-DD). Indicadores, señal,
+  momentum, condiciones x/3, veredicto, figuras, S/R y chart corren sobre `df` (cierres
+  confirmados — sin esto parpadeaban cada 10 min con la barra a medio formar); el precio/Δ% del
+  header (`price` = cotización viva), `_session_read(df_full, ...)` (gap/RVOL proyectado) y el
+  máximo 52w usan la barra viva A PROPÓSITO (leen la sesión, no son señal). El payload expone
+  `analysis_as_of` (fecha del último cierre analizado), mostrado en `.mp-upd`.
 - **Endpoint `/api/spy-pulse`** (local y espejo cloud con `@login_required`). ¡OJO!:
   `/api/market-pulse` YA EXISTE y es OTRA cosa (quotes + sentimiento miedo/codicia del ticker
   del header/briefing) — no reutilizar ese nombre.

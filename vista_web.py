@@ -1226,8 +1226,9 @@ def _system_status(data, is_bearish):
     """Estado explícito de las 3 condiciones del sistema en la dirección del label.
 
     Devuelve (cumplidas, faltantes): listas de textos. Cada faltante dice el
-    umbral requerido, el valor actual y si se está ACERCANDO (usando la pendiente
-    de las series del chart), para que la tesis refleje la situación real."""
+    umbral requerido, el valor actual y si se está ACERCANDO (pendiente de la
+    última semana de ruedas — 5 barras, acorde al horizonte swing del usuario:
+    un drift de una semana, no el ruido de un par de días)."""
     chart = data.get("chart") or {}
     vals = data.get("values", {}) or {}
     rsi_series = chart.get("rsi") or []
@@ -1236,7 +1237,7 @@ def _system_status(data, is_bearish):
     marron_series = konc_chart.get("marron") or []
 
     def _slope(series):
-        pts = [x for x in series[-3:] if x is not None]
+        pts = [x for x in series[-5:] if x is not None]
         return (pts[-1] - pts[0]) if len(pts) >= 2 else 0.0
 
     met, missing = [], []
@@ -4988,7 +4989,7 @@ function _mpHeadInner(){
     '<span class="mp-px">$'+_n(d.price,2)+'</span>'+
     '<span class="mp-chg" style="color:'+chCol+'">'+(ch>=0?'+':'')+_n(ch,2)+'% <span style="font-weight:600;color:var(--muted)">'+when+'</span></span>'+
     '<span class="mp-chips">'+_mpChipsHTML(d)+'</span>'+
-    '<span class="mp-upd">'+(live?'&#9679; sesion en vivo':'al cierre')+' &middot; act. '+_mpEsc((d.updated||'').slice(11,16))+' NY</span>'+
+    '<span class="mp-upd"'+(d.analysis_as_of?' title="Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) se calcula sobre cierres diarios confirmados"':'')+'>'+(live?'&#9679; sesion en vivo':'al cierre')+' &middot; act. '+_mpEsc((d.updated||'').slice(11,16))+' NY'+(d.analysis_as_of?' &middot; analisis al cierre del '+_mpEsc(d.analysis_as_of):'')+'</span>'+
   '</div>';
   let rows=[
     ['Momentum',d.momentum?_mpEsc(d.momentum.text):null],
@@ -6890,47 +6891,6 @@ def api_bars(symbol, period):
 # ══════════════════════════════════════════════════════════════
 #  PORTFOLIO ENDPOINTS
 # ══════════════════════════════════════════════════════════════
-
-def _compute_position_trend(data):
-    """Devuelve 'up' | 'down' | 'flat' segun momentum de MACD/RSI/Koncorde.
-    Base para tendencia hacia BUY/SELL cuando la señal esta en HOLD."""
-    try:
-        chart = data.get("chart") or {}
-        macd = chart.get("macd") or {}
-        hist = macd.get("hist") or []
-        rsi = chart.get("rsi") or []
-        konc = chart.get("koncorde") or {}
-        marron = konc.get("marron") or []
-
-        up_votes = 0
-        down_votes = 0
-        # MACD histogram slope (last 3)
-        if len(hist) >= 3:
-            if hist[-1] > hist[-2] > hist[-3]:
-                up_votes += 1
-            elif hist[-1] < hist[-2] < hist[-3]:
-                down_votes += 1
-        # RSI slope
-        if len(rsi) >= 3:
-            if rsi[-1] > rsi[-2] > rsi[-3]:
-                up_votes += 1
-            elif rsi[-1] < rsi[-2] < rsi[-3]:
-                down_votes += 1
-        # Koncorde marron slope
-        if len(marron) >= 3:
-            if marron[-1] > marron[-2] > marron[-3]:
-                up_votes += 1
-            elif marron[-1] < marron[-2] < marron[-3]:
-                down_votes += 1
-
-        if up_votes >= 2 and up_votes > down_votes:
-            return "up"
-        if down_votes >= 2 and down_votes > up_votes:
-            return "down"
-        return "flat"
-    except Exception:
-        return "flat"
-
 
 def _compute_position_verdict(data, position, levels=None):
     """Veredicto multi-factor que replica los mismos indicadores del escaner:

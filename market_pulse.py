@@ -99,6 +99,28 @@ def _download_intraday():
         return None
 
 
+def _drop_partial_bar(df, now_et=None):
+    """Descarta la barra diaria EN CURSO: el ANALISIS del pulso (indicadores,
+    señal, veredicto, figuras, S/R) se calcula solo sobre cierres confirmados
+    — espejo de vista_web._drop_partial_bar, mantener paridad. Sin esto, el
+    momentum ("MACD subiendo/cayendo"), las condiciones x/3 y el veredicto se
+    re-evaluaban cada 10 min sobre una barra a medio formar y parpadeaban
+    intradia. La lectura de la SESION (gap/RVOL) y el precio del header siguen
+    usando la barra viva a proposito — su funcion es leer la sesion en curso."""
+    if df is None or len(df) < 2:
+        return df
+    try:
+        if now_et is None:
+            now_et = datetime.now(_NY)
+        if now_et.hour >= 16:
+            return df
+        if str(df["date"].iloc[-1]) == now_et.strftime("%Y-%m-%d"):
+            return df.iloc[:-1].reset_index(drop=True)
+    except Exception:
+        pass
+    return df
+
+
 # ══════════════════════════════════════════════════════════════
 #  PRIMITIVAS: ATR, pivotes, niveles, canal
 # ══════════════════════════════════════════════════════════════
@@ -747,18 +769,24 @@ def _build_reading(verdict, sups, ress, sig, buy_c, sell_c, price, high_52w):
 # ══════════════════════════════════════════════════════════════
 
 def _build_pulse():
-    df = _download_daily()
-    if df is None:
+    df_full = _download_daily()
+    if df_full is None:
         return {"error": "yfinance no devolvio datos para SPY"}
     intra = _download_intraday()
+
+    # ANALISIS sobre cierres confirmados; la barra viva queda solo para el
+    # header (precio/Δ%) y la lectura de sesion (df_full)
+    df = _drop_partial_bar(df_full)
 
     ind = indicators.calculate_all(df)
     sig = signals.generate_signal(ind)
 
     closes = df["close"]
-    price = float(closes.iloc[-1])
-    prev_close = float(closes.iloc[-2])
-    change_pct = (price / prev_close - 1) * 100 if prev_close else None
+    price = float(closes.iloc[-1])                     # ultimo cierre confirmado
+    live_close = float(df_full["close"].iloc[-1])      # cotizacion viva (header)
+    dropped = len(df) < len(df_full)
+    prev_close = price if dropped else float(closes.iloc[-2])
+    change_pct = (live_close / prev_close - 1) * 100 if prev_close else None
     atr = _atr(df)
     n = len(df)
 
@@ -787,10 +815,11 @@ def _build_pulse():
     azul = float(ind["koncorde"]["azul"].iloc[-1])
 
     buy_c, sell_c = _condition_items(ind)
-    session = _session_read(df, intra)
+    session = _session_read(df_full, intra)  # sesion en curso: barra viva
     verdict = _verdict(price, mas_val, channel, hist, hist_prev, rsi_v,
                        struct_dir, pattern)
-    high_52w = float(df["high"].iloc[-252:].max()) if n >= 252 else None
+    high_52w = (float(df_full["high"].iloc[-252:].max())
+                if len(df_full) >= 252 else None)  # un maximo 52w es un hecho, no una señal
 
     # --- textos de las lineas ---
     rsi_zone = ("sobreventa" if rsi_v < 30 else "zona baja" if rsi_v < 45 else
@@ -840,8 +869,10 @@ def _build_pulse():
     return {
         "symbol": SYMBOL, "name": NAME,
         "updated": datetime.now(_NY).strftime("%Y-%m-%d %H:%M:%S"),
-        "price": _r(price), "prev_close": _r(prev_close),
+        # price = cotizacion viva (header); el analisis corre al cierre confirmado
+        "price": _r(live_close), "prev_close": _r(prev_close),
         "change_pct": _r(change_pct, 2),
+        "analysis_as_of": df["date"].iloc[-1],
         "high_52w": _r(high_52w),
         "verdict": verdict,
         "system": {"signal": sig["signal"], "label": sig["signal_label"],
