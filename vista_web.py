@@ -242,13 +242,51 @@ def fetch_historical(app, symbol, req_id, duration=None):
     return df
 
 
+def _drop_partial_bar(df, now_et=None):
+    """Descarta la barra diaria EN CURSO para que indicadores y señales se
+    calculen SOLO sobre cierres confirmados (config.SIGNALS_CONFIRMED_CLOSE_ONLY).
+
+    Con la barra parcial adentro, las condiciones de giro del sistema
+    (hist[-1] vs hist[-2], marron vs media, RSI) se re-evaluan cada ciclo de
+    5 min sobre un valor que todavia se esta moviendo → señales y
+    recomendaciones parpadean intradia. Regla: si la ultima barra es de HOY
+    (America/New_York) y la sesion aun no cerro (antes de las 16:00 ET), se
+    descarta; despues del cierre la barra ya es definitiva y se mantiene.
+
+    `now_et` es inyectable solo para tests."""
+    if df is None or len(df) < 2:
+        return df
+    if not getattr(config, "SIGNALS_CONFIRMED_CLOSE_ONLY", True):
+        return df
+    try:
+        if now_et is None:
+            try:
+                from zoneinfo import ZoneInfo
+                now_et = datetime.now(ZoneInfo("America/New_York"))
+            except Exception:
+                from datetime import timedelta, timezone
+                now_et = datetime.now(timezone.utc) - timedelta(hours=5)  # aprox ET
+        if now_et.hour >= 16:
+            return df
+        last_raw = str(df["date"].iloc[-1]).strip().split()[0].replace("-", "")[:8]
+        if last_raw == now_et.strftime("%Y%m%d"):
+            return df.iloc[:-1]
+    except Exception:
+        pass
+    return df
+
+
 def analyze_symbol(df):
+    df = _drop_partial_bar(df)
     if df is None or len(df) < 50:
         return None
     try:
         ind = indicators.calculate_all(df)
         sig = signals.generate_signal(ind)
         sig["price"] = float(df["close"].iloc[-1])
+        # Fecha del ultimo cierre confirmado sobre el que se calculo la señal
+        _d = str(df["date"].iloc[-1]).strip().split()[0].replace("-", "")[:8]
+        sig["as_of"] = f"{_d[:4]}-{_d[4:6]}-{_d[6:8]}" if len(_d) == 8 and _d.isdigit() else str(df["date"].iloc[-1])
 
         # Backtesting (usa indicadores pre-computados sobre todo el DataFrame)
         bt = backtester.run_backtest(df, indicators_dict=ind)
@@ -2771,7 +2809,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 </div>
 
 <div class="footer">
-  <span>Actualizado: <span id="last-update">--</span> &bull; Proximo: <span id="next-update">--</span></span>
+  <span>Actualizado: <span id="last-update">--</span> &bull; Proximo: <span id="next-update">--</span><span id="signals-asof-wrap" style="display:none" title="Las señales y recomendaciones se calculan SOLO sobre cierres diarios confirmados: durante la sesion no parpadean con cada tick; se actualizan cuando cierra la rueda"> &bull; Señales al cierre del <span id="signals-asof">--</span></span></span>
   <span id="footer-port"></span>
 </div>
 <script>
@@ -4573,6 +4611,10 @@ function update(){
     if(data.port)document.getElementById("port-info").textContent="Puerto: "+data.port+" ("+(data.port===7497?"PAPER":"LIVE")+")";
     document.getElementById("footer-port").textContent="Puerto: "+data.port;
     document.getElementById("last-update").textContent=data.last_update||"--";
+    if(data.signals_as_of){
+      document.getElementById("signals-asof").textContent=data.signals_as_of;
+      document.getElementById("signals-asof-wrap").style.display='';
+    }
     let next=new Date(Date.now()+REFRESH_MS);
     document.getElementById("next-update").textContent=next.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 
@@ -6552,6 +6594,8 @@ def api_data():
         return Response(to_json({
             "results": results,
             "last_update": last_update_time,
+            "signals_as_of": next((s.get("as_of") for s in analysis_cache.values()
+                                   if s and s.get("as_of")), ""),
             "port": config.IB_PORT,
             "top3": top3,
         }), mimetype="application/json")
@@ -6611,6 +6655,8 @@ def api_etf_data():
         return Response(to_json({
             "results": results,
             "last_update": etf_last_update_time,
+            "signals_as_of": next((s.get("as_of") for s in etf_analysis_cache.values()
+                                   if s and s.get("as_of")), ""),
             "port": config.IB_PORT,
             "top3": etf_top3,
         }), mimetype="application/json")

@@ -338,6 +338,32 @@ def _format_bar_date(raw_date):
     return s  # already YYYY-MM-DD or similar
 
 
+def _drop_partial_bar(df):
+    """Descarta la barra diaria EN CURSO: señales solo sobre cierres
+    confirmados (espejo de vista_web._drop_partial_bar — mantener paridad).
+    Sin esto, las condiciones de giro (hist[-1] vs [-2], marron, RSI) se
+    re-evaluan cada ciclo sobre una barra a medio formar y las
+    recomendaciones del cloud parpadean intradia. Regla: si la ultima barra
+    es de HOY (America/New_York) y aun no son las 16:00 ET, se descarta."""
+    if df is None or len(df) < 2:
+        return df
+    try:
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            from datetime import timedelta, timezone
+            now_et = datetime.now(timezone.utc) - timedelta(hours=5)  # aprox ET
+        if now_et.hour >= 16:
+            return df
+        last_raw = str(df["date"].iloc[-1]).strip().split()[0].replace("-", "")[:8]
+        if last_raw == now_et.strftime("%Y%m%d"):
+            return df.iloc[:-1]
+    except Exception:
+        pass
+    return df
+
+
 def analyze_stock(ib_app, symbol, req_id):
     bars = fetch_historical(ib_app, symbol, req_id, duration="5 Y")
     if not bars:
@@ -351,6 +377,9 @@ def analyze_stock(ib_app, symbol, req_id):
         df = pd.DataFrame(bars)
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = _drop_partial_bar(df)
+        if len(df) < 50:
+            return None
 
         macd_df = calculate_macd(df)
         rsi_df = calculate_rsi(df)

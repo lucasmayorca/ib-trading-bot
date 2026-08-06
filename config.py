@@ -55,6 +55,16 @@ MIN_OPPORTUNITY_TARGET_PCT_ETF = 7.0    # ETFs
 # Cuantas recomendaciones "Top" mostrar en cada scanner (acciones y ETFs).
 TOP_RECOMMENDATIONS = 5
 
+# Señales SOLO sobre cierres diarios confirmados. Durante la sesion, la barra
+# del dia en curso esta a medio formar: las condiciones de giro del sistema
+# (hist[-1] vs hist[-2], marron vs media, RSI) se re-evaluaban cada 5 min sobre
+# un valor que seguia moviendose y las recomendaciones parpadeaban intradia.
+# El horizonte real del usuario es swing de semanas (mediana ~31 dias por trade,
+# medido de trades_imported.json): la señal se decide al cierre, no tick a tick.
+# Ademas el backtest solo ve barras cerradas — con esto las señales en vivo
+# miden lo mismo que sus estadisticas. Poner en False para volver al modo vivo.
+SIGNALS_CONFIRMED_CLOSE_ONLY = True
+
 # === RISK MANAGEMENT ===
 MAX_PER_TRADE = 5000     # USD maximo por operacion
 STOP_LOSS_PCT = 3.0      # Stop loss %

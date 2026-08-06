@@ -82,6 +82,22 @@ labels can be directional while `signal` is still HOLD.
   `FALLBACK_STOCKS`=100, `FALLBACK_ETFS`=113. El bridge (`bridge/main.py`) tiene sus
   propias copias (self-contained) también a 100 — `get_stock_list()[:100]`, `get_etf_list()[:100]`
 - `SCAN_INTERVAL_SECONDS = 300` (5 min)
+- **`SIGNALS_CONFIRMED_CLOSE_ONLY = True` (2026-08)**: señales/recomendaciones SOLO sobre cierres
+  diarios confirmados. `_drop_partial_bar` (vista_web.py, espejo en `bridge/main.py` — paridad)
+  descarta la barra del día en curso si es de HOY (ET) y aún no son las 16:00 ET. Motivo: las
+  condiciones de giro del sistema son comparaciones de última barra (`hist[-1] > hist[-2]`, marrón
+  vs media, RSI) y con la barra parcial se re-evaluaban cada ciclo de 5 min sobre un valor en
+  movimiento → las recomendaciones parpadeaban intradía (entraban/salían del Top). El horizonte
+  real del usuario es swing de semanas (mediana **31 días** por trade, medido de
+  `trades_imported.json` — ver memoria `user_trading-horizon`); la señal se decide al cierre.
+  Además el backtest solo ve barras cerradas, así que ahora las señales en vivo miden lo mismo que
+  sus estadísticas. Efectos colaterales asumidos: el chart diario no muestra la vela de hoy durante
+  la sesión (los períodos 1D/1W intradía sí, van por `/api/bars`); `sig["price"]` es el último
+  cierre confirmado (el scanner igual pisa con `get_rt_price` si TWS está conectada, y Mi Cartera
+  usa `precio_actual` vivo de IB). El footer muestra "Señales al cierre del <fecha>"
+  (`signals_as_of` en `/api/data` y `/api/etf-data`, del campo `as_of` de cada análisis).
+  **OJO: `bot.py` (el bot que ejecuta órdenes) sigue usando la barra viva** — alinearlo cambia el
+  timing de ejecución real y quedó como decisión pendiente del usuario.
 - `MAX_PER_TRADE = 5000` USD
 - `STOP_LOSS_PCT = 3.0`, `TAKE_PROFIT_PCT = 8.0`
 - `MAX_OPEN_POSITIONS = 10`
