@@ -261,6 +261,21 @@ labels can be directional while `signal` is still HOLD.
   divergencia = recta entre los 2 pivotes de precio. Ruptura/cruce/canal-fallback NO llevan draw
   (la priceLine horizontal ya es la figura). Conectado en los 6 decorates + `_mpDecorate` (pulso);
   `_recDecorate` y `_portAnalDecorate` ahora reciben `ch` para mapear offsets a times de markers.
+- **Relevancia + hover (2026-08, feedback del usuario)**: las figuras solo se adjuntan/dibujan
+  cuando están en su **punto de decisión** (`patterns._is_critical`: confirmada/por confirmar/
+  vigente siempre — los detectores ya descartan figuras viejas —, en formación solo si el precio
+  está a ≤1.5·ATR de la ruptura o anulación). `attach_to_analysis` filtra por `critical` (el pulso
+  NO filtra: su main sigue siendo el de mayor prioridad, muestra contexto siempre). Fibonacci lleva
+  `relevant` (precio apoyado en un nivel o a ≤1.2·ATR de alguno): gatea el dibujo de las líneas fib
+  (ámbar `#a16207`, la del `at` dashed + axis label) y la mención en tesis/racional; los niveles
+  fib SIEMPRE siguen siendo candidatos de target en `_compute_price_levels` (targets son a dónde
+  VA el precio, no dónde está). **Hover en scBuild**: cada priceLine/línea superpuesta lleva `tip`
+  (y las superpuestas `label`, del `lbl` por segmento del server); al pasar el cursor la línea se
+  engrosa +1px (`applyOptions`) y aparece `.sc-figtip` (tooltip violeta absoluto en `.sc-pane-body`)
+  con el detalle. Detección: `coordinateToPrice` con umbral ~7px; para series superpuestas se
+  compara el valor interpolado en el índice del crosshair. La ruptura se renombró
+  "Ruptura de techo"/"Perdida de piso" y su texto dice QUÉ nivel rompe (antes "Ruptura alcista"
+  no explicaba nada).
 - **Validación (evidencia, no fe)**: `patterns.validate_universe` en `/api/calibration` recorre 5Y
   detectando figuras confirmadas con target y mide hit-rate (¿target antes que invalidación, en
   ≤40 ruedas?) por tipo. Los pesos de score/veredicto son deliberadamente chicos hasta que esa

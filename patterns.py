@@ -176,12 +176,13 @@ def _pat_breakout(closes, all_levels, atr):
                  else (closes[-2] < L and c_now < L - 0.4 * atr))
     st = "confirmada" if confirmed else "por confirmar"
     rol = "soporte" if d == "alcista" else "resistencia"
+    broke = "techo" if d == "alcista" else "piso"
     return {
-        "name": "Ruptura " + ("alcista" if d == "alcista" else "bajista"),
+        "name": ("Ruptura de techo" if d == "alcista" else "Perdida de piso"),
         "direction": d, "status": st, "key_level": _r(L),
         "breakout": _r(L), "invalidation": _r(L), "target": None,
         "priority": _PRIO["ruptura_conf"] if confirmed else _PRIO["ruptura_por_conf"],
-        "text": (f"{'Ruptura' if d == 'alcista' else 'Perdida'} del nivel "
+        "text": (f"{'Ruptura del' if d == 'alcista' else 'Perdida del'} {broke} "
                  f"{_usd(_r(L))} ({lvl['touches']} toques), {st} — "
                  f"ese nivel ahora actua de {rol}"),
     }
@@ -255,9 +256,11 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
         draw = {
             "segments": [
                 # nivel de los techos/pisos tocados, a lo largo de la formacion
-                {"x0": off_a, "y0": _r(level), "x1": 0, "y1": _r(level), "dash": True},
+                {"x0": off_a, "y0": _r(level), "x1": 0, "y1": _r(level), "dash": True,
+                 "lbl": ("Techos" if is_top else "Pisos") + f" tocados ({len(touch_pts)})"},
                 # neckline (el nivel que confirma)
-                {"x0": off_a, "y0": _r(neck), "x1": 0, "y1": _r(neck), "dash": False},
+                {"x0": off_a, "y0": _r(neck), "x1": 0, "y1": _r(neck), "dash": False,
+                 "lbl": f"Neckline del {nm.lower()}"},
             ],
             "points": [{"x": int(n - 1 - i), "y": _r(pv), "label": "T",
                         "pos": "above" if is_top else "below"}
@@ -345,7 +348,8 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
         draw = {
             "segments": [
                 # neckline desde el hombro izquierdo hasta hoy
-                {"x0": off1, "y0": _r(neck), "x1": 0, "y1": _r(neck), "dash": False},
+                {"x0": off1, "y0": _r(neck), "x1": 0, "y1": _r(neck), "dash": False,
+                 "lbl": f"Neckline del {nm}"},
             ],
             "points": [
                 {"x": int(n - 1 - i1), "y": _r(p1), "label": "H",
@@ -418,8 +422,10 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
     # un lado hasta el pivote mas viejo del otro la dibuja lejos de las velas)
     xh0, xl0 = float(xh.min()), float(xl.min())
     tri_draw = {"segments": [
-        {"x0": int(n - 1 - xh0), "y0": _r(ih + sh * xh0), "x1": 0, "y1": _r(line_h_now), "dash": False},
-        {"x0": int(n - 1 - xl0), "y0": _r(il + sl_ * xl0), "x1": 0, "y1": _r(line_l_now), "dash": False},
+        {"x0": int(n - 1 - xh0), "y0": _r(ih + sh * xh0), "x1": 0, "y1": _r(line_h_now),
+         "dash": False, "lbl": f"Techo de la figura ({nm.lower()})"},
+        {"x0": int(n - 1 - xl0), "y0": _r(il + sl_ * xl0), "x1": 0, "y1": _r(line_l_now),
+         "dash": False, "lbl": f"Piso de la figura ({nm.lower()})"},
     ]}
     above = price > line_h_now + margin
     below = price < line_l_now - margin
@@ -517,10 +523,13 @@ def _pat_flag(highs, lows, closes, atr):
     draw = {"segments": [
         # palo del impulso
         {"x0": off_s, "y0": _r(closes[s]), "x1": off_e, "y1": _r(closes[e]),
-         "dash": False, "w": 2},
+         "dash": False, "w": 2,
+         "lbl": f"Palo del impulso ({move_pct:.0f}% en {e - s} ruedas)"},
         # canal de consolidacion (la bandera)
-        {"x0": off_e, "y0": _r(cons_h), "x1": 0, "y1": _r(cons_h), "dash": True},
-        {"x0": off_e, "y0": _r(cons_l), "x1": 0, "y1": _r(cons_l), "dash": True},
+        {"x0": off_e, "y0": _r(cons_h), "x1": 0, "y1": _r(cons_h), "dash": True,
+         "lbl": "Techo de la consolidacion"},
+        {"x0": off_e, "y0": _r(cons_l), "x1": 0, "y1": _r(cons_l), "dash": True,
+         "lbl": "Piso de la consolidacion"},
     ]}
     return {"name": nm, "direction": d, "status": st,
             "key_level": _r(breakout), "breakout": _r(breakout),
@@ -574,7 +583,8 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
         dv_draw = {"segments": [
             # recta uniendo los dos pivotes de precio que divergen del RSI
             {"x0": int(n - 1 - i1), "y0": _r(p1),
-             "x1": int(n - 1 - i2), "y1": _r(p2), "dash": True},
+             "x1": int(n - 1 - i2), "y1": _r(p2), "dash": True,
+             "lbl": "Pivotes que divergen del RSI"},
         ]}
         if bearish and p2 > p1 and r2 < r1 - 2:
             return {"name": "Divergencia bajista", "direction": "bajista",
@@ -666,6 +676,28 @@ _FIB_RATIOS = [("23.6", 0.236), ("38.2", 0.382), ("50", 0.5),
                ("61.8", 0.618), ("78.6", 0.786)]
 
 
+def _is_critical(p, price, atr):
+    """¿La figura esta en su PUNTO DE DECISION? Las figuras solo son relevantes
+    para operar cuando el precio esta cerca de resolverlas:
+      - confirmada / por confirmar: el evento es AHORA (los detectores ya
+        descartan figuras viejas o jugadas),
+      - vigente (divergencia, cruce): por construccion son recientes,
+      - en formacion: solo si el precio esta a <=1.5·ATR de la ruptura o de la
+        anulacion — un triangulo a mitad de camino del vertice es contexto,
+        no decision, y no debe ensuciar analisis ni graficos."""
+    if not p:
+        return False
+    if p.get("status") in ("confirmada", "por confirmar", "vigente"):
+        return True
+    for lvl in (p.get("breakout"), p.get("invalidation")):
+        try:
+            if lvl is not None and abs(price - float(lvl)) <= 1.5 * atr:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def fibonacci(highs, lows, closes, atr, lookback=180):
     """Retrocesos y extensiones del impulso dominante de las ultimas ~180 ruedas.
 
@@ -698,6 +730,11 @@ def fibonacci(highs, lows, closes, atr, lookback=180):
         return None                      # retrocedio todo: el impulso quedo negado
     tol = max(0.45 * atr, price * 0.004)
     at = next((k for k, v in levels.items() if abs(price - v) <= tol), None)
+    # Relevante para DECIDIR solo si el precio esta apoyado en un nivel fib o a
+    # <=1.2·ATR de alguno (retrocesos o extensiones) — si esta entre niveles,
+    # es contexto y no hace falta dibujarlo
+    near = min(abs(price - v) for v in list(levels.values()) + list(ext.values()))
+    relevant = (at is not None) or (near <= 1.2 * atr)
     dirw = "alcista" if up else "bajista"
     if retr < -0.02:
         pos_txt = ("extendiendo por encima del maximo del impulso" if up
@@ -713,6 +750,7 @@ def fibonacci(highs, lows, closes, atr, lookback=180):
         "ext": {k: _r(v) for k, v in ext.items()},
         "retr_pct": _r(retr * 100, 1),
         "at": at,
+        "relevant": bool(relevant),
         "text": txt,
     }
 
@@ -760,6 +798,10 @@ def detect(highs, lows, closes, rsi=None, sma50=None, sma200=None,
     if include_fallback:
         cands.append(_pat_channel_fallback(closes, struct_txt))
     cands = sorted([c for c in cands if c], key=lambda c: -c["priority"])
+    # ¿Esta cada figura en su punto de decision? (el consumidor decide si
+    # filtra por esto — el pulso muestra contexto siempre, el escaner filtra)
+    for c in cands:
+        c["critical"] = _is_critical(c, price, atr)
 
     main = None
     if cands:
@@ -782,7 +824,10 @@ def attach_to_analysis(sig):
     """Adjunta sig["pattern"] y sig["fib"] desde sig["chart"] (muta y devuelve).
 
     Excluye cruce de MAs (la tesis ya lo cuenta) y el fallback de canal (los
-    niveles ya usan el canal): solo figuras reales — pattern=None si no hay."""
+    niveles ya usan el canal), y SOLO adjunta figuras en su punto de decision
+    (`critical`): una figura a mitad de formarse, lejos de ruptura/anulacion,
+    es contexto y no debe ensuciar tesis, score, veredicto ni graficos —
+    pattern=None si no hay nada accionable."""
     if not isinstance(sig, dict):
         return sig
     try:
@@ -797,7 +842,15 @@ def attach_to_analysis(sig):
         closes = [b.get("close") for b in ohlc]
         rsi = chart.get("rsi") or None
         res = detect(highs, lows, closes, rsi=rsi)
-        sig["pattern"] = res["pattern"]
+        cands = res["candidates"]
+        main = next((dict(c) for c in cands if c.get("critical")), None)
+        if main:
+            sec = next((c for c in cands
+                        if c.get("critical") and c["priority"] >= 45
+                        and c["name"] != main["name"]), None)
+            if sec:
+                main["secondary"] = sec["text"]
+        sig["pattern"] = main
         sig["fib"] = res["fibonacci"]
     except Exception:
         sig["pattern"] = None

@@ -1151,7 +1151,7 @@ def _generate_rationale(sym, data, levels=None):
         if pat.get("secondary"):
             parts.append(f"Figura secundaria: {pat['secondary']}")
     fibd = data.get("fib")
-    if fibd and fibd.get("text"):
+    if fibd and fibd.get("text") and fibd.get("relevant", True):
         parts.append(f"Fibonacci: {fibd['text']}")
 
     # 3. Trend from MAs
@@ -1534,7 +1534,7 @@ def _generate_thesis(sym, data, levels, fund):
     fig_bits = []
     if pat and pat.get("text"):
         fig_bits.append(pat["text"])
-    if fibd and fibd.get("text"):
+    if fibd and fibd.get("text") and fibd.get("relevant", True):
         fig_bits.append("Fibonacci: " + fibd["text"])
     if fig_bits:
         lines.append("Figura tecnica: " + ". ".join(fig_bits) + ".")
@@ -2201,6 +2201,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .sc-ro .sc-ri{margin-left:9px}
 .sc-ro .sc-ri b{font-weight:700}
 .sc-pane-body{width:100%;position:relative}
+.sc-figtip{position:absolute;z-index:30;pointer-events:none;display:none;max-width:340px;background:#fff;border:1px solid var(--border);border-left:3px solid #7c3aed;border-radius:8px;padding:7px 10px;font-size:11px;line-height:1.45;color:var(--text);box-shadow:0 6px 18px rgba(17,17,17,.12)}
 .sc-nodata{display:flex;align-items:center;justify-content:center;min-height:80px;color:var(--muted);font-size:12px;padding:8px;text-align:center}
 .sc-legend{display:flex;flex-wrap:wrap;gap:4px 12px;padding:5px 10px;font-size:10px;color:var(--muted);background:var(--card);align-items:center}
 .sc-legend span{display:inline-flex;align-items:center;white-space:nowrap}
@@ -3267,18 +3268,18 @@ function _portAnalDecorate(rec,pos,ch){
   let priceLines=[],markers=[];
   try{
     let avgCost=pos?pos.costo_promedio:null;
-    if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Costo Prom.'});
-    if(rec.target)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
-    if(rec.stop_loss)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
+    if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Costo Prom.',tip:'Tu costo promedio de compra'});
+    if(rec.target)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target',tip:'Objetivo del sistema'+(rec.target_basis?(' — '+rec.target_basis):'')});
+    if(rec.stop_loss)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop',tip:'Invalidación del análisis'+(rec.stop_basis?(' — ubicado '+rec.stop_basis):'')});
     // SL/TP REALES cargados en IB (bracket order) — distintos de Target/Stop
     // del sistema arriba, que son solo la sugerencia del analisis tecnico
-    if(pos&&pos.stop_loss)priceLines.push({price:pos.stop_loss,color:'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'SL IB'});
-    if(pos&&pos.take_profit)priceLines.push({price:pos.take_profit,color:'#0b7a4b',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'TP IB'});
+    if(pos&&pos.stop_loss)priceLines.push({price:pos.stop_loss,color:'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'SL IB',tip:'Stop-loss REAL activo en tu cuenta de IB'});
+    if(pos&&pos.take_profit)priceLines.push({price:pos.take_profit,color:'#0b7a4b',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'TP IB',tip:'Take-profit REAL activo en tu cuenta de IB'});
     // Orden de ENTRADA pendiente (cargada en IB, sin posicion todavia)
     if(pos&&pos.is_pending&&pos.pending_order&&pos.pending_order.price){
       let po=pos.pending_order;
       let isSell=(po.action||'').toUpperCase()==='SELL';
-      priceLines.push({price:po.price,color:'#b45309',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Orden '+(isSell?'VENDER':'COMPRAR')+' pend.'});
+      priceLines.push({price:po.price,color:'#b45309',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Orden '+(isSell?'VENDER':'COMPRAR')+' pend.',tip:'Orden '+(po.order_type||'')+' cargada en IB, aun sin ejecutar ('+(po.status||'')+')'});
     }
     // Figura tecnica + niveles Fibonacci (patterns.py)
     priceLines=priceLines.concat(_patternPriceLines(rec));
@@ -4164,10 +4165,18 @@ function scBuild(key,data,decorate,heights){
       if(data.mas){for(let name of['sma200','sma100','sma50','sma20','ema9']){let vals=data.mas[name];if(!vals||!vals.length)continue;
         let line=chart.addLineSeries({color:SC_MA_COLORS[name],lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
         line.setData(_scLine(times,vals));}}
-      (decorate.priceLines||[]).forEach(pl=>{try{cs.createPriceLine(pl);}catch(e){}});
-      // Lineas superpuestas (ej. canal de regresion): decorate.lines=[{values,color,width,style}]
-      // con values en el eje DIARIO, alineadas al final del ohlc (right-align: son un
-      // sufijo del mismo eje temporal; se recortan o paddean por la izquierda segun la
+      // Se capturan referencias de cada linea (priceLine o serie superpuesta)
+      // para el hover: resaltar la linea bajo el cursor + tooltip descriptivo.
+      let hoverables=[];
+      (decorate.priceLines||[]).forEach(pl=>{try{
+        let opts=Object.assign({},pl);delete opts.tip;
+        let ref=cs.createPriceLine(opts);
+        hoverables.push({kind:'pl',ref:ref,price:pl.price,w:pl.lineWidth||1,label:pl.title||'',tip:pl.tip||''});
+      }catch(e){}});
+      // Lineas superpuestas (canal de regresion, geometria de figuras):
+      // decorate.lines=[{values,color,width,style,label,tip}] con values en el
+      // eje DIARIO, alineadas al final del ohlc (right-align: son un sufijo del
+      // mismo eje temporal; se recortan o paddean por la izquierda segun la
       // ventana del periodo). Solo en vistas diarias — en intradia el eje es otro.
       if(!data.timeVis)(decorate.lines||[]).forEach(ln=>{try{
         let vals=ln.values||[];
@@ -4175,8 +4184,52 @@ function scBuild(key,data,decorate,heights){
         else if(vals.length<times.length)vals=new Array(times.length-vals.length).fill(null).concat(vals);
         let s=chart.addLineSeries({color:ln.color||'#88888866',lineWidth:ln.width||1,lineStyle:(ln.style!=null?ln.style:LightweightCharts.LineStyle.Dashed),priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
         s.setData(_scLine(times,vals));
+        if(ln.label||ln.tip)hoverables.push({kind:'ln',ref:s,vals:vals,w:ln.width||1,label:ln.label||'',tip:ln.tip||''});
       }catch(e){}});
       if(decorate.markers&&decorate.markers.length){try{cs.setMarkers(decorate.markers);}catch(e){}}
+      // Hover: al pararse sobre una linea se engrosa apenas y aparece un
+      // tooltip con que es (nivel de figura, fib, target del sistema, etc.)
+      if(hoverables.length){
+        let tipEl=document.createElement('div');tipEl.className='sc-figtip';p.el.appendChild(tipEl);
+        let hovered=null;
+        chart.subscribeCrosshairMove(function(param){
+          let hit=null;
+          try{
+            if(param&&param.point&&param.point.y!=null){
+              let pr=cs.coordinateToPrice(param.point.y);
+              let pr2=cs.coordinateToPrice(param.point.y-6);
+              if(pr!=null&&pr2!=null){
+                let eps=Math.abs(pr2-pr);
+                let idx=(param.time!=null&&timeIndex.has(param.time))?timeIndex.get(param.time):null;
+                let bestD=1e18;
+                for(let hv of hoverables){
+                  let v=null;
+                  if(hv.kind==='pl')v=hv.price;
+                  else if(idx!=null){let off=times.length-hv.vals.length;let k=idx-off;if(k>=0&&k<hv.vals.length)v=hv.vals[k];}
+                  if(v==null)continue;
+                  let d=Math.abs(v-pr);
+                  if(d<=eps*1.2&&d<bestD){bestD=d;hit=hv;}
+                }
+              }
+            }
+          }catch(e){hit=null;}
+          if(hit!==hovered){
+            if(hovered){try{hovered.ref.applyOptions({lineWidth:hovered.w});}catch(e){}}
+            hovered=hit;
+            if(hovered){try{hovered.ref.applyOptions({lineWidth:hovered.w+1});}catch(e){}}
+          }
+          if(hovered&&param&&param.point){
+            tipEl.textContent=(hovered.label?hovered.label:'')+(hovered.tip&&hovered.tip!==hovered.label?((hovered.label?' — ':'')+hovered.tip):'');
+            tipEl.style.display='block';
+            let x=param.point.x+14,y=param.point.y+12;
+            if(x+tipEl.offsetWidth>p.el.clientWidth-8)x=Math.max(8,param.point.x-tipEl.offsetWidth-14);
+            if(y+tipEl.offsetHeight>p.el.clientHeight-8)y=Math.max(8,param.point.y-tipEl.offsetHeight-12);
+            tipEl.style.left=x+'px';tipEl.style.top=y+'px';
+          }else{
+            tipEl.style.display='none';
+          }
+        });
+      }
       primary=cs;valAt=i=>{let b=ohlc[i];return b?b.close:null;};
       fmt=i=>{let b=(i!=null)?ohlc[i]:null;if(!b){for(let j=ohlc.length-1;j>=0;j--){if(_vb(ohlc[j])){b=ohlc[j];break;}}}if(!b)return '';return _scRi('O',b.open,'#6d7480')+_scRi('H',b.high,'#0b7a4b')+_scRi('L',b.low,'#c22436')+_scRi('C',b.close,'#111');};
     } else if(p.n==='macd'){
@@ -4434,20 +4487,30 @@ function renderRecEarnings(fund){
 
 function _patternPriceLines(rec){
   // Lineas de figura tecnica (ruptura/anulacion/objetivo medido, violeta) +
-  // retrocesos Fibonacci (gris punteado) para el panel de velas
+  // retrocesos Fibonacci (ambar punteado, SOLO si el precio esta en zona de
+  // decision — fib.relevant) para el panel de velas. Cada linea lleva `tip`
+  // (tooltip al pasar el cursor, ver hover de scBuild).
   let out=[];if(!rec)return out;
   let p=rec.pattern;
   if(p){
     let tag=p.name||'Figura';
-    if(p.breakout!=null)out.push({price:p.breakout,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:tag});
-    if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase()});
-    if(p.target!=null)out.push({price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido'});
+    if(p.breakout!=null)out.push({price:p.breakout,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:tag,tip:p.text||tag});
+    if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase(),tip:'Si el precio cruza este nivel, la figura se ANULA — '+(p.text||tag)});
+    if(p.target!=null)out.push({price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido',tip:'Objetivo MEDIDO de la figura (altura proyectada desde la ruptura) — '+(p.text||tag)});
   }
   let f=rec.fib;
-  if(f&&f.levels){
-    for(let k of ['38.2','50','61.8']){
+  if(f&&f.levels&&f.relevant!==false){
+    let ks=['38.2','50','61.8'];
+    if(f.at&&ks.indexOf(f.at)<0)ks.push(f.at);
+    let fibBase='Retroceso Fibonacci del impulso '+(f.dir||'')+' $'+_n(f.low,2)+'→$'+_n(f.high,2)+' ('+(f.text||'')+')';
+    for(let k of ks){
       let v=f.levels[k];
-      if(v!=null)out.push({price:v,color:'#a8a29e',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'Fib '+k+'%'});
+      if(v==null)continue;
+      let isAt=(f.at===k);
+      out.push({price:v,color:isAt?'#a16207':'#a1620799',lineWidth:1,
+        lineStyle:isAt?LightweightCharts.LineStyle.Dashed:LightweightCharts.LineStyle.Dotted,
+        axisLabelVisible:isAt,title:'Fib '+k+'%',
+        tip:'Nivel Fib '+k+'%'+(isAt?' — EL PRECIO ESTA APOYADO ACA. ':'. ')+fibBase});
     }
   }
   return out;
@@ -4473,7 +4536,8 @@ function _figDrawLines(p){
         vals[len-1-off]=y0+(y1-y0)*(k/span);
       }
       out.push({values:vals,color:'#7c3aedb8',width:sg.w||2,
-        style:sg.dash?LightweightCharts.LineStyle.Dashed:LightweightCharts.LineStyle.Solid});
+        style:sg.dash?LightweightCharts.LineStyle.Dashed:LightweightCharts.LineStyle.Solid,
+        label:sg.lbl||(p.name||'Figura'),tip:(sg.lbl?sg.lbl+' — ':'')+(p.text||p.name||'')});
     }catch(e){}
   }
   return out;
@@ -4496,11 +4560,11 @@ function _figDrawMarkers(p,ohlc){
 function _recDecorate(rec,ch){
   // {priceLines, markers, lines} para tarjetas de recomendación (acciones y ETF)
   let priceLines=[],markers=[];
-  if(rec.entry_low!=null)priceLines.push({price:rec.entry_low,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
+  if(rec.entry_low!=null)priceLines.push({price:rec.entry_low,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada',tip:'Zona de entrada sugerida'+(rec.entry_basis?(' — apoyada en '+rec.entry_basis):'')});
   if(rec.entry_high!=null&&rec.entry_low!=null&&Math.abs(rec.entry_high-rec.entry_low)>0.01)
-    priceLines.push({price:rec.entry_high,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false,title:''});
-  if(rec.target!=null)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
-  if(rec.stop_loss!=null)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
+    priceLines.push({price:rec.entry_high,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false,title:'',tip:'Techo de la zona de entrada sugerida'});
+  if(rec.target!=null)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target',tip:'Objetivo del sistema'+(rec.target_basis?(' — '+rec.target_basis):'')});
+  if(rec.stop_loss!=null)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop',tip:'Invalidación del análisis'+(rec.stop_basis?(' — ubicado '+rec.stop_basis):'')});
   priceLines=priceLines.concat(_patternPriceLines(rec));
   if(rec.chart_markers&&rec.chart_markers.length>0)markers=rec.chart_markers.slice();
   markers=markers.concat(_figDrawMarkers(rec.pattern,ch&&ch.ohlc));
