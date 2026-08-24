@@ -3294,9 +3294,11 @@ function _portAnalDecorate(rec,pos,ch){
     }
     for(let d in byDay){let g=byDay[d];markers.push({time:g.time,position:'belowBar',color:'#2563eb',shape:'arrowUp',text:'C '+g.qty.toFixed(0)+' @ $'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':'')});}
   }catch(e){}
-  try{markers=markers.concat(_figDrawMarkers(rec.pattern,ch&&ch.ohlc));}catch(e){}
+  try{markers=markers.concat(_figDrawMarkers(rec&&rec.pattern,ch&&ch.ohlc));}catch(e){}
   markers.sort((a,b)=>a.time<b.time?-1:1);
-  return {priceLines:priceLines,markers:markers,lines:_figDrawLines(rec&&rec.pattern)};
+  return {priceLines:priceLines,markers:markers,
+    lines:_figDrawLines(rec&&rec.pattern).concat(_fibDrawLines(rec&&rec.fib)),
+    labels:_figLabels(rec&&rec.pattern).concat(_fibLabels(rec&&rec.fib))};
 }
 
 function _portAnalDestroy(sym){scDestroy(_scReg['port_'+sym]);_scReg['port_'+sym]=null;delete _portAnalCharts[sym];}
@@ -3999,6 +4001,46 @@ function _scHist(times,arr,posC,negC){
 /* Primitive: bandas horizontales sombreadas (zonas de sobrecompra/sobreventa).
    LW no soporta bandas nativas; se dibujan sobre el canvas del panel, detrás de
    la serie. bands = [{from, to, color}] en precio. */
+// Etiquetas de texto dibujadas sobre el panel de velas (estilo investing.com:
+// el nombre de la figura y los % de Fibonacci se leen directo en el grafico).
+// labels=[{idx,price,text,color,bold}] con idx = indice logico de barra; si la
+// barra quedo fuera de la vista por la izquierda, la etiqueta se ancla al borde.
+function _scTextLabels(labels){
+  let _series=null,_chart=null;
+  return {
+    attached(p){_series=p.series;_chart=p.chart;},
+    detached(){_series=null;_chart=null;},
+    updateAllViews(){},
+    paneViews(){
+      return [{
+        zOrder(){return 'top';},
+        renderer(){
+          return {draw(target){
+            if(!_series||!_chart)return;
+            target.useMediaCoordinateSpace(function(scope){
+              let ctx=scope.context;
+              ctx.textBaseline='bottom';
+              for(let L of labels){
+                let y=_series.priceToCoordinate(L.price);
+                if(y==null||y<10||y>scope.mediaSize.height-2)continue;
+                let x=null;
+                try{x=_chart.timeScale().logicalToCoordinate(L.idx);}catch(e){}
+                if(x==null||x<4)x=4;
+                if(x>scope.mediaSize.width-80)x=scope.mediaSize.width-80;
+                ctx.font=(L.bold?'700 11px':'600 10px')+' -apple-system,system-ui,sans-serif';
+                ctx.strokeStyle='rgba(255,255,255,0.88)';ctx.lineWidth=3;ctx.lineJoin='round';
+                ctx.strokeText(L.text,x,y-2);
+                ctx.fillStyle=L.color||'#7c3aed';
+                ctx.fillText(L.text,x,y-2);
+              }
+            });
+          }};
+        }
+      }];
+    }
+  };
+}
+
 function _scZoneBands(bands){
   let _series=null;
   return {
@@ -4187,6 +4229,13 @@ function scBuild(key,data,decorate,heights){
         if(ln.label||ln.tip)hoverables.push({kind:'ln',ref:s,vals:vals,w:ln.width||1,label:ln.label||'',tip:ln.tip||''});
       }catch(e){}});
       if(decorate.markers&&decorate.markers.length){try{cs.setMarkers(decorate.markers);}catch(e){}}
+      // Etiquetas de texto sobre el chart (nombre de figura, % de fib) —
+      // decorate.labels=[{off,price,text,color,bold}] con off = barras desde hoy
+      if(!data.timeVis&&decorate.labels&&decorate.labels.length){
+        try{cs.attachPrimitive(_scTextLabels(decorate.labels.map(function(L){
+          return {idx:times.length-1-(L.off||0),price:L.price,text:L.text,color:L.color,bold:L.bold};
+        })));}catch(e){}
+      }
       // Hover: al pararse sobre una linea se engrosa apenas y aparece un
       // tooltip con que es (nivel de figura, fib, target del sistema, etc.)
       if(hoverables.length){
@@ -4323,7 +4372,7 @@ function scStackHTML(key,legendHTML){
 function renderDetailCharts(idx,sym,period){
   if(!_data)return;let r=_data.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'scan_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern),markers:_figDrawMarkers(r.pattern,r.chart.ohlc)},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
   _charts[idx]=1;
 }
 
@@ -4498,22 +4547,65 @@ function _patternPriceLines(rec){
     if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase(),tip:'Si el precio cruza este nivel, la figura se ANULA — '+(p.text||tag)});
     if(p.target!=null)out.push({price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido',tip:'Objetivo MEDIDO de la figura (altura proyectada desde la ruptura) — '+(p.text||tag)});
   }
+  // Fibonacci ya NO va como priceLine de ancho completo: se dibuja estilo
+  // investing.com (segmentos desde el inicio del impulso + etiquetas) via
+  // _fibDrawLines/_fibLabels. Solo el nivel donde el precio esta APOYADO
+  // conserva su etiqueta en el eje de precios.
   let f=rec.fib;
-  if(f&&f.levels&&f.relevant!==false){
-    let ks=['38.2','50','61.8'];
-    if(f.at&&ks.indexOf(f.at)<0)ks.push(f.at);
-    let fibBase='Retroceso Fibonacci del impulso '+(f.dir||'')+' $'+_n(f.low,2)+'→$'+_n(f.high,2)+' ('+(f.text||'')+')';
-    for(let k of ks){
-      let v=f.levels[k];
-      if(v==null)continue;
-      let isAt=(f.at===k);
-      out.push({price:v,color:isAt?'#a16207':'#a1620799',lineWidth:1,
-        lineStyle:isAt?LightweightCharts.LineStyle.Dashed:LightweightCharts.LineStyle.Dotted,
-        axisLabelVisible:isAt,title:'Fib '+k+'%',
-        tip:'Nivel Fib '+k+'%'+(isAt?' — EL PRECIO ESTA APOYADO ACA. ':'. ')+fibBase});
-    }
+  if(f&&f.levels&&f.relevant!==false&&f.at&&f.levels[f.at]!=null){
+    out.push({price:f.levels[f.at],color:'#a16207',lineWidth:1,
+      lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,
+      title:'Fib '+f.at+'%',
+      tip:'El precio esta apoyado en el nivel Fibonacci '+f.at+'% — '+(f.text||'')});
   }
   return out;
+}
+
+// ── Fibonacci estilo investing.com: TODOS los niveles (0-100%) dibujados
+// desde el inicio del impulso hasta hoy, cada uno con su etiqueta "% · precio"
+// legible en el grafico (via _scTextLabels) ──
+function _fibLevelsList(f){
+  if(!f||!f.levels)return [];
+  let p0=(f.dir==='bajista')?f.low:f.high;    // 0% = extremo final del impulso
+  let p100=(f.dir==='bajista')?f.high:f.low;  // 100% = origen del impulso
+  let out=[['0',p0]];
+  for(let k of ['23.6','38.2','50','61.8','78.6']){if(f.levels[k]!=null)out.push([k,f.levels[k]]);}
+  out.push(['100',p100]);
+  return out;
+}
+function _fibDrawLines(f){
+  let out=[];
+  if(!f||f.relevant===false||f.start_off==null)return out;
+  let len=(f.start_off||0)+1;
+  let base='Fibonacci del impulso '+(f.dir||'')+' $'+_n(f.low,2)+'→$'+_n(f.high,2)+'. '+(f.text||'');
+  for(let kv of _fibLevelsList(f)){
+    let k=kv[0],v=kv[1];
+    if(v==null)continue;
+    let isAt=(f.at===k),isEdge=(k==='0'||k==='100');
+    out.push({values:new Array(len).fill(v),
+      color:isAt?'#a16207':(isEdge?'#a1620766':'#a1620799'),
+      width:isAt?2:1,
+      style:isAt?LightweightCharts.LineStyle.Solid:LightweightCharts.LineStyle.Dotted,
+      label:'Fib '+k+'%',
+      tip:'Nivel Fib '+k+'% ($'+_n(v,2)+')'+(isAt?' — EL PRECIO ESTA APOYADO ACA. ':'. ')+base});
+  }
+  return out;
+}
+function _fibLabels(f){
+  let out=[];
+  if(!f||f.relevant===false||f.start_off==null)return out;
+  for(let kv of _fibLevelsList(f)){
+    if(kv[1]==null)continue;
+    out.push({off:f.start_off,price:kv[1],text:kv[0]+'% · '+_n(kv[1],2),
+      color:(f.at===kv[0])?'#a16207':'#a16207bb',bold:(f.at===kv[0])});
+  }
+  return out;
+}
+// Nombre de la figura rotulado sobre el chart, al inicio de su primer trazo
+function _figLabels(p){
+  if(!p||!p.draw||!p.draw.segments||!p.draw.segments.length)return [];
+  let sg=p.draw.segments[0];
+  return [{off:sg.x0,price:sg.y0,text:p.name||'Figura',color:'#7c3aed',bold:true}];
 }
 
 // Geometria DIBUJADA de la figura (rectas del triangulo, neckline, palo y canal
@@ -4569,7 +4661,9 @@ function _recDecorate(rec,ch){
   if(rec.chart_markers&&rec.chart_markers.length>0)markers=rec.chart_markers.slice();
   markers=markers.concat(_figDrawMarkers(rec.pattern,ch&&ch.ohlc));
   markers.sort((a,b)=>a.time<b.time?-1:1);
-  return {priceLines:priceLines,markers:markers,lines:_figDrawLines(rec.pattern)};
+  return {priceLines:priceLines,markers:markers,
+    lines:_figDrawLines(rec.pattern).concat(_fibDrawLines(rec.fib)),
+    labels:_figLabels(rec.pattern).concat(_fibLabels(rec.fib))};
 }
 
 function renderRecDetailCharts(idx,rec,period){
@@ -5198,7 +5292,7 @@ function destroyEtfDetailCharts(idx){scDestroy(_scReg['etf_'+idx]);_scReg['etf_'
 function renderEtfDetailCharts(idx,sym,period){
   if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'etf_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern),markers:_figDrawMarkers(r.pattern,r.chart.ohlc)},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
   _etfCharts[idx]=1;
 }
 
@@ -5307,11 +5401,13 @@ function _mpDecorate(){
     lines.push({values:chn.top,color:'#2456e655',width:1});
     lines.push({values:chn.bot,color:'#2456e655',width:1});
   }
-  // Geometria de la figura tecnica detectada (rectas/neckline/bandera)
+  // Geometria de la figura tecnica detectada (rectas/neckline/bandera) + fib
   let pat=_mpData&&_mpData.pattern;
-  lines=lines.concat(_figDrawLines(pat));
+  let fb=_mpData&&_mpData.fibonacci;
+  lines=lines.concat(_figDrawLines(pat)).concat(_fibDrawLines(fb));
   let markers=_figDrawMarkers(pat,_mpData&&_mpData.chart?_mpData.chart.ohlc:null);
-  return {priceLines:pls,lines:lines,markers:markers};
+  let labels=_figLabels(pat).concat(_fibLabels(fb));
+  return {priceLines:pls,lines:lines,markers:markers,labels:labels};
 }
 function _mpMountChart(){
   if(!_mpData||!_mpData.chart)return;

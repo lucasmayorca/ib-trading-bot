@@ -276,6 +276,18 @@ labels can be directional while `signal` is still HOLD.
   compara el valor interpolado en el índice del crosshair. La ruptura se renombró
   "Ruptura de techo"/"Perdida de piso" y su texto dice QUÉ nivel rompe (antes "Ruptura alcista"
   no explicaba nada).
+- **Dibujo estilo investing.com (2026-08)**: primitive `_scTextLabels` (clon del patrón
+  `_scZoneBands`, canvas con `logicalToCoordinate`+`priceToCoordinate`, zOrder top, halo blanco)
+  rotula texto SOBRE el chart: el nombre de la figura al inicio de su primer trazo y cada nivel
+  fib como "61.8% · 689.11". **Fibonacci ya no es priceLine full-width**: `_fibDrawLines` dibuja
+  los 7 niveles (0-100%, ámbar; el `at` sólido y más grueso) como segmentos DESDE el inicio del
+  impulso (`fib.start_off`/`end_off`, offsets del server) hasta hoy — solo el nivel apoyado
+  conserva etiqueta en el eje. La neckline del HCH une los DOS VALLES reales (recta inclinada
+  extrapolada a hoy, índices `i_v1/i_v2`), no un promedio horizontal. `decorate.labels`
+  ([{off,price,text,color,bold}]) viaja por los 6 decorates + `_mpDecorate`; scBuild convierte
+  off→índice lógico y ancla al borde izquierdo si el inicio quedó fuera de la vista. Detección
+  SIEMPRE sobre el histórico diario completo; el dibujo aparece en todas las vistas diarias
+  (ALL/5Y/1Y/3M, los arrays son sufijos del mismo eje) y el preset de período sigue en 1Y.
 - **Validación (evidencia, no fe)**: `patterns.validate_universe` en `/api/calibration` recorre 5Y
   detectando figuras confirmadas con target y mide hit-rate (¿target antes que invalidación, en
   ≤40 ruedas?) por tipo. Los pesos de score/veredicto son deliberadamente chicos hasta que esa

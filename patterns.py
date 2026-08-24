@@ -297,8 +297,9 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
                 return None
             if abs(p1 - p3) > 1.6 * atr:        # hombros muy desparejos
                 return None
-            v1 = float(min(lows[i1:i2 + 1]))
-            v2 = float(min(lows[i2:i3 + 1]))
+            seg1, seg2 = lows[i1:i2 + 1], lows[i2:i3 + 1]
+            v1, v2 = float(min(seg1)), float(min(seg2))
+            i_v1, i_v2 = i1 + seg1.index(min(seg1)), i2 + seg2.index(min(seg2))
             neck = (v1 + v2) / 2
             depth = p2 - neck
             if depth < 2 * atr:
@@ -318,8 +319,9 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
                 return None
             if abs(p1 - p3) > 1.6 * atr:
                 return None
-            v1 = float(max(highs[i1:i2 + 1]))
-            v2 = float(max(highs[i2:i3 + 1]))
+            seg1, seg2 = highs[i1:i2 + 1], highs[i2:i3 + 1]
+            v1, v2 = float(max(seg1)), float(max(seg2))
+            i_v1, i_v2 = i1 + seg1.index(max(seg1)), i2 + seg2.index(max(seg2))
             neck = (v1 + v2) / 2
             depth = neck - p2
             if depth < 2 * atr:
@@ -344,12 +346,17 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
                    f"{'bajo' if not inverted else 'sobre'} {_usd(_r(neck))} "
                    f"(proyectaria {_usd(_r(target))}); se anula "
                    f"{'sobre' if not inverted else 'bajo'} {_usd(_r(invalid))}")
-        off1 = int(n - 1 - i1)
+        # Neckline como la traza un chartista (estilo investing.com): la recta
+        # que une los DOS VALLES reales, extendida hasta hoy — no un promedio plano
+        if i_v2 > i_v1:
+            neck_slope = (v2 - v1) / (i_v2 - i_v1)
+            neck_now = v2 + neck_slope * ((n - 1) - i_v2)
+        else:
+            neck_now = v2
         draw = {
             "segments": [
-                # neckline desde el hombro izquierdo hasta hoy
-                {"x0": off1, "y0": _r(neck), "x1": 0, "y1": _r(neck), "dash": False,
-                 "lbl": f"Neckline del {nm}"},
+                {"x0": int(n - 1 - i_v1), "y0": _r(v1), "x1": 0, "y1": _r(neck_now),
+                 "dash": False, "w": 2, "lbl": f"Neckline del {nm} (une los dos valles)"},
             ],
             "points": [
                 {"x": int(n - 1 - i1), "y": _r(p1), "label": "H",
@@ -743,6 +750,13 @@ def fibonacci(highs, lows, closes, atr, lookback=180):
         pos_txt = f"retrocedio el {max(0.0, retr) * 100:.0f}% del impulso"
     txt = (f"impulso {dirw} {_usd(_r(lo))}→{_usd(_r(hi))}: {pos_txt}"
            + (f", apoyado en el nivel fib {at}% ({_usd(_r(levels[at]))})" if at else ""))
+    # Offsets (desde la ultima barra) de los dos extremos del impulso, para que
+    # el frontend dibuje los niveles fib DESDE el inicio del impulso hasta hoy
+    # (estilo investing.com), no como lineas de ancho completo
+    hi_abs = (n - w) + hi_rel
+    lo_abs = (n - w) + lo_rel
+    start_abs = lo_abs if up else hi_abs      # origen del impulso (100%)
+    end_abs = hi_abs if up else lo_abs        # extremo final (0%)
     return {
         "dir": dirw,
         "high": _r(hi), "low": _r(lo),
@@ -751,6 +765,8 @@ def fibonacci(highs, lows, closes, atr, lookback=180):
         "retr_pct": _r(retr * 100, 1),
         "at": at,
         "relevant": bool(relevant),
+        "start_off": int(n - 1 - start_abs),
+        "end_off": int(n - 1 - end_abs),
         "text": txt,
     }
 
