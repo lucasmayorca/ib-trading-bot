@@ -96,8 +96,19 @@ def collect_universe_trades(ohlc_by_symbol):
 
 
 def calibrate_universe(ohlc_by_symbol):
-    """Atajo: colecta trades del universo y construye el reporte de calibracion."""
+    """Atajo: colecta trades del universo y construye el reporte de calibracion.
+
+    Incluye ademas la validacion historica de FIGURAS TECNICAS (patterns.py):
+    para cada figura confirmada con objetivo medido, ¿el precio alcanzo el
+    target antes que la invalidacion? El hit-rate por tipo es la evidencia con
+    la que se calibran los pesos de figura en score/veredicto (no fe)."""
     trades, used = collect_universe_trades(ohlc_by_symbol)
     report = build_calibration(trades)
     report["symbols_used"] = used
+    try:
+        import patterns
+        report["patterns"] = patterns.validate_universe(ohlc_by_symbol)
+    except Exception as e:
+        print(f"  [Calibration] Error validando figuras: {e}")
+        report["patterns"] = {}
     return report

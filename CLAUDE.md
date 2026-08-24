@@ -33,6 +33,7 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 | `vista_web.py` | Flask dashboard (5500+ lines) |
 | `trades_imported.json` | Imported trade history from IB (BUY/SELL fills) |
 | `backtester.py` | Historical backtest engine |
+| `patterns.py` | Motor compartido de figuras técnicas + Fibonacci (chartista, por reglas) |
 | `options_lab.py` | Options strategy engine (Black-Scholes, Greeks, IV analysis) |
 
 ## Signal Logic
@@ -225,6 +226,38 @@ labels can be directional while `signal` is still HOLD.
   NOT CSS — when changing palette, sweep both. Dark-theme colors must not be reintroduced (user explicitly
   chose light background for readability).
 
+## Figuras Técnicas (`patterns.py`, 2026-08)
+- **Motor compartido** de figuras chartistas por reglas, extraído del detector que nació en
+  `market_pulse.py` (que ahora es un wrapper fino sobre `patterns.detect`) y generalizado a TODOS
+  los análisis: escáner acciones/ETF, Top Recomendaciones, Mi Cartera y el pulso. Server-side puro
+  (numpy, sin IO) sobre el `chart` que ya viaja en cada análisis — **el bridge NO se toca**: el
+  cloud computa `attach_to_analysis` al recibir cada `analysis_batch`/`etf_analysis_batch`.
+- **Detectores**: ruptura de nivel (2+ toques), doble/TRIPLE techo-suelo, hombro-cabeza-hombro
+  (+ invertido), triángulos/cuñas (incluye "rota" ≤8 ruedas), banderas de continuación (palo
+  ≥3.5·ATR + consolidación ≤55% del palo), cruce dorado/muerte (`include_cross`, solo pulso),
+  divergencia RSI/precio, canal/estructura fallback (`include_fallback`, solo pulso). Cada figura:
+  `{name, direction, status (en formacion/por confirmar/confirmada/vigente), key_level, breakout,
+  invalidation, target (objetivo MEDIDO), priority, text}`. **Fibonacci** aparte: retrocesos
+  23.6-78.6 + extensiones 127.2/161.8 del impulso dominante (≥4·ATR, ≤180 ruedas), con `at` (nivel
+  donde está apoyado el precio) y `retr_pct`; se descarta si retrocedió >105% (impulso negado).
+- **Dónde pega cada cosa**: `analyze_symbol` adjunta `sig["pattern"]/sig["fib"]` (payload de
+  `/api/data`, `/api/etf-data`, top3, deep analysis de cartera). `_compute_price_levels` suma el
+  objetivo medido de la figura (prio 0, solo si su dirección coincide con el label) y los niveles
+  fib (prio 1) como candidatos NOMBRADOS de target/entrada vía `_pick_directional_target(extra=)` —
+  la ventana [0.6,1.8]·mov_esperado sigue mandando. Tesis línea "Figura tecnica:", racional bullets
+  "Figura:"/"Fibonacci:", veredicto factores 9e (figura ±8/5/4/3 según status) y 9f (fib retroceso
+  profundo ±3), `_score_stock` bonus acotado (+5 confirmada alineada, +2.5 en formación, −3
+  confirmada en contra). **UI**: chips violeta `.rec-thesis-fig` (tooltip = texto), línea en
+  `buildTechSummary`, y `_patternPriceLines` dibuja ruptura/anulación/objetivo (violeta) + fib
+  38.2/50/61.8 (gris punteado) en TODOS los stacks (scan/etf/rec/etfrec/port/pend).
+- **Validación (evidencia, no fe)**: `patterns.validate_universe` en `/api/calibration` recorre 5Y
+  detectando figuras confirmadas con target y mide hit-rate (¿target antes que invalidación, en
+  ≤40 ruedas?) por tipo. Los pesos de score/veredicto son deliberadamente chicos hasta que esa
+  evidencia justifique subirlos (primer corte MSFT+SPY: banderas alcistas ~55%, HCH inv ~57%,
+  cuñas rotas ~26% — las cuñas rotas son sospechosas).
+- Gotcha: `signals.py` NO se toca — las figuras son contexto/niveles, nunca gatillo de orden.
+  Los tests sintéticos exigen techos separados ≥12 ruedas (dobles) y ciclos ~12 ruedas (triples).
+
 ## Backtest & Calibración (calidad de la estimación)
 - **`backtester.py` — confianza calibrada, no win-rate crudo**: el backtest usa
   **cooldown** (no abre un nuevo trade hasta cerrar el anterior → sin solapes que inflen
@@ -367,11 +400,9 @@ labels can be directional while `signal` is still HOLD.
   (chips `Compra x/3` / `Venta x/3` con tooltip de qué falta), momentum (MACD/RSI/Koncorde),
   soportes/resistencias por pivotes fractales, figura técnica detectada por reglas y lectura
   de la sesión en curso (gap, rango, RVOL proyectado).
-- **Figuras** (por prioridad): ruptura de nivel 2+ toques (umbral 0.25·ATR anti-ruido),
-  doble techo/suelo, triángulo/cuña (incluye "rota" si el precio salió de la figura hace ≤8
-  ruedas; más vieja se descarta — ya jugó), cruce dorado/muerte (≤20 ruedas), divergencia
-  RSI/precio en pivotes, fallback canal de regresión + estructura HH-HL/LH-LL (nunca vacío).
-  Cada figura sale con dirección, estado (en formacion/confirmada) y nivel que la anula.
+- **Figuras**: desde 2026-08 vienen del motor compartido `patterns.py` (`_detect_patterns` es un
+  wrapper sobre `patterns.detect` con `include_cross` + `include_fallback` — el pulso siempre tiene
+  algo que decir). El payload suma `fibonacci` (aún sin render en el JS del pulso).
 - Patrón `enrichment.py`: server-side puro vía yfinance (5y diario + 15m sesión), cache TTL
   10 min, cero dependencia de TWS/bridge → local y cloud idénticos. Reutiliza
   `indicators.calculate_all` + `signals.check_buy/sell_conditions` (paridad total de lecturas).

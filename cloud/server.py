@@ -398,7 +398,8 @@ def handle_analysis_data(data):
     store = get_user_store(user_id)
     symbol = data.get("symbol")
     if symbol:
-        store["analysis"][symbol] = data.get("result", {})
+        from patterns import attach_to_analysis
+        store["analysis"][symbol] = attach_to_analysis(data.get("result", {}))
         store["last_update"] = datetime.now().strftime("%H:%M:%S")
 
 
@@ -414,8 +415,11 @@ def handle_analysis_batch(data):
         sample_sym = list(results.keys())[0]
         sample = results[sample_sym]
         print(f"[ANALYSIS_BATCH] Sample {sample_sym}: keys={list(sample.keys())}", flush=True)
+    # Figuras tecnicas + fib: se computan server-side sobre el chart que manda
+    # el bridge (patron enrichment.py: el bridge NO se toca, cero reinstalls)
+    from patterns import attach_to_analysis
     for symbol, result in results.items():
-        store["analysis"][symbol] = result
+        store["analysis"][symbol] = attach_to_analysis(result)
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
     schedule_persist(user_id)
 
@@ -437,8 +441,9 @@ def handle_etf_analysis_batch(data):
     store = get_user_store(user_id)
     results = data.get("results", {})
     print(f"[ETF_BATCH] User {user_id}: Received {len(results)} ETFs", flush=True)
+    from patterns import attach_to_analysis
     for symbol, result in results.items():
-        store["etf_analysis"][symbol] = result
+        store["etf_analysis"][symbol] = attach_to_analysis(result)
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
     schedule_persist(user_id)
 
@@ -788,6 +793,8 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "expected_move_pct": levels.get("expected_move_pct", None),
         "horizon": levels.get("horizon_weeks", ""),
         "thesis": thesis,
+        "pattern": data.get("pattern"),
+        "fib": data.get("fib"),
         "win_rate": (bt.get("sell_win_rate", 0) if sig == "SELL"
                      else bt.get("buy_win_rate", 0)) or 0,
         "avg_return": (bt.get("sell_avg_return") if sig == "SELL"

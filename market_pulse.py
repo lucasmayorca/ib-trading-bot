@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 import indicators
+import patterns
 import signals
 
 SYMBOL = "SPY"
@@ -224,286 +225,27 @@ def _channel(df, lookback=120):
 
 
 # ══════════════════════════════════════════════════════════════
-#  FIGURAS TECNICAS (reglas sobre pivotes/MAs/niveles)
+#  FIGURAS TECNICAS — motor compartido patterns.py
 # ══════════════════════════════════════════════════════════════
-
-def _pat_breakout(df, all_levels, atr):
-    """Cierre cruzando un nivel de 2+ toques en las ultimas 5 ruedas."""
-    closes = df["close"].values
-    if len(closes) < 10 or not atr:
-        return None
-    c_now, c_ref = closes[-1], closes[-6]
-    min_move = 0.25 * atr               # cruce por menos de esto es ruido
-    best = None
-    for lvl in all_levels:
-        if lvl["touches"] < 2:
-            continue
-        L = lvl["level"]
-        if c_ref < L and c_now > L + min_move:
-            cand = ("alcista", lvl)
-        elif c_ref > L and c_now < L - min_move:
-            cand = ("bajista", lvl)
-        else:
-            continue
-        if best is None or lvl["touches"] > best[1]["touches"]:
-            best = cand
-    if not best:
-        return None
-    d, lvl = best
-    L = lvl["level"]
-    confirmed = ((closes[-2] > L and c_now > L + 0.4 * atr) if d == "alcista"
-                 else (closes[-2] < L and c_now < L - 0.4 * atr))
-    st = "confirmada" if confirmed else "por confirmar"
-    rol = "soporte" if d == "alcista" else "resistencia"
-    return {
-        "name": "Ruptura " + ("alcista" if d == "alcista" else "bajista"),
-        "direction": d, "status": st, "key_level": _r(L),
-        "priority": 90 if confirmed else 80,
-        "text": (f"{'Ruptura' if d == 'alcista' else 'Perdida'} del nivel "
-                 f"{_fmt_usd(_r(L))} ({lvl['touches']} toques), {st} — "
-                 f"ese nivel ahora actua de {rol}"),
-    }
-
-
-def _pat_double(df, piv_h, piv_l, atr):
-    """Doble techo / doble suelo con los dos ultimos pivotes del lado."""
-    if not atr:
-        return None
-    n = len(df)
-    closes = df["close"].values
-
-    def _check(pivs, is_top):
-        if len(pivs) < 2:
-            return None
-        (i1, p1), (i2, p2) = pivs[-2], pivs[-1]
-        if abs(p1 - p2) > 0.6 * atr or (i2 - i1) < 12 or i2 < n - 45:
-            return None
-        seg = df["low"].values[i1:i2 + 1] if is_top else df["high"].values[i1:i2 + 1]
-        neck = float(seg.min()) if is_top else float(seg.max())
-        depth = (min(p1, p2) - neck) if is_top else (neck - max(p1, p2))
-        if depth < 1.5 * atr:
-            return None
-        c = closes[-1]
-        if is_top:
-            if c < neck - 3 * atr:      # figura vieja, ya jugo
-                return None
-            confirmed = c < neck
-            d, nm = "bajista", "Doble techo"
-        else:
-            if c > neck + 3 * atr:
-                return None
-            confirmed = c > neck
-            d, nm = "alcista", "Doble suelo"
-        st = "confirmada" if confirmed else "en formacion"
-        lvl_txt = _fmt_usd(_r((p1 + p2) / 2))
-        conf_txt = (f"confirmado con cierre {'bajo' if is_top else 'sobre'} "
-                    f"el neckline {_fmt_usd(_r(neck))}") if confirmed else \
-                   (f"se confirma {'bajo' if is_top else 'sobre'} {_fmt_usd(_r(neck))}")
-        return {
-            "name": nm, "direction": d, "status": st,
-            "key_level": _r(neck), "priority": 85 if confirmed else 70,
-            "text": f"{nm} en {lvl_txt}, {conf_txt}",
-        }
-
-    return _check(piv_h, True) or _check(piv_l, False)
-
-
-def _pat_triangle(df, piv_h, piv_l, atr, price):
-    """Triangulo o cuña: rectas sobre pivotes H y L de ~90 ruedas convergiendo."""
-    if not atr:
-        return None
-    n = len(df)
-    ph = [(i, p) for i, p in piv_h if i >= n - 90]
-    pl = [(i, p) for i, p in piv_l if i >= n - 90]
-    if len(ph) < 3 or len(pl) < 3:
-        return None
-    xh, yh = np.array([p[0] for p in ph], float), np.array([p[1] for p in ph])
-    xl, yl = np.array([p[0] for p in pl], float), np.array([p[1] for p in pl])
-    sh, ih = np.polyfit(xh, yh, 1)
-    sl_, il = np.polyfit(xl, yl, 1)
-    x0 = float(min(xh.min(), xl.min()))
-    x1 = float(n - 1)
-    spread0 = (ih + sh * x0) - (il + sl_ * x0)
-    spread1 = (ih + sh * x1) - (il + sl_ * x1)
-    if spread0 <= 0 or spread1 <= 0.3 * atr or spread1 > 0.72 * spread0:
-        return None                     # no converge (o ya colapso)
-    shp = sh / price * 100              # % del precio por rueda
-    slp = sl_ / price * 100
-    FLAT = 0.025
-    res_now, sup_now = _r(ih + sh * x1), _r(il + sl_ * x1)
-    if shp < -FLAT and slp > FLAT:
-        nm, d = "Triangulo simetrico", "neutral"
-        txt = (f"Triangulo simetrico: compresion entre {_fmt_usd(sup_now)} y "
-               f"{_fmt_usd(res_now)} — la ruptura define la direccion")
-    elif abs(shp) <= FLAT and slp > FLAT:
-        nm, d = "Triangulo ascendente", "alcista"
-        txt = (f"Triangulo ascendente: pisos crecientes contra resistencia "
-               f"{_fmt_usd(res_now)} (sesgo de ruptura alcista)")
-    elif shp < -FLAT and abs(slp) <= FLAT:
-        nm, d = "Triangulo descendente", "bajista"
-        txt = (f"Triangulo descendente: techos decrecientes sobre soporte "
-               f"{_fmt_usd(sup_now)} (sesgo de quiebre bajista)")
-    elif shp > FLAT and slp > FLAT:
-        nm, d = "Cuña ascendente", "bajista"
-        txt = (f"Cuña ascendente: sube en compresion — figura de agotamiento, "
-               f"se activa bajo {_fmt_usd(sup_now)}")
-    elif shp < -FLAT and slp < -FLAT:
-        nm, d = "Cuña descendente", "alcista"
-        txt = (f"Cuña descendente: cae en compresion — suele resolver al alza, "
-               f"se activa sobre {_fmt_usd(res_now)}")
-    else:
-        return None
-
-    # ¿El precio sigue DENTRO de la figura? Si salio, es una figura rota
-    # (reciente = señal direccional; vieja = descartar, ya jugo).
-    margin = 0.25 * atr
-    line_h_now, line_l_now = ih + sh * x1, il + sl_ * x1
-    above = price > line_h_now + margin
-    below = price < line_l_now - margin
-    if above or below:
-        closes = df["close"].values
-        was_inside = False
-        for back in range(2, 9):
-            xb = n - back
-            cb = closes[xb]
-            if (il + sl_ * xb) - margin <= cb <= (ih + sh * xb) + margin:
-                was_inside = True
-                break
-        if not was_inside:
-            return None
-        d2 = "alcista" if above else "bajista"
-        lvl = _r(line_h_now if above else line_l_now)
-        return {"name": nm + " rota", "direction": d2, "status": "confirmada",
-                "key_level": lvl, "priority": 75,
-                "text": (f"{nm} rota {'al alza' if above else 'a la baja'}: "
-                         f"el precio salio de la figura "
-                         f"{'sobre' if above else 'bajo'} {_fmt_usd(lvl)}")}
-
-    return {"name": nm, "direction": d, "status": "en formacion",
-            "key_level": res_now if d != "bajista" else sup_now,
-            "priority": 60, "text": txt}
-
-
-def _pat_ma_cross(df, sma50, sma200):
-    """Cruce dorado / de la muerte en las ultimas 20 ruedas."""
-    if sma50 is None or sma200 is None:
-        return None
-    a, b = np.asarray(sma50, float), np.asarray(sma200, float)
-    if len(a) < 25 or len(b) < 25 or np.isnan(a[-25:]).any() or np.isnan(b[-25:]).any():
-        return None
-    diff = a - b
-    for back in range(1, 21):
-        if diff[-back] == 0:
-            continue
-        if np.sign(diff[-back]) != np.sign(diff[-1]):
-            golden = diff[-1] > 0
-            nm = "Cruce dorado" if golden else "Cruce de la muerte"
-            return {
-                "name": nm, "direction": "alcista" if golden else "bajista",
-                "status": "confirmada", "key_level": None, "priority": 50,
-                "text": (f"{nm} hace {back} ruedas (SMA50 "
-                         f"{'sobre' if golden else 'bajo'} SMA200) — señal de "
-                         f"tendencia de fondo {'alcista' if golden else 'bajista'}"),
-            }
-    return None
-
-
-def _pat_divergence(df, piv_h, piv_l, rsi_series):
-    """Divergencia RSI/precio entre los dos ultimos pivotes del lado activo."""
-    n = len(df)
-    rsi = np.asarray(rsi_series, float)
-
-    def _check(pivs, bearish):
-        recent = [(i, p) for i, p in pivs if i >= n - 60]
-        if len(recent) < 2:
-            return None
-        (i1, p1), (i2, p2) = recent[-2], recent[-1]
-        if i2 < n - 25 or i1 >= len(rsi) or i2 >= len(rsi):
-            return None
-        r1, r2 = rsi[i1], rsi[i2]
-        if np.isnan(r1) or np.isnan(r2):
-            return None
-        if bearish and p2 > p1 and r2 < r1 - 2:
-            return {"name": "Divergencia bajista", "direction": "bajista",
-                    "status": "vigente", "key_level": None, "priority": 45,
-                    "text": ("Divergencia bajista: el precio hizo un maximo mas alto "
-                             f"pero el RSI no acompaño ({r1:.0f} → {r2:.0f}) — "
-                             "el impulso pierde fuerza")}
-        if not bearish and p2 < p1 and r2 > r1 + 2:
-            return {"name": "Divergencia alcista", "direction": "alcista",
-                    "status": "vigente", "key_level": None, "priority": 45,
-                    "text": ("Divergencia alcista: el precio hizo un minimo mas bajo "
-                             f"pero el RSI subio ({r1:.0f} → {r2:.0f}) — "
-                             "la caida pierde fuerza")}
-        return None
-
-    return _check(piv_h, True) or _check(piv_l, False)
-
-
-def _structure(piv_h, piv_l):
-    """Estructura de tendencia por pivotes: HH/HL, LH/LL o mixta."""
-    def _dir(pivs):
-        if len(pivs) < 2:
-            return 0
-        vals = [p for _, p in pivs[-3:]]
-        ups = sum(1 for i in range(1, len(vals)) if vals[i] > vals[i - 1])
-        downs = len(vals) - 1 - ups
-        return 1 if ups > downs else (-1 if downs > ups else 0)
-
-    dh, dl = _dir(piv_h), _dir(piv_l)
-    if dh > 0 and dl >= 0:
-        return 1, "maximos y minimos crecientes"
-    if dh <= 0 and dl < 0:
-        return -1, "maximos y minimos decrecientes"
-    return 0, "estructura mixta (sin tendencia clara de pivotes)"
-
-
-def _pat_channel_fallback(channel, struct_dir, struct_txt):
-    """Canal/estructura como figura por defecto (siempre hay algo que decir)."""
-    if not channel:
-        return {"name": "Estructura", "direction": "neutral", "status": "vigente",
-                "key_level": None, "priority": 20, "text": struct_txt.capitalize()}
-    sp = channel["slope_pct"] or 0
-    pos = channel["pos"] if channel["pos"] is not None else 0.5
-    meses = max(1, round(channel["lookback"] / 21))
-    if sp >= 0.04:
-        nm, d = "Canal alcista", "alcista"
-    elif sp <= -0.04:
-        nm, d = "Canal bajista", "bajista"
-    else:
-        nm, d = "Rango lateral", "neutral"
-    if pos >= 0.8:
-        ptxt = "pegado al techo del canal"
-    elif pos <= 0.2:
-        ptxt = "apoyado en el piso del canal"
-    elif pos >= 0.5:
-        ptxt = "en la mitad superior del canal"
-    else:
-        ptxt = "en la mitad inferior del canal"
-    return {"name": nm, "direction": d, "status": "vigente",
-            "key_level": channel["lower"] if d == "alcista" else channel["upper"],
-            "priority": 30,
-            "text": f"{nm} de ~{meses} meses, precio {ptxt}; {struct_txt}"}
-
+# Los detectores por reglas que nacieron aca (ruptura, doble techo/suelo,
+# triangulo/cuña, cruce, divergencia, canal/estructura) se EXTRAJERON a
+# patterns.py para que todos los analisis (escaner, recomendaciones, cartera)
+# usen la misma implementacion — y ganaron figuras nuevas (triple techo, HCH,
+# banderas) + contexto Fibonacci. Este wrapper mantiene la interfaz historica.
 
 def _detect_patterns(df, piv_h, piv_l, all_levels, atr, price,
                      sma50_arr, sma200_arr, rsi_series, channel):
-    struct_dir, struct_txt = _structure(piv_h, piv_l)
-    cands = [
-        _pat_breakout(df, all_levels, atr),
-        _pat_double(df, piv_h, piv_l, atr),
-        _pat_triangle(df, piv_h, piv_l, atr, price),
-        _pat_ma_cross(df, sma50_arr, sma200_arr),
-        _pat_divergence(df, piv_h, piv_l, rsi_series),
-        _pat_channel_fallback(channel, struct_dir, struct_txt),
-    ]
-    cands = sorted([c for c in cands if c], key=lambda c: -c["priority"])
-    main = cands[0]
-    secondary = next((c for c in cands[1:] if c["priority"] >= 45), None)
-    if secondary:
-        main = dict(main)
-        main["secondary"] = secondary["text"]
-    return main, struct_dir, struct_txt
+    """(figura principal, direccion de estructura, texto, fibonacci) via
+    patterns.detect — con cruce de MAs y fallback de canal incluidos (el
+    pulso siempre tiene algo que decir). piv/levels/channel se recomputan
+    adentro con las mismas primitivas; los params quedan por compatibilidad."""
+    res = patterns.detect(
+        df["high"].tolist(), df["low"].tolist(), df["close"].tolist(),
+        rsi=list(rsi_series) if rsi_series is not None else None,
+        sma50=sma50_arr, sma200=sma200_arr,
+        include_cross=True, include_fallback=True)
+    struct_dir, struct_txt = res["structure"]
+    return res["pattern"], struct_dir, struct_txt, res["fibonacci"]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -803,7 +545,7 @@ def _build_pulse():
     sups, ress, all_levels = _sr_levels(df, piv_h, piv_l, atr, price, mas_val)
     channel = _channel(df)
     rsi_series = ind["rsi"]["rsi"].values
-    pattern, struct_dir, struct_txt = _detect_patterns(
+    pattern, struct_dir, struct_txt, fib = _detect_patterns(
         df, piv_h, piv_l, all_levels, atr, price,
         mas_payload["sma50"], mas_payload["sma200"], rsi_series, channel)
 
@@ -885,6 +627,7 @@ def _build_pulse():
                                     "tags": c.get("tags", [])} for c in ress],
                    "text": levels_text},
         "pattern": pattern,
+        "fibonacci": fib,
         "conditions": {"buy": buy_c, "sell": sell_c},
         "session": session,
         "reading": reading,

@@ -29,6 +29,7 @@ import yfinance as yf
 import portfolio
 import options_lab
 import enrichment
+import patterns
 import market_pulse
 
 CHART_BARS = 252  # ~1 year of trading days
@@ -357,6 +358,8 @@ def analyze_symbol(df):
                 "media": [round(float(x), 1) for x in konc_df["media"].tolist()],
             },
         }
+        # Figuras tecnicas + contexto Fibonacci (motor compartido patterns.py)
+        patterns.attach_to_analysis(sig)
         return sig
     except Exception as e:
         print(f"  Error analizando: {e}")
@@ -674,6 +677,20 @@ def _score_stock(sym, data, min_target_pct=None):
                 pen += 5.0
             score -= pen
 
+    # Confluencia con figura tecnica (patterns.py): bonus/malus ACOTADO — una
+    # figura chartista alineada con el label refuerza el setup; una confirmada
+    # en contra lo debilita. Los pesos se recalibran con /api/calibration
+    # (hit-rate historico por tipo de figura), no se agrandan a ojo.
+    pat = data.get("pattern") or {}
+    pat_dir = pat.get("direction")
+    if pat_dir in ("alcista", "bajista"):
+        aligned = (pat_dir == "bajista") == is_bearish
+        confirmed = pat.get("status") == "confirmada"
+        if aligned:
+            score += 5.0 if confirmed else 2.5
+        elif confirmed:
+            score -= 3.0
+
     return max(0.0, min(100.0, score))
 
 
@@ -781,7 +798,8 @@ def _estimate_expected_move(price, atr, data, is_bearish):
 
 
 def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
-                             expected_dist, is_bearish, sr_levels=None, channel=None):
+                             expected_dist, is_bearish, sr_levels=None, channel=None,
+                             extra=None):
     """Elige el objetivo: el primer nivel técnico (piso/techo horizontal, MA o
     swing) que esté al menos a `0.6·movimiento_esperado` y no más allá de
     `1.8·movimiento_esperado`. Si el nivel más cercano queda demasiado lejos (o
@@ -790,7 +808,11 @@ def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
     `sr_levels`: lista de {"level","touches"} de _find_sr_levels en la dirección
     del objetivo (techos para alcista, pisos para bajista). Los pisos/techos con
     2+ toques tienen prioridad sobre las MAs a igual distancia (son estructura
-    real del precio, no un promedio)."""
+    real del precio, no un promedio).
+
+    `extra`: candidatos nombrados adicionales [(prio, nombre, valor)] — niveles
+    Fibonacci y objetivos MEDIDOS de figuras técnicas (patterns.py). Se filtran
+    automáticamente por dirección; el nombre viaja al `target_basis`."""
     min_dist = 0.6 * expected_dist
     max_dist = 1.8 * expected_dist
 
@@ -815,7 +837,20 @@ def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
                 cands.append((1, "Canal superior de tendencia", up))
             if not direction_up and lo is not None and lo < price:
                 cands.append((1, "Canal inferior de tendencia", lo))
+        for prio, name, v in (extra or []):
+            if v is not None and v != price and (v > price) == direction_up:
+                cands.append((prio, name, v))
         return cands
+
+    def _basis_txt(name, v, direction_up):
+        if name.startswith(("Piso", "Techo")):
+            return name
+        if name.startswith("Canal"):
+            return f"{name} en ${v:.2f}"
+        if name.startswith("Objetivo"):
+            return f"{name} en ${v:.2f}"          # "Objetivo medido del Doble techo en $X"
+        rol = "Resistencia" if direction_up else "Soporte"
+        return f"{rol} {name} en ${v:.2f}"
 
     if is_bearish:
         cands = _candidates(direction_up=False)
@@ -824,13 +859,7 @@ def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
         if in_window:
             in_window.sort(key=lambda x: (x[0], -x[2]))
             _, name, v = in_window[0]
-            if name.startswith("Piso"):
-                basis = name
-            elif name.startswith("Canal"):
-                basis = f"{name} en ${v:.2f}"
-            else:
-                basis = f"Soporte {name} en ${v:.2f}"
-            return v, basis
+            return v, _basis_txt(name, v, False)
         return price - expected_dist, None          # basis lo pone el caller (movimiento esperado)
     else:
         cands = _candidates(direction_up=True)
@@ -838,13 +867,7 @@ def _pick_directional_target(price, ma_vals, ma_names, swing_h, swing_l,
         if in_window:
             in_window.sort(key=lambda x: (x[0], x[2]))
             _, name, v = in_window[0]
-            if name.startswith("Techo"):
-                basis = name
-            elif name.startswith("Canal"):
-                basis = f"{name} en ${v:.2f}"
-            else:
-                basis = f"Resistencia {name} en ${v:.2f}"
-            return v, basis
+            return v, _basis_txt(name, v, True)
         return price + expected_dist, None
 
 
@@ -886,6 +909,26 @@ def _compute_price_levels(data):
     stop_basis = ""
     entry_basis = ""
 
+    # Figuras técnicas + Fibonacci (patterns.py) como candidatos NOMBRADOS:
+    # el objetivo medido de una figura alineada con el label tiene prioridad de
+    # estructura (0); los niveles fib compiten como las MAs (1). El filtro de
+    # ventana [0.6, 1.8]·mov_esperado sigue mandando — nada de targets locos.
+    pat = data.get("pattern") or {}
+    fib = data.get("fib") or {}
+    fib_levels = {k: v for k, v in (fib.get("levels") or {}).items() if v}
+    fib_ext = {k: v for k, v in (fib.get("ext") or {}).items() if v}
+    extra_targets = []
+    pat_dir = pat.get("direction")
+    if pat.get("target") and pat_dir in ("alcista", "bajista") \
+            and (pat_dir == "bajista") == is_bearish:
+        extra_targets.append((0, f"Objetivo medido del {(pat.get('name') or 'patron').lower()}",
+                              float(pat["target"])))
+    for k, v in fib_levels.items():
+        extra_targets.append((1, f"Fib {k}% del impulso", float(v)))
+    for k, v in fib_ext.items():
+        extra_targets.append((1, f"Extension Fib {k}%", float(v)))
+    fib_names = {float(v): f"nivel Fib {k}%" for k, v in fib_levels.items()}
+
     def _entry_desc(anchor, anchors_list, strong, chan, ma_vals, ma_names, kind):
         # kind: "soporte" (bullish) o "resistencia" (bearish)
         if not anchors_list or abs(anchor - anchors_list[0]) > 1e-6:
@@ -896,25 +939,30 @@ def _compute_price_levels(data):
             return f"{piso_o_techo} ${anchor:.2f} ({strong['touches']} toques)"
         if chan is not None and abs(anchor - chan) < 1e-6:
             return f"{'piso' if kind == 'soporte' else 'techo'} del canal de tendencia"
+        nm_fib = next((n for v, n in fib_names.items() if abs(v - anchor) < 1e-6), None)
+        if nm_fib:
+            return f"{nm_fib} como {kind}"
         nm = next((ma_names[k] for k, v in ma_vals.items() if abs(v - anchor) < 1e-6), None)
         return f"{nm} como {kind}" if nm else f"{kind} cercano"
 
     if is_bearish:
-        # Techo por encima como techo de entrada (resistencia horizontal, canal o MA)
+        # Techo por encima como techo de entrada (resistencia horizontal, canal, MA o fib)
         res_above = sorted([v for v in ma_vals.values() if v > price])
         if techo_fuerte:
             res_above = sorted(res_above + [techo_fuerte["level"]])
         if chan_up is not None and chan_up > price:
             res_above = sorted(res_above + [chan_up])
+        res_above = sorted(res_above + [v for v in fib_names if v > price])
         entry_high = min(res_above[0], price + 1.5 * atr) if res_above else price + atr
         entry_low = price
         entry_basis = _entry_desc(entry_high, res_above, techo_fuerte, chan_up,
                                   ma_vals, ma_names, "resistencia")
 
-        # Objetivo: pisos (soportes) + MAs + swing + canal, filtrados por movimiento esperado
+        # Objetivo: pisos (soportes) + MAs + swing + canal + fib/figura
         target, target_basis = _pick_directional_target(
             price, ma_vals, ma_names, swing_h, swing_l, expected_dist,
-            is_bearish=True, sr_levels=pisos, channel=(chan_up, chan_lo))
+            is_bearish=True, sr_levels=pisos, channel=(chan_up, chan_lo),
+            extra=extra_targets)
         if target_basis is None:
             target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
@@ -933,21 +981,23 @@ def _compute_price_levels(data):
         risk = stop - price
         reward = price - target
     else:
-        # Piso por debajo como piso de entrada (soporte horizontal, canal o MA)
+        # Piso por debajo como piso de entrada (soporte horizontal, canal, MA o fib)
         sup_below = sorted([v for v in ma_vals.values() if v < price], reverse=True)
         if piso_fuerte:
             sup_below = sorted(sup_below + [piso_fuerte["level"]], reverse=True)
         if chan_lo is not None and chan_lo < price:
             sup_below = sorted(sup_below + [chan_lo], reverse=True)
+        sup_below = sorted(sup_below + [v for v in fib_names if v < price], reverse=True)
         entry_low = max(sup_below[0], price - 1.5 * atr) if sup_below else price - atr
         entry_high = price
         entry_basis = _entry_desc(entry_low, sup_below, piso_fuerte, chan_lo,
                                   ma_vals, ma_names, "soporte")
 
-        # Objetivo: techos (resistencias) + MAs + swing + canal, filtrados por movimiento esperado
+        # Objetivo: techos (resistencias) + MAs + swing + canal + fib/figura
         target, target_basis = _pick_directional_target(
             price, ma_vals, ma_names, swing_h, swing_l, expected_dist,
-            is_bearish=False, sr_levels=techos, channel=(chan_up, chan_lo))
+            is_bearish=False, sr_levels=techos, channel=(chan_up, chan_lo),
+            extra=extra_targets)
         if target_basis is None:
             target_basis = f"Movimiento esperado {expected_pct*100:.1f}% ({emove_basis})"
 
@@ -1093,6 +1143,16 @@ def _generate_rationale(sym, data, levels=None):
     if kd:
         chk = "✓" if data.get("konc_ok") else "✗"
         parts.append(f"Koncorde {chk}: {kd}")
+
+    # 2b. Figura tecnica + Fibonacci (patterns.py)
+    pat = data.get("pattern")
+    if pat and pat.get("text"):
+        parts.append(f"Figura: {pat['text']}")
+        if pat.get("secondary"):
+            parts.append(f"Figura secundaria: {pat['secondary']}")
+    fibd = data.get("fib")
+    if fibd and fibd.get("text"):
+        parts.append(f"Fibonacci: {fibd['text']}")
 
     # 3. Trend from MAs
     sma200 = mas.get("sma200_val")
@@ -1468,6 +1528,17 @@ def _generate_thesis(sym, data, levels, fund):
         target_line += f" Horizonte estimado: {horizon}."
     lines.append(target_line)
 
+    # --- Line 5b: Figura tecnica + contexto Fibonacci (patterns.py) ---
+    pat = data.get("pattern")
+    fibd = data.get("fib")
+    fig_bits = []
+    if pat and pat.get("text"):
+        fig_bits.append(pat["text"])
+    if fibd and fibd.get("text"):
+        fig_bits.append("Fibonacci: " + fibd["text"])
+    if fig_bits:
+        lines.append("Figura tecnica: " + ". ".join(fig_bits) + ".")
+
     # --- Line 6 (optional): Fundamental support ---
     if fund:
         fline_parts = []
@@ -1702,6 +1773,8 @@ def compute_top3(cache, min_target_pct=None):
             "expected_move_pct": levels.get("expected_move_pct", None),
             "horizon": levels.get("horizon_weeks", ""),
             "thesis": thesis,
+            "pattern": data.get("pattern"),
+            "fib": data.get("fib"),
             "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
                          else bt.get("buy_win_rate", 0)) or 0,
             "avg_return": (bt.get("sell_avg_return") if _label_is_bearish(data.get("signal_label", sig))
@@ -2101,6 +2174,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-thesis-horizon{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(36,86,230,.12);color:var(--accent)}
 .rec-thesis-target{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(11,122,75,.12);color:var(--buy)}
 .rec-sell .rec-thesis-target,.rec-thesis-target.neg{background:rgba(194,36,54,.12);color:var(--sell)}
+.rec-thesis-fig{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(124,58,237,.12);color:#7c3aed;cursor:help}
 /* Research row (below chart) */
 .rec-research-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:16px}
 .rec-research-panel{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:16px;min-height:80px}
@@ -3206,6 +3280,8 @@ function _portAnalDecorate(rec,pos){
       let isSell=(po.action||'').toUpperCase()==='SELL';
       priceLines.push({price:po.price,color:'#b45309',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Orden '+(isSell?'VENDER':'COMPRAR')+' pend.'});
     }
+    // Figura tecnica + niveles Fibonacci (patterns.py)
+    priceLines=priceLines.concat(_patternPriceLines(rec));
   }catch(e){}
   try{
     let fills=(rec&&rec.entry_fills)||[];
@@ -3329,6 +3405,7 @@ function renderPortAnalysisList(positions){
       html+='<div class="rec-thesis-meta">';
       if(rec.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+rec.horizon+'</span>';
       if(rec.target_pct){let bearT=_labelIsBearish(rec.signal_label||sig);html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(rec.target_pct).toFixed(0)+'%</span>';}
+      html+=figChips(rec);
       html+='</div></div>';
     }
 
@@ -4192,7 +4269,7 @@ function scStackHTML(key,legendHTML){
 function renderDetailCharts(idx,sym,period){
   if(!_data)return;let r=_data.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'scan_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
+    decorate:{priceLines:_patternPriceLines(r)},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
   _charts[idx]=1;
 }
 
@@ -4224,6 +4301,18 @@ function fmtMktCap(v){if(v==null)return'N/A';if(v>=1e12)return'$'+(v/1e12).toFix
 // omitiendo los paneles vacios. Los ETFs no traen analistas/insiders, asi que
 // esos recuadros ya no quedan grises y vacios; la grilla auto-fit se reacomoda.
 function recWhy(t){return t?'<div class="rec-why">'+t+'</div>':'';}
+// Chips de figura tecnica + Fibonacci para la meta de tesis (tooltip = detalle)
+function figChips(r){
+  let h='';
+  if(r&&r.pattern){
+    let p=r.pattern;
+    h+='<span class="rec-thesis-fig" title="'+String(p.text||'').replace(/"/g,'&quot;')+'">'+p.name+' ('+p.status+')</span>';
+  }
+  if(r&&r.fib&&r.fib.at){
+    h+='<span class="rec-thesis-fig" title="'+String(r.fib.text||'').replace(/"/g,'&quot;')+'">Fib '+r.fib.at+'%</span>';
+  }
+  return h;
+}
 function _objWhy(r){
   let parts=[];
   if(r.target_basis)parts.push(r.target_basis);
@@ -4342,6 +4431,27 @@ function renderRecEarnings(fund){
   return h;
 }
 
+function _patternPriceLines(rec){
+  // Lineas de figura tecnica (ruptura/anulacion/objetivo medido, violeta) +
+  // retrocesos Fibonacci (gris punteado) para el panel de velas
+  let out=[];if(!rec)return out;
+  let p=rec.pattern;
+  if(p){
+    let tag=p.name||'Figura';
+    if(p.breakout!=null)out.push({price:p.breakout,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:tag});
+    if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase()});
+    if(p.target!=null)out.push({price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido'});
+  }
+  let f=rec.fib;
+  if(f&&f.levels){
+    for(let k of ['38.2','50','61.8']){
+      let v=f.levels[k];
+      if(v!=null)out.push({price:v,color:'#a8a29e',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'Fib '+k+'%'});
+    }
+  }
+  return out;
+}
+
 function _recDecorate(rec){
   // {priceLines, markers} para tarjetas de recomendación (acciones y ETF)
   let priceLines=[],markers=[];
@@ -4350,6 +4460,7 @@ function _recDecorate(rec){
     priceLines.push({price:rec.entry_high,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:false,title:''});
   if(rec.target!=null)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
   if(rec.stop_loss!=null)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
+  priceLines=priceLines.concat(_patternPriceLines(rec));
   if(rec.chart_markers&&rec.chart_markers.length>0)markers=rec.chart_markers.slice().sort((a,b)=>a.time<b.time?-1:1);
   return {priceLines:priceLines,markers:markers};
 }
@@ -4470,6 +4581,7 @@ function renderTop3(top3){
         let bearT=_labelIsBearish(r.signal_label||r.signal);
         html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(r.target_pct).toFixed(0)+'%</span>';
       }
+      html+=figChips(r);
       html+='</div>';
       html+='</div>';
     }
@@ -4570,6 +4682,10 @@ function buildTechSummary(r){
     else if(c===0) parts.push('<span style="color:var(--dim)">NEUTRAL</span> — Ningun indicador activo');
     else parts.push('<span style="color:var(--hold)">'+sl+'</span> — '+c+'/3 indicadores activos, sin tendencia clara');
   }
+
+  // 1b. Figura tecnica + Fibonacci (patterns.py)
+  if(r.pattern)parts.push('<span style="color:#7c3aed;font-weight:600" title="'+String(r.pattern.text||'').replace(/"/g,'&quot;')+'">'+r.pattern.name+'</span> ('+r.pattern.status+')');
+  if(r.fib&&r.fib.at)parts.push('precio en nivel Fib '+r.fib.at+'%');
 
   // 2. RSI
   if(rsi!=null&&!isNaN(rsi)){
@@ -4975,7 +5091,7 @@ function destroyEtfDetailCharts(idx){scDestroy(_scReg['etf_'+idx]);_scReg['etf_'
 function renderEtfDetailCharts(idx,sym,period){
   if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'etf_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
+    decorate:{priceLines:_patternPriceLines(r)},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
   _etfCharts[idx]=1;
 }
 
@@ -5335,6 +5451,7 @@ function renderEtfTop3(top3){
       html+='<div class="rec-thesis-meta">';
       if(r.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+r.horizon+'</span>';
       if(r.target_pct){let bearT=_labelIsBearish(sl);html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(r.target_pct).toFixed(0)+'%</span>';}
+      html+=figChips(r);
       html+='</div></div>';
     }
 
@@ -6621,6 +6738,8 @@ def api_data():
                 "dollar_vol": float(sig.get("dollar_vol", 0)),
                 "values": sig.get("values", {}),
                 "chart": sig.get("chart"),
+                "pattern": sig.get("pattern"),
+                "fib": sig.get("fib"),
             }
 
             # Backtest metrics
@@ -6682,6 +6801,8 @@ def api_etf_data():
                 "dollar_vol": float(sig.get("dollar_vol", 0)),
                 "values": sig.get("values", {}),
                 "chart": sig.get("chart"),
+                "pattern": sig.get("pattern"),
+                "fib": sig.get("fib"),
             }
 
             bt = sig.get("backtest", {})
@@ -7175,6 +7296,30 @@ def _compute_position_verdict(data, position, levels=None):
                        f"caida proyectada -{downside:.0f}% hasta ${target_sug:.2f} contra +{to_invalid:.0f}% para anular la lectura",
                        "bear", 6)
 
+    # 9e) Figura tecnica chartista (patterns.py): confirmada pesa mas que en
+    #     formacion. Peso acotado hasta que la calibracion demuestre mas edge.
+    pat_v = data.get("pattern") or {}
+    pat_dir = pat_v.get("direction")
+    if pat_dir in ("alcista", "bajista"):
+        w_pat = {"confirmada": 8, "por confirmar": 5,
+                 "en formacion": 4, "vigente": 3}.get(pat_v.get("status"), 3)
+        detail = f"{pat_v.get('name', 'figura')} {pat_v.get('status', '')}".strip()
+        if pat_v.get("target"):
+            detail += f" (objetivo medido ${pat_v['target']:.2f})"
+        if pat_dir == "alcista":
+            bull += _f("Figura tecnica", detail, "bull", w_pat)
+        else:
+            bear += _f("Figura tecnica", detail, "bear", w_pat)
+    # 9f) Fibonacci: precio apoyado/frenado en un retroceso profundo del impulso
+    fib_v = data.get("fib") or {}
+    if fib_v.get("at") in ("50", "61.8", "78.6"):
+        if fib_v.get("dir") == "alcista":
+            bull += _f("Fibonacci", f"precio apoyado en el retroceso {fib_v['at']}% "
+                       f"del impulso alcista", "bull", 3)
+        elif fib_v.get("dir") == "bajista":
+            bear += _f("Fibonacci", f"precio frenado en el retroceso {fib_v['at']}% "
+                       f"del impulso bajista", "bear", 3)
+
     # 10) Backtest 5Y (peso 10)
     if is_bearish:
         wr = bt.get("sell_win_rate") or 0
@@ -7456,6 +7601,13 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
     slope = tech.get("chan_slope") or 0
     if abs(slope) >= 0.03:
         struct_bits.append("canal de tendencia " + ("ascendente" if slope > 0 else "descendente"))
+    # Figura tecnica + Fibonacci (patterns.py) — la misma que pondera el veredicto
+    pat_n = data.get("pattern") or {}
+    if pat_n.get("text"):
+        struct_bits.insert(0, pat_n["text"])
+    fib_n = data.get("fib") or {}
+    if fib_n.get("at") and fib_n.get("text"):
+        struct_bits.append("Fibonacci: " + fib_n["text"])
     if struct_bits:
         p2 += " En el grafico: " + "; ".join(struct_bits) + "."
     parts.append(p2)
@@ -7721,6 +7873,8 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "expected_move_pct": levels.get("expected_move_pct", None),
         "horizon": levels.get("horizon_weeks", ""),
         "thesis": thesis,
+        "pattern": data.get("pattern"),
+        "fib": data.get("fib"),
         "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
                      else bt.get("buy_win_rate", 0)) or 0,
         "avg_return": (bt.get("sell_avg_return") if _label_is_bearish(data.get("signal_label", sig))
