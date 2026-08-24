@@ -550,6 +550,7 @@ def api_data():
             "chart": sig.get("chart"),
             "pattern": sig.get("pattern"),
             "fib": sig.get("fib"),
+            "candles": sig.get("candles"),
             "confidence": bt.get("confidence", 0),
             "buy_avg_return": bt.get("buy_avg_return"),
             "sell_avg_return": bt.get("sell_avg_return"),
@@ -611,6 +612,7 @@ def api_etf_data():
             "chart": sig.get("chart"),
             "pattern": sig.get("pattern"),
             "fib": sig.get("fib"),
+            "candles": sig.get("candles"),
             "confidence": bt.get("confidence", 0),
             "buy_avg_return": bt.get("buy_avg_return"),
             "sell_avg_return": bt.get("sell_avg_return"),
@@ -809,6 +811,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "thesis": thesis,
         "pattern": data.get("pattern"),
         "fib": data.get("fib"),
+        "candles": data.get("candles"),
         "win_rate": (bt.get("sell_win_rate", 0) if sig == "SELL"
                      else bt.get("buy_win_rate", 0)) or 0,
         "avg_return": (bt.get("sell_avg_return") if sig == "SELL"

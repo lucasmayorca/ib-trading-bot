@@ -772,6 +772,203 @@ def fibonacci(highs, lows, closes, atr, lookback=180):
 
 
 # ══════════════════════════════════════════════════════════════
+#  PATRONES DE VELAS (timing de entrada de corto plazo, sobre el diario)
+# ══════════════════════════════════════════════════════════════
+
+def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3):
+    """Patrones de VELAS japonesas sobre las ultimas `lookback` ruedas del
+    grafico DIARIO: reversion (martillo, envolvente, estrella de la mañana/
+    tarde, penetrante, pinzas, harami), continuacion (tres soldados/cuervos,
+    marubozu) e indecision (doji). Son señales de TIMING de corto plazo para
+    ajustar la entrada — no pesan en score ni veredicto.
+
+    Confirmacion: un patron direccional queda "confirmada" si el cierre
+    SIGUIENTE avanza en su direccion; si el cierre siguiente lo niega
+    (cierra mas alla del extremo opuesto del patron) se descarta; la vela de
+    hoy queda "por confirmar". Patrones viejos sin confirmar (>2 ruedas) se
+    descartan — el timing caduca rapido.
+
+    Cada item: {name, short, direction, kind, off, status, text}
+    ordenados del mas reciente al mas viejo, maximo `max_out`."""
+    opens = _sanitize(opens)
+    highs = _sanitize(highs)
+    lows = _sanitize(lows)
+    closes = _sanitize(closes)
+    n = len(closes)
+    if n < 30 or len(opens) != n or len(highs) != n or len(lows) != n:
+        return []
+    if not atr:
+        atr = _atr_arr(highs, lows, closes) or (closes[-1] * 0.02 if closes[-1] else None)
+    if not atr or atr <= 0:
+        return []
+
+    def body(i):
+        return abs(closes[i] - opens[i])
+
+    def rng(i):
+        return highs[i] - lows[i]
+
+    def upper(i):
+        return highs[i] - max(opens[i], closes[i])
+
+    def lower(i):
+        return min(opens[i], closes[i]) - lows[i]
+
+    def bull(i):
+        return closes[i] > opens[i]
+
+    def bear(i):
+        return closes[i] < opens[i]
+
+    def drift(i, k=5):
+        """Deriva del precio en las ~k ruedas previas a i (incluida i)."""
+        j = max(0, i - k)
+        return closes[i] - closes[j]
+
+    def _engulf(i):
+        return (max(opens[i], closes[i]) >= max(opens[i - 1], closes[i - 1])
+                and min(opens[i], closes[i]) <= min(opens[i - 1], closes[i - 1]))
+
+    def _at(i):
+        """Mejor patron que TERMINA en la vela i (o None). Tuplas
+        (name, short, direction, kind, prio)."""
+        if i < 8:
+            return None
+        b, r = body(i), rng(i)
+        if r <= 0:
+            return None
+        b1 = body(i - 1)
+        cands = []
+        pre_dn1, pre_up1 = drift(i - 1) <= -0.8 * atr, drift(i - 1) >= 0.8 * atr
+        pre_dn2, pre_up2 = drift(i - 2) <= -0.8 * atr, drift(i - 2) >= 0.8 * atr
+        pre_dn3, pre_up3 = drift(i - 3) <= -0.8 * atr, drift(i - 3) >= 0.8 * atr
+
+        # ── 3 velas ──
+        b2 = body(i - 2)
+        mid2 = (opens[i - 2] + closes[i - 2]) / 2
+        if (b2 >= 0.8 * atr and bear(i - 2) and b1 <= 0.4 * b2
+                and bull(i) and closes[i] >= mid2 and pre_dn3):
+            cands.append(("Estrella de la mañana", "Estr. mañana", "alcista", "reversion", 86))
+        if (b2 >= 0.8 * atr and bull(i - 2) and b1 <= 0.4 * b2
+                and bear(i) and closes[i] <= mid2 and pre_up3):
+            cands.append(("Estrella de la tarde", "Estr. tarde", "bajista", "reversion", 86))
+        if (all(bull(i - k) for k in (0, 1, 2))
+                and all(body(i - k) >= 0.6 * atr for k in (0, 1, 2))
+                and closes[i] > closes[i - 1] > closes[i - 2]
+                and upper(i) <= 0.35 * max(b, 1e-9)):
+            cands.append(("Tres soldados blancos", "3 soldados", "alcista", "continuacion", 80))
+        if (all(bear(i - k) for k in (0, 1, 2))
+                and all(body(i - k) >= 0.6 * atr for k in (0, 1, 2))
+                and closes[i] < closes[i - 1] < closes[i - 2]
+                and lower(i) <= 0.35 * max(b, 1e-9)):
+            cands.append(("Tres cuervos negros", "3 cuervos", "bajista", "continuacion", 80))
+
+        # ── 2 velas ──
+        if b1 >= 0.3 * atr and b >= 1.05 * b1 and _engulf(i):
+            if bull(i) and bear(i - 1) and pre_dn2:
+                cands.append(("Envolvente alcista", "Envolvente", "alcista", "reversion", 84))
+            if bear(i) and bull(i - 1) and pre_up2:
+                cands.append(("Envolvente bajista", "Envolvente", "bajista", "reversion", 84))
+        mid1 = (opens[i - 1] + closes[i - 1]) / 2
+        if (bear(i - 1) and b1 >= 0.7 * atr and bull(i) and opens[i] <= closes[i - 1]
+                and mid1 <= closes[i] < opens[i - 1] and pre_dn2):
+            cands.append(("Linea penetrante", "Penetrante", "alcista", "reversion", 70))
+        if (bull(i - 1) and b1 >= 0.7 * atr and bear(i) and opens[i] >= closes[i - 1]
+                and opens[i - 1] < closes[i] <= mid1 and pre_up2):
+            cands.append(("Nube oscura", "Nube oscura", "bajista", "reversion", 70))
+        if (b1 >= 1.0 * atr and b <= 0.5 * b1
+                and max(opens[i], closes[i]) <= max(opens[i - 1], closes[i - 1])
+                and min(opens[i], closes[i]) >= min(opens[i - 1], closes[i - 1])):
+            if bear(i - 1) and pre_dn2:
+                cands.append(("Harami alcista", "Harami", "alcista", "reversion", 62))
+            elif bull(i - 1) and pre_up2:
+                cands.append(("Harami bajista", "Harami", "bajista", "reversion", 62))
+        if (abs(lows[i] - lows[i - 1]) <= 0.12 * atr and pre_dn2
+                and min(lower(i), lower(i - 1)) >= 0.3 * atr):
+            cands.append(("Pinzas de piso", "Pinzas", "alcista", "reversion", 60))
+        if (abs(highs[i] - highs[i - 1]) <= 0.12 * atr and pre_up2
+                and min(upper(i), upper(i - 1)) >= 0.3 * atr):
+            cands.append(("Pinzas de techo", "Pinzas", "bajista", "reversion", 60))
+
+        # ── 1 vela ──
+        if r >= 0.6 * atr:
+            small = b <= 0.35 * r
+            if small and lower(i) >= 2 * max(b, 0.05 * r) and upper(i) <= 0.2 * r:
+                if pre_dn1:
+                    cands.append(("Martillo", "Martillo", "alcista", "reversion", 75))
+                elif pre_up1:
+                    cands.append(("Hombre colgado", "H. colgado", "bajista", "reversion", 65))
+            if small and upper(i) >= 2 * max(b, 0.05 * r) and lower(i) <= 0.2 * r:
+                if pre_up1:
+                    cands.append(("Estrella fugaz", "Estr. fugaz", "bajista", "reversion", 75))
+                elif pre_dn1:
+                    cands.append(("Martillo invertido", "Mart. inv.", "alcista", "reversion", 65))
+            if b <= 0.1 * r and r >= 0.8 * atr and (pre_dn1 or pre_up1):
+                cands.append(("Doji", "Doji", "neutral", "indecision", 50))
+            if b >= 0.85 * r and r >= 1.1 * atr:
+                d = "alcista" if bull(i) else "bajista"
+                cands.append((f"Marubozu {d}", "Marubozu", d, "continuacion", 55))
+
+        if not cands:
+            return None
+        return max(cands, key=lambda t: t[4])
+
+    out = []
+    seen = set()   # un patron multi-vela se re-detecta en ruedas consecutivas: contarlo una vez
+    for i in range(n - 1, max(8, n - 1 - lookback), -1):
+        t = _at(i)
+        if not t:
+            continue
+        name, short, d, kind, _prio = t
+        if name in seen:
+            continue
+        seen.add(name)
+        off = n - 1 - i
+        # Confirmacion con el cierre siguiente (si existe)
+        if off == 0:
+            status = "por confirmar"
+        elif d in ("alcista", "bajista"):
+            nxt = closes[i + 1]
+            hi_ref = max(opens[i], closes[i])
+            lo_ref = min(opens[i], closes[i])
+            if d == "alcista":
+                if nxt >= hi_ref + 0.1 * atr:
+                    status = "confirmada"
+                elif nxt <= lows[i] - 0.1 * atr:
+                    continue                      # negada por el cierre siguiente
+                else:
+                    status = "sin confirmacion"
+            else:
+                if nxt <= lo_ref - 0.1 * atr:
+                    status = "confirmada"
+                elif nxt >= highs[i] + 0.1 * atr:
+                    continue
+                else:
+                    status = "sin confirmacion"
+            if status == "sin confirmacion" and off > 2:
+                continue                          # timing caducado
+        else:
+            if off > 1:
+                continue                          # la indecision caduca en 1 rueda
+            status = "por confirmar"
+        if d == "neutral" and off > 1:
+            continue
+        cuando = "en la ultima vela" if off == 0 else (
+            "hace 1 rueda" if off == 1 else f"hace {off} ruedas")
+        kind_txt = {"reversion": f"patron de reversion {d}",
+                    "continuacion": f"continuacion {d}",
+                    "indecision": "indecision — posible giro"}[kind]
+        out.append({
+            "name": name, "short": short, "direction": d, "kind": kind,
+            "off": int(off), "status": status,
+            "text": f"{name} {cuando} ({status}) — {kind_txt}",
+        })
+        if len(out) >= max_out:
+            break
+    return out
+
+
+# ══════════════════════════════════════════════════════════════
 #  API PRINCIPAL
 # ══════════════════════════════════════════════════════════════
 
@@ -852,7 +1049,9 @@ def attach_to_analysis(sig):
         if len(ohlc) < 60:
             sig["pattern"] = None
             sig["fib"] = None
+            sig["candles"] = []
             return sig
+        opens = [b.get("open") for b in ohlc]
         highs = [b.get("high") for b in ohlc]
         lows = [b.get("low") for b in ohlc]
         closes = [b.get("close") for b in ohlc]
@@ -868,9 +1067,15 @@ def attach_to_analysis(sig):
                 main["secondary"] = sec["text"]
         sig["pattern"] = main
         sig["fib"] = res["fibonacci"]
+        # Velas japonesas de las ultimas ruedas: timing de entrada de corto
+        try:
+            sig["candles"] = detect_candles(opens, highs, lows, closes)
+        except Exception:
+            sig["candles"] = []
     except Exception:
         sig["pattern"] = None
         sig["fib"] = None
+        sig["candles"] = []
     return sig
 
 

@@ -1153,6 +1153,8 @@ def _generate_rationale(sym, data, levels=None):
     fibd = data.get("fib")
     if fibd and fibd.get("text") and fibd.get("relevant", True):
         parts.append(f"Fibonacci: {fibd['text']}")
+    for c in (data.get("candles") or [])[:2]:
+        parts.append(f"Vela: {c['text']}")
 
     # 3. Trend from MAs
     sma200 = mas.get("sma200_val")
@@ -1539,6 +1541,11 @@ def _generate_thesis(sym, data, levels, fund):
     if fig_bits:
         lines.append("Figura tecnica: " + ". ".join(fig_bits) + ".")
 
+    # --- Line 5c: Velas japonesas recientes (timing de entrada de corto) ---
+    cnds = data.get("candles") or []
+    if cnds:
+        lines.append("Velas (timing corto): " + "; ".join(c["text"] for c in cnds[:2]) + ".")
+
     # --- Line 6 (optional): Fundamental support ---
     if fund:
         fline_parts = []
@@ -1775,6 +1782,7 @@ def compute_top3(cache, min_target_pct=None):
             "thesis": thesis,
             "pattern": data.get("pattern"),
             "fib": data.get("fib"),
+            "candles": data.get("candles"),
             "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
                          else bt.get("buy_win_rate", 0)) or 0,
             "avg_return": (bt.get("sell_avg_return") if _label_is_bearish(data.get("signal_label", sig))
@@ -2175,6 +2183,8 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-thesis-target{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(11,122,75,.12);color:var(--buy)}
 .rec-sell .rec-thesis-target,.rec-thesis-target.neg{background:rgba(194,36,54,.12);color:var(--sell)}
 .rec-thesis-fig{display:inline-block;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;background:rgba(124,58,237,.12);color:#7c3aed;cursor:help}
+.rec-thesis-vela.vela-up{background:rgba(11,122,75,.12);color:var(--buy)}
+.rec-thesis-vela.vela-dn{background:rgba(194,36,54,.12);color:var(--sell)}
 /* Research row (below chart) */
 .rec-research-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:16px}
 .rec-research-panel{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:16px;min-height:80px}
@@ -3295,6 +3305,7 @@ function _portAnalDecorate(rec,pos,ch){
     for(let d in byDay){let g=byDay[d];markers.push({time:g.time,position:'belowBar',color:'#2563eb',shape:'arrowUp',text:'C '+g.qty.toFixed(0)+' @ $'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':'')});}
   }catch(e){}
   try{markers=markers.concat(_figDrawMarkers(rec&&rec.pattern,ch&&ch.ohlc));}catch(e){}
+  try{markers=markers.concat(_candleMarkers(rec&&rec.candles,ch&&ch.ohlc));}catch(e){}
   markers.sort((a,b)=>a.time<b.time?-1:1);
   return {priceLines:priceLines,markers:markers,
     lines:_figDrawLines(rec&&rec.pattern).concat(_fibDrawLines(rec&&rec.fib)),
@@ -4375,7 +4386,7 @@ function scStackHTML(key,legendHTML){
 function renderDetailCharts(idx,sym,period){
   if(!_data)return;let r=_data.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'scan_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc).concat(_candleMarkers(r.candles,r.chart.ohlc)).sort((a,b)=>a.time<b.time?-1:1),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
   _charts[idx]=1;
 }
 
@@ -4416,6 +4427,12 @@ function figChips(r){
   }
   if(r&&r.fib&&r.fib.at){
     h+='<span class="rec-thesis-fig" title="'+String(r.fib.text||'').replace(/"/g,'&quot;')+'">Fib '+r.fib.at+'%</span>';
+  }
+  // Vela japonesa mas reciente (timing de entrada de corto)
+  if(r&&r.candles&&r.candles.length){
+    let c=r.candles[0];
+    let cls=c.direction==='alcista'?'vela-up':(c.direction==='bajista'?'vela-dn':'');
+    h+='<span class="rec-thesis-fig rec-thesis-vela '+cls+'" title="'+String(c.text||'').replace(/"/g,'&quot;')+'">Vela: '+c.name+(c.status==='confirmada'?' ✓':(c.status==='por confirmar'?' ?':''))+'</span>';
   }
   return h;
 }
@@ -4652,6 +4669,26 @@ function _figDrawMarkers(p,ohlc){
   return out;
 }
 
+// Marcadores de patrones de VELAS japonesas (timing corto): flecha verde/roja
+// en la vela del patron, con nombre corto y estado (✓ confirmada, ? por confirmar)
+function _candleMarkers(cnds,ohlc){
+  let out=[];
+  if(!cnds||!cnds.length||!ohlc||!ohlc.length)return out;
+  for(let c of cnds){
+    try{
+      let i=ohlc.length-1-(c.off||0);
+      if(i<0||i>=ohlc.length||!ohlc[i]||!ohlc[i].time)continue;
+      let isBull=c.direction==='alcista';
+      let col=isBull?'#0b7a4b':(c.direction==='bajista'?'#c22436':'#6d7480');
+      let suf=c.status==='confirmada'?' \u2713':(c.status==='por confirmar'?' ?':'');
+      out.push({time:ohlc[i].time,position:isBull?'belowBar':'aboveBar',color:col,
+        shape:isBull?'arrowUp':(c.direction==='bajista'?'arrowDown':'circle'),
+        text:(c.short||c.name)+suf});
+    }catch(e){}
+  }
+  return out;
+}
+
 function _recDecorate(rec,ch){
   // {priceLines, markers, lines} para tarjetas de recomendación (acciones y ETF)
   let priceLines=[],markers=[];
@@ -4663,6 +4700,7 @@ function _recDecorate(rec,ch){
   priceLines=priceLines.concat(_patternPriceLines(rec));
   if(rec.chart_markers&&rec.chart_markers.length>0)markers=rec.chart_markers.slice();
   markers=markers.concat(_figDrawMarkers(rec.pattern,ch&&ch.ohlc));
+  markers=markers.concat(_candleMarkers(rec.candles,ch&&ch.ohlc));
   markers.sort((a,b)=>a.time<b.time?-1:1);
   return {priceLines:priceLines,markers:markers,
     lines:_figDrawLines(rec.pattern).concat(_fibDrawLines(rec.fib)),
@@ -5295,7 +5333,7 @@ function destroyEtfDetailCharts(idx){scDestroy(_scReg['etf_'+idx]);_scReg['etf_'
 function renderEtfDetailCharts(idx,sym,period){
   if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'etf_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc).concat(_candleMarkers(r.candles,r.chart.ohlc)).sort((a,b)=>a.time<b.time?-1:1),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
   _etfCharts[idx]=1;
 }
 
@@ -5408,7 +5446,10 @@ function _mpDecorate(){
   let pat=_mpData&&_mpData.pattern;
   let fb=_mpData&&_mpData.fibonacci;
   lines=lines.concat(_figDrawLines(pat)).concat(_fibDrawLines(fb));
-  let markers=_figDrawMarkers(pat,_mpData&&_mpData.chart?_mpData.chart.ohlc:null);
+  let _mpOhlc=_mpData&&_mpData.chart?_mpData.chart.ohlc:null;
+  let markers=_figDrawMarkers(pat,_mpOhlc)
+    .concat(_candleMarkers(_mpData&&_mpData.candles,_mpOhlc))
+    .sort((a,b)=>a.time<b.time?-1:1);
   let labels=_figLabels(pat).concat(_fibLabels(fb));
   return {priceLines:pls,lines:lines,markers:markers,labels:labels};
 }
@@ -6950,6 +6991,7 @@ def api_data():
                 "chart": sig.get("chart"),
                 "pattern": sig.get("pattern"),
                 "fib": sig.get("fib"),
+                "candles": sig.get("candles"),
             }
 
             # Backtest metrics
@@ -7013,6 +7055,7 @@ def api_etf_data():
                 "chart": sig.get("chart"),
                 "pattern": sig.get("pattern"),
                 "fib": sig.get("fib"),
+                "candles": sig.get("candles"),
             }
 
             bt = sig.get("backtest", {})
@@ -8085,6 +8128,7 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "thesis": thesis,
         "pattern": data.get("pattern"),
         "fib": data.get("fib"),
+        "candles": data.get("candles"),
         "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
                      else bt.get("buy_win_rate", 0)) or 0,
         "avg_return": (bt.get("sell_avg_return") if _label_is_bearish(data.get("signal_label", sig))

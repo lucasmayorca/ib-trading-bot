@@ -628,6 +628,10 @@ def _build_pulse():
                    "text": levels_text},
         "pattern": pattern,
         "fibonacci": fib,
+        # Velas japonesas recientes (timing corto, cierres confirmados)
+        "candles": patterns.detect_candles(
+            df["open"].tolist(), df["high"].tolist(),
+            df["low"].tolist(), df["close"].tolist()),
         "conditions": {"buy": buy_c, "sell": sell_c},
         "session": session,
         "reading": reading,

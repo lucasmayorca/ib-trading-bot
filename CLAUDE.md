@@ -297,6 +297,18 @@ labels can be directional while `signal` is still HOLD.
   ≤40 ruedas?) por tipo. Los pesos de score/veredicto son deliberadamente chicos hasta que esa
   evidencia justifique subirlos (primer corte MSFT+SPY: banderas alcistas ~55%, HCH inv ~57%,
   cuñas rotas ~26% — las cuñas rotas son sospechosas).
+- **Velas japonesas (2026-08, timing de entrada de corto)**: `patterns.detect_candles(opens,highs,
+  lows,closes)` — reversion (martillo, envolvente, estrella mañana/tarde, penetrante/nube oscura,
+  pinzas, harami), continuacion (3 soldados/cuervos, marubozu) e indecision (doji), sobre las
+  ultimas ~10 ruedas DIARIAS con contexto de tendencia previa (drift 5 ruedas vs 0.8·ATR).
+  **Confirmacion**: el cierre SIGUIENTE valida ("confirmada"), niega (se descarta) o deja
+  "sin confirmacion" (caduca a las 2 ruedas); la vela de hoy queda "por confirmar"; dedup por
+  nombre (un 3-velas se re-detecta en ruedas consecutivas); max 3, mas recientes primero. Es capa
+  de TIMING: NO pesa en score/veredicto. Payload `candles` en analisis/top3/deep/pulso (attach_
+  to_analysis lo adjunta; cloud hereda). UI: markers flecha verde/roja en la vela (`_candleMarkers`,
+  "Envolvente ✓" / "? por confirmar"), chip `Vela: <nombre>` verde/rojo (`figChips`), linea
+  "Velas (timing corto):" en tesis y "Vela:" en racional. Solo vistas diarias (los markers van
+  con fechas diarias; en intradia no matchean y no se dibujan).
 - Gotcha: `signals.py` NO se toca — las figuras son contexto/niveles, nunca gatillo de orden.
   Los tests sintéticos exigen techos separados ≥12 ruedas (dobles) y ciclos ~12 ruedas (triples).
 
