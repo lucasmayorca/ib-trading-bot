@@ -167,6 +167,16 @@ def _restore_stores():
             continue
         store = get_user_store(user_id)   # seeds defaults, then overlay
         data["connected"] = False         # bridge isn't connected yet post-restart
+        # Figuras tecnicas: los snapshots persistidos ANTES de un deploy que
+        # cambio patterns.py no las traen (o las traen viejas) — recomputar
+        # aca cubre el arranque con bridge offline hasta el proximo batch.
+        try:
+            from patterns import attach_to_analysis
+            for key in ("analysis", "etf_analysis"):
+                for sym, sig in (data.get(key) or {}).items():
+                    attach_to_analysis(sig)
+        except Exception as e:
+            print(f"[RESTORE] pattern attach failed: {e}", flush=True)
         store.update(data)
         restored += 1
     print(f"[RESTORE] Restored {restored} user store(s) from DB", flush=True)
@@ -538,6 +548,8 @@ def api_data():
             "dollar_vol": float(sig.get("dollar_vol", 0)),
             "values": sig.get("values", {}),
             "chart": sig.get("chart"),
+            "pattern": sig.get("pattern"),
+            "fib": sig.get("fib"),
             "confidence": bt.get("confidence", 0),
             "buy_avg_return": bt.get("buy_avg_return"),
             "sell_avg_return": bt.get("sell_avg_return"),
@@ -597,6 +609,8 @@ def api_etf_data():
             "dollar_vol": float(sig.get("dollar_vol", 0)),
             "values": sig.get("values", {}),
             "chart": sig.get("chart"),
+            "pattern": sig.get("pattern"),
+            "fib": sig.get("fib"),
             "confidence": bt.get("confidence", 0),
             "buy_avg_return": bt.get("buy_avg_return"),
             "sell_avg_return": bt.get("sell_avg_return"),
