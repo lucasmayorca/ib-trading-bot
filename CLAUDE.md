@@ -286,8 +286,12 @@ labels can be directional while `signal` is still HOLD.
   extrapolada a hoy, índices `i_v1/i_v2`), no un promedio horizontal. `decorate.labels`
   ([{off,price,text,color,bold}]) viaja por los 6 decorates + `_mpDecorate`; scBuild convierte
   off→índice lógico y ancla al borde izquierdo si el inicio quedó fuera de la vista. Detección
-  SIEMPRE sobre el histórico diario completo; el dibujo aparece en todas las vistas diarias
+  SIEMPRE sobre el histórico diario completo (5Y); el dibujo aparece en todas las vistas diarias
   (ALL/5Y/1Y/3M, los arrays son sufijos del mismo eje) y el preset de período sigue en 1Y.
+  **En las vistas intradía (1M/1W/1D) las figuras NO se consideran en absoluto** (decisión del
+  usuario: figuras de menor plazo no son fiables): los trazos/labels ya se omitían por `timeVis`
+  y las priceLines de figura/fib llevan `fig:true` para que scBuild también las saltee ahí —
+  solo Entrada/Target/Stop del sistema persisten en intradía.
 - **Validación (evidencia, no fe)**: `patterns.validate_universe` en `/api/calibration` recorre 5Y
   detectando figuras confirmadas con target y mide hit-rate (¿target antes que invalidación, en
   ≤40 ruedas?) por tipo. Los pesos de score/veredicto son deliberadamente chicos hasta que esa

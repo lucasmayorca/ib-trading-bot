@@ -4211,7 +4211,10 @@ function scBuild(key,data,decorate,heights){
       // para el hover: resaltar la linea bajo el cursor + tooltip descriptivo.
       let hoverables=[];
       (decorate.priceLines||[]).forEach(pl=>{try{
-        let opts=Object.assign({},pl);delete opts.tip;
+        // Figuras/fib se forman en el grafico DIARIO (5y): en las vistas
+        // intradia (1M/1W/1D) no se consideran — menos fiables en ese plazo
+        if(data.timeVis&&pl.fig)return;
+        let opts=Object.assign({},pl);delete opts.tip;delete opts.fig;
         let ref=cs.createPriceLine(opts);
         hoverables.push({kind:'pl',ref:ref,price:pl.price,w:pl.lineWidth||1,label:pl.title||'',tip:pl.tip||''});
       }catch(e){}});
@@ -4543,9 +4546,9 @@ function _patternPriceLines(rec){
   let p=rec.pattern;
   if(p){
     let tag=p.name||'Figura';
-    if(p.breakout!=null)out.push({price:p.breakout,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:tag,tip:p.text||tag});
-    if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase(),tip:'Si el precio cruza este nivel, la figura se ANULA — '+(p.text||tag)});
-    if(p.target!=null)out.push({price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido',tip:'Objetivo MEDIDO de la figura (altura proyectada desde la ruptura) — '+(p.text||tag)});
+    if(p.breakout!=null)out.push({fig:true,price:p.breakout,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:tag,tip:p.text||tag});
+    if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({fig:true,price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase(),tip:'Si el precio cruza este nivel, la figura se ANULA — '+(p.text||tag)});
+    if(p.target!=null)out.push({fig:true,price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido',tip:'Objetivo MEDIDO de la figura (altura proyectada desde la ruptura) — '+(p.text||tag)});
   }
   // Fibonacci ya NO va como priceLine de ancho completo: se dibuja estilo
   // investing.com (segmentos desde el inicio del impulso + etiquetas) via
@@ -4553,7 +4556,7 @@ function _patternPriceLines(rec){
   // conserva su etiqueta en el eje de precios.
   let f=rec.fib;
   if(f&&f.levels&&f.relevant!==false&&f.at&&f.levels[f.at]!=null){
-    out.push({price:f.levels[f.at],color:'#a16207',lineWidth:1,
+    out.push({fig:true,price:f.levels[f.at],color:'#a16207',lineWidth:1,
       lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,
       title:'Fib '+f.at+'%',
       tip:'El precio esta apoyado en el nivel Fibonacci '+f.at+'% — '+(f.text||'')});
