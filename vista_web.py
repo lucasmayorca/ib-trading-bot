@@ -3261,7 +3261,7 @@ function scrollToPortPosition(sym){
 let _portAnalCharts={};
 let _portAnalPeriods={};
 
-function _portAnalDecorate(rec,pos){
+function _portAnalDecorate(rec,pos,ch){
   // Devuelve {priceLines, markers} para el panel de velas (Costo/Target/Stop
   // del sistema + SL/TP REALES activos en IB + orden pendiente + fills)
   let priceLines=[],markers=[];
@@ -3292,9 +3292,10 @@ function _portAnalDecorate(rec,pos){
       else{let g=byDay[d];let tot=g.qty+(f.qty||0);g.price=tot>0?((g.price*g.qty)+(f.price*(f.qty||0)))/tot:f.price;g.qty=tot;g.n++;}
     }
     for(let d in byDay){let g=byDay[d];markers.push({time:g.time,position:'belowBar',color:'#2563eb',shape:'arrowUp',text:'C '+g.qty.toFixed(0)+' @ $'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':'')});}
-    markers.sort((a,b)=>a.time<b.time?-1:1);
   }catch(e){}
-  return {priceLines:priceLines,markers:markers};
+  try{markers=markers.concat(_figDrawMarkers(rec.pattern,ch&&ch.ohlc));}catch(e){}
+  markers.sort((a,b)=>a.time<b.time?-1:1);
+  return {priceLines:priceLines,markers:markers,lines:_figDrawLines(rec&&rec.pattern)};
 }
 
 function _portAnalDestroy(sym){scDestroy(_scReg['port_'+sym]);_scReg['port_'+sym]=null;delete _portAnalCharts[sym];}
@@ -3312,7 +3313,7 @@ function renderPortAnalCharts(sym,rec,pos,period){
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
   scRenderStack({key:'port_'+sym,symbol:sym,chart:ch,period:period,
-    decorate:_portAnalDecorate(rec,pos),heights:{candle:380,ind:124},
+    decorate:_portAnalDecorate(rec,pos,ch),heights:{candle:380,ind:124},
     getPeriod:()=>_portAnalPeriods[sym]});
   _portAnalCharts[sym]=1;
 }
@@ -3491,7 +3492,7 @@ function renderPortPendCharts(sym,rec,p,period){
   let ch=fullData?fullData.chart:null;
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
   scRenderStack({key:'pend_'+sym,symbol:sym,chart:ch,period:period,
-    decorate:_portAnalDecorate(rec,p),heights:{candle:380,ind:124},
+    decorate:_portAnalDecorate(rec,p,ch),heights:{candle:380,ind:124},
     getPeriod:()=>_portPendPeriods[sym]});
   _portPendCharts[sym]=1;
 }
@@ -4269,7 +4270,7 @@ function scStackHTML(key,legendHTML){
 function renderDetailCharts(idx,sym,period){
   if(!_data)return;let r=_data.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'scan_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r)},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern),markers:_figDrawMarkers(r.pattern,r.chart.ohlc)},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
   _charts[idx]=1;
 }
 
@@ -4452,8 +4453,48 @@ function _patternPriceLines(rec){
   return out;
 }
 
-function _recDecorate(rec){
-  // {priceLines, markers} para tarjetas de recomendación (acciones y ETF)
+// Geometria DIBUJADA de la figura (rectas del triangulo, neckline, palo y canal
+// de la bandera): pattern.draw.segments (x = offset desde la ultima barra) ->
+// decorate.lines (series en eje diario, alineadas al final del ohlc; scBuild
+// las paddea por la izquierda). Solo se ven en vistas diarias (!timeVis).
+function _figDrawLines(p){
+  let out=[];
+  if(!p||!p.draw||!p.draw.segments)return out;
+  for(let sg of p.draw.segments){
+    try{
+      if(sg.x0==null||sg.x1==null||sg.y0==null||sg.y1==null)continue;
+      let x0=Math.max(sg.x0,sg.x1),x1=Math.min(sg.x0,sg.x1);
+      if(x0===x1)continue;
+      let y0=(sg.x0>=sg.x1)?sg.y0:sg.y1,y1=(sg.x0>=sg.x1)?sg.y1:sg.y0;
+      let len=x0+1,span=x0-x1;
+      let vals=new Array(len).fill(null);
+      for(let k=0;k<=span;k++){
+        let off=x0-k;
+        vals[len-1-off]=y0+(y1-y0)*(k/span);
+      }
+      out.push({values:vals,color:'#7c3aedb8',width:sg.w||2,
+        style:sg.dash?LightweightCharts.LineStyle.Dashed:LightweightCharts.LineStyle.Solid});
+    }catch(e){}
+  }
+  return out;
+}
+// Marcadores de los pivotes de la figura (T = techo/piso tocado, H/C/H del HCH)
+function _figDrawMarkers(p,ohlc){
+  let out=[];
+  if(!p||!p.draw||!p.draw.points||!ohlc||!ohlc.length)return out;
+  for(let pt of p.draw.points){
+    try{
+      let i=ohlc.length-1-pt.x;
+      if(i<0||i>=ohlc.length||!ohlc[i]||!ohlc[i].time)continue;
+      out.push({time:ohlc[i].time,position:(pt.pos==='below')?'belowBar':'aboveBar',
+        color:'#7c3aed',shape:'circle',text:pt.label||''});
+    }catch(e){}
+  }
+  return out;
+}
+
+function _recDecorate(rec,ch){
+  // {priceLines, markers, lines} para tarjetas de recomendación (acciones y ETF)
   let priceLines=[],markers=[];
   if(rec.entry_low!=null)priceLines.push({price:rec.entry_low,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
   if(rec.entry_high!=null&&rec.entry_low!=null&&Math.abs(rec.entry_high-rec.entry_low)>0.01)
@@ -4461,8 +4502,10 @@ function _recDecorate(rec){
   if(rec.target!=null)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target'});
   if(rec.stop_loss!=null)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop'});
   priceLines=priceLines.concat(_patternPriceLines(rec));
-  if(rec.chart_markers&&rec.chart_markers.length>0)markers=rec.chart_markers.slice().sort((a,b)=>a.time<b.time?-1:1);
-  return {priceLines:priceLines,markers:markers};
+  if(rec.chart_markers&&rec.chart_markers.length>0)markers=rec.chart_markers.slice();
+  markers=markers.concat(_figDrawMarkers(rec.pattern,ch&&ch.ohlc));
+  markers.sort((a,b)=>a.time<b.time?-1:1);
+  return {priceLines:priceLines,markers:markers,lines:_figDrawLines(rec.pattern)};
 }
 
 function renderRecDetailCharts(idx,rec,period){
@@ -4479,7 +4522,7 @@ function renderRecDetailCharts(idx,rec,period){
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
   scRenderStack({key:'rec_'+idx,symbol:sym,chart:ch,period:period,
-    decorate:_recDecorate(rec),heights:{candle:380,ind:124},
+    decorate:_recDecorate(rec,ch),heights:{candle:380,ind:124},
     getPeriod:()=>_recPeriods[idx]});
   _recDetailCharts[idx]=1;
 }
@@ -5091,7 +5134,7 @@ function destroyEtfDetailCharts(idx){scDestroy(_scReg['etf_'+idx]);_scReg['etf_'
 function renderEtfDetailCharts(idx,sym,period){
   if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'etf_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r)},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern),markers:_figDrawMarkers(r.pattern,r.chart.ohlc)},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
   _etfCharts[idx]=1;
 }
 
@@ -5200,7 +5243,11 @@ function _mpDecorate(){
     lines.push({values:chn.top,color:'#2456e655',width:1});
     lines.push({values:chn.bot,color:'#2456e655',width:1});
   }
-  return {priceLines:pls,lines:lines};
+  // Geometria de la figura tecnica detectada (rectas/neckline/bandera)
+  let pat=_mpData&&_mpData.pattern;
+  lines=lines.concat(_figDrawLines(pat));
+  let markers=_figDrawMarkers(pat,_mpData&&_mpData.chart?_mpData.chart.ohlc:null);
+  return {priceLines:pls,lines:lines,markers:markers};
 }
 function _mpMountChart(){
   if(!_mpData||!_mpData.chart)return;
@@ -5382,7 +5429,7 @@ function renderEtfRecDetailCharts(idx,rec,period){
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
   scRenderStack({key:'etfrec_'+idx,symbol:sym,chart:ch,period:period,
-    decorate:_recDecorate(rec),heights:{candle:380,ind:124},
+    decorate:_recDecorate(rec,ch),heights:{candle:380,ind:124},
     getPeriod:()=>_etfRecPeriods[idx]});
   _etfRecDetailCharts[idx]=1;
 }

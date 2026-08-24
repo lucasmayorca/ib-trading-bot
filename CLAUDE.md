@@ -250,6 +250,17 @@ labels can be directional while `signal` is still HOLD.
   confirmada en contra). **UI**: chips violeta `.rec-thesis-fig` (tooltip = texto), línea en
   `buildTechSummary`, y `_patternPriceLines` dibuja ruptura/anulación/objetivo (violeta) + fib
   38.2/50/61.8 (gris punteado) en TODOS los stacks (scan/etf/rec/etfrec/port/pend).
+- **Geometría dibujada (2026-08)**: cada figura lleva `draw` — `segments` [{x0,y0,x1,y1,dash,w}]
+  y `points` [{x,y,label,pos}] con **x = offset desde la última barra** (0 = hoy). El JS los
+  convierte con `_figDrawLines` (interpola el segmento a un array right-aligned → `decorate.lines`,
+  el mismo mecanismo del canal del pulso: solo vistas diarias, `!timeVis`, scBuild paddea por la
+  izquierda) y `_figDrawMarkers` (offset→time vía ohlc; círculos violeta "T"/"H"/"C"). Geometrías:
+  doble/triple = nivel tocado (dash) + neckline + puntos T; HCH = neckline + puntos H/C/H;
+  triángulo/cuña = las 2 rectas del fit, **cada una desde SU primer pivote** (extrapolar al pivote
+  más viejo del otro lado la dibuja lejos de las velas); bandera = palo (w2) + canal (dash);
+  divergencia = recta entre los 2 pivotes de precio. Ruptura/cruce/canal-fallback NO llevan draw
+  (la priceLine horizontal ya es la figura). Conectado en los 6 decorates + `_mpDecorate` (pulso);
+  `_recDecorate` y `_portAnalDecorate` ahora reciben `ch` para mapear offsets a times de markers.
 - **Validación (evidencia, no fe)**: `patterns.validate_universe` en `/api/calibration` recorre 5Y
   detectando figuras confirmadas con target y mide hit-rate (¿target antes que invalidación, en
   ≤40 ruedas?) por tipo. Los pesos de score/veredicto son deliberadamente chicos hasta que esa

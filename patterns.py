@@ -25,6 +25,12 @@ Schema de cada figura (superset del que ya usaba el pulso — su JS lo ignora):
     "priority":     ranking interno para elegir la figura dominante,
     "text":         una frase en español lista para tesis/racional/narrativa,
     "secondary":    texto de una segunda figura relevante (solo en la principal),
+    "draw":         geometria DIBUJABLE de la figura (opcional): {
+                      "segments": [{"x0","y0","x1","y1","dash","w"}...],
+                      "points":   [{"x","y","label","pos"}...]
+                    } con x como OFFSET desde la ultima barra (0 = hoy) — el
+                    frontend lo convierte en series superpuestas del chart
+                    (rectas del triangulo, neckline, palo/canal de la bandera).
   }
 
 API:
@@ -200,12 +206,14 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
         if triple:
             idx_a, idx_b = i1, i3
             level = (p1 + p2 + p3) / 3
+            touch_pts = [(i1, p1), (i2, p2), (i3, p3)]
         else:
             (i1, p1), (i2, p2) = pivs[-2:]
             if abs(p1 - p2) > 0.6 * atr or (i2 - i1) < 12 or i2 < n - 45:
                 return None
             idx_a, idx_b = i1, i2
             level = (p1 + p2) / 2
+            touch_pts = [(i1, p1), (i2, p2)]
         seg = lows[idx_a:idx_b + 1] if is_top else highs[idx_a:idx_b + 1]
         neck = float(min(seg)) if is_top else float(max(seg))
         depth = (level - neck) if is_top else (neck - level)
@@ -243,10 +251,22 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
                    f"{'bajo' if is_top else 'sobre'} {_usd(_r(neck))} "
                    f"(proyectaria {_usd(_r(target))}); se anula "
                    f"{'sobre' if is_top else 'bajo'} {_usd(_r(invalid))}")
+        off_a = int(n - 1 - idx_a)
+        draw = {
+            "segments": [
+                # nivel de los techos/pisos tocados, a lo largo de la formacion
+                {"x0": off_a, "y0": _r(level), "x1": 0, "y1": _r(level), "dash": True},
+                # neckline (el nivel que confirma)
+                {"x0": off_a, "y0": _r(neck), "x1": 0, "y1": _r(neck), "dash": False},
+            ],
+            "points": [{"x": int(n - 1 - i), "y": _r(pv), "label": "T",
+                        "pos": "above" if is_top else "below"}
+                       for i, pv in touch_pts],
+        }
         return {"name": nm, "direction": d, "status": st,
                 "key_level": _r(neck), "breakout": _r(neck),
                 "invalidation": _r(invalid), "target": _r(target),
-                "priority": _PRIO[key], "text": txt}
+                "priority": _PRIO[key], "text": txt, "draw": draw}
 
     top = _check(piv_h, True)
     bot = _check(piv_l, False)
@@ -321,11 +341,26 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
                    f"{'bajo' if not inverted else 'sobre'} {_usd(_r(neck))} "
                    f"(proyectaria {_usd(_r(target))}); se anula "
                    f"{'sobre' if not inverted else 'bajo'} {_usd(_r(invalid))}")
+        off1 = int(n - 1 - i1)
+        draw = {
+            "segments": [
+                # neckline desde el hombro izquierdo hasta hoy
+                {"x0": off1, "y0": _r(neck), "x1": 0, "y1": _r(neck), "dash": False},
+            ],
+            "points": [
+                {"x": int(n - 1 - i1), "y": _r(p1), "label": "H",
+                 "pos": "below" if inverted else "above"},
+                {"x": int(n - 1 - i2), "y": _r(p2), "label": "C",
+                 "pos": "below" if inverted else "above"},
+                {"x": int(n - 1 - i3), "y": _r(p3), "label": "H",
+                 "pos": "below" if inverted else "above"},
+            ],
+        }
         return {"name": nm, "direction": d, "status": st,
                 "key_level": _r(neck), "breakout": _r(neck),
                 "invalidation": _r(invalid), "target": _r(target),
                 "priority": _PRIO["hch_conf" if confirmed else "hch_form"],
-                "text": txt}
+                "text": txt, "draw": draw}
 
     return _check(False) or _check(True)
 
@@ -379,6 +414,13 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
 
     margin = 0.25 * atr
     line_h_now, line_l_now = ih + sh * x1, il + sl_ * x1
+    # geometria: cada recta arranca en SU primer pivote (extrapolar la recta de
+    # un lado hasta el pivote mas viejo del otro la dibuja lejos de las velas)
+    xh0, xl0 = float(xh.min()), float(xl.min())
+    tri_draw = {"segments": [
+        {"x0": int(n - 1 - xh0), "y0": _r(ih + sh * xh0), "x1": 0, "y1": _r(line_h_now), "dash": False},
+        {"x0": int(n - 1 - xl0), "y0": _r(il + sl_ * xl0), "x1": 0, "y1": _r(line_l_now), "dash": False},
+    ]}
     above = price > line_h_now + margin
     below = price < line_l_now - margin
     if above or below:
@@ -402,7 +444,8 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
                 "text": (f"{nm} rota {'al alza' if above else 'a la baja'}: "
                          f"el precio salio de la figura "
                          f"{'sobre' if above else 'bajo'} {_usd(_r(lvl))} "
-                         f"— objetivo medido {_usd(_r(target))}")}
+                         f"— objetivo medido {_usd(_r(target))}"),
+                "draw": tri_draw}
 
     if d == "alcista":
         breakout, invalid = res_now, sup_now
@@ -415,7 +458,7 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
     return {"name": nm, "direction": d, "status": "en formacion",
             "key_level": breakout, "breakout": breakout,
             "invalidation": invalid, "target": target,
-            "priority": _PRIO["triangulo_form"], "text": txt}
+            "priority": _PRIO["triangulo_form"], "text": txt, "draw": tri_draw}
 
 
 def _pat_flag(highs, lows, closes, atr):
@@ -470,11 +513,20 @@ def _pat_flag(highs, lows, closes, atr):
                f"{'sobre' if up else 'bajo'} {_usd(_r(breakout))} proyectaria "
                f"{_usd(_r(target))} (se anula {'bajo' if up else 'sobre'} "
                f"{_usd(_r(invalid))})")
+    off_s, off_e = int(n - 1 - s), int(n - 1 - e)
+    draw = {"segments": [
+        # palo del impulso
+        {"x0": off_s, "y0": _r(closes[s]), "x1": off_e, "y1": _r(closes[e]),
+         "dash": False, "w": 2},
+        # canal de consolidacion (la bandera)
+        {"x0": off_e, "y0": _r(cons_h), "x1": 0, "y1": _r(cons_h), "dash": True},
+        {"x0": off_e, "y0": _r(cons_l), "x1": 0, "y1": _r(cons_l), "dash": True},
+    ]}
     return {"name": nm, "direction": d, "status": st,
             "key_level": _r(breakout), "breakout": _r(breakout),
             "invalidation": _r(invalid), "target": _r(target),
             "priority": _PRIO["bandera_conf" if confirmed else "bandera_form"],
-            "text": txt}
+            "text": txt, "draw": draw}
 
 
 def _pat_ma_cross(sma50, sma200):
@@ -519,6 +571,11 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
         r1, r2 = rsi[i1], rsi[i2]
         if np.isnan(r1) or np.isnan(r2):
             return None
+        dv_draw = {"segments": [
+            # recta uniendo los dos pivotes de precio que divergen del RSI
+            {"x0": int(n - 1 - i1), "y0": _r(p1),
+             "x1": int(n - 1 - i2), "y1": _r(p2), "dash": True},
+        ]}
         if bearish and p2 > p1 and r2 < r1 - 2:
             return {"name": "Divergencia bajista", "direction": "bajista",
                     "status": "vigente", "key_level": None,
@@ -526,7 +583,8 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
                     "priority": _PRIO["divergencia"],
                     "text": ("Divergencia bajista: el precio hizo un maximo mas alto "
                              f"pero el RSI no acompaño ({r1:.0f} → {r2:.0f}) — "
-                             "el impulso pierde fuerza")}
+                             "el impulso pierde fuerza"),
+                    "draw": dv_draw}
         if not bearish and p2 < p1 and r2 > r1 + 2:
             return {"name": "Divergencia alcista", "direction": "alcista",
                     "status": "vigente", "key_level": None,
@@ -534,7 +592,8 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
                     "priority": _PRIO["divergencia"],
                     "text": ("Divergencia alcista: el precio hizo un minimo mas bajo "
                              f"pero el RSI subio ({r1:.0f} → {r2:.0f}) — "
-                             "la caida pierde fuerza")}
+                             "la caida pierde fuerza"),
+                    "draw": dv_draw}
         return None
 
     return _check(piv_h, True) or _check(piv_l, False)
