@@ -1027,10 +1027,14 @@ def api_portfolio():
 
 @app.route("/health")
 def health():
+    # `commit` permite verificar desde afuera QUE version quedo desplegada
+    # (Railway expone el SHA del commit del deploy en el environment)
     return jsonify({
         "status": "ok",
         "async_mode": socketio.async_mode,
         "server_mode": socketio.server.async_mode if hasattr(socketio, 'server') else "unknown",
+        "commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7],
+        "features": {"patterns": True, "candles": True},
     })
 
 
