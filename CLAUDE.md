@@ -249,13 +249,21 @@ labels can be directional while `signal` is still HOLD.
   ≥3.5·ATR + consolidación ≤55% del palo), cruce dorado/muerte (`include_cross`, solo pulso),
   divergencia RSI/precio, canal/estructura fallback (`include_fallback`, solo pulso). Cada figura:
   `{name, direction, status (en formacion/por confirmar/confirmada/vigente), key_level, breakout,
-  invalidation, target (objetivo MEDIDO), priority, text}`. **Fibonacci por ZIGZAG (2026-08,
-  feedback: anclaba random)**: los fib se trazan entre PIVOTES MAYORES del zigzag (`_zigzag`,
-  window 5, swing mínimo max(6·ATR, 12% del precio)) sobre TODO el histórico — nunca max/min de
-  una ventana fija (anclaba en el borde de la ventana a mitad de una tendencia). El impulso es el
-  **swing dominante** de los dos últimos tramos del zigzag: si el último tramo es menor, es el
-  retroceso del impulso previo (fib sobre el previo); retr válido en [-35%, 105%]; el extremo final
-  debe estar en las últimas 250 ruedas. Con `at`/`relevant`/`retr_pct` como antes. **Convicción
+  invalidation, target (objetivo MEDIDO), priority, text}`. **Fibonacci por VENTANA AUTO-EXPANSIVA (2026-08, tercera
+  iteración — feedback "este fibo esta raro" en USO/SLV)**: el fib se traza entre el **máximo y el
+  mínimo del gráfico reciente**, en el orden en que ocurrieron (ese orden define alcista/bajista).
+  La ventana arranca en 250 ruedas (~1 año, la vista por defecto) y **se agranda ×1.5 mientras
+  alguno de los extremos caiga pegado al borde izquierdo** (`min(i_hi,i_lo) <= 2`): si el máximo
+  está en el borde, el impulso empezó antes y recortarlo ahí anclaría a mitad de una tendencia.
+  Descartes: swing < max(4·ATR, 8% del precio), extremo final > 150 ruedas atrás (el retroceso
+  dejó de mandar), retr fuera de [−35%, 105%]. **Historia de bugs — no volver atrás**: (1) ventana
+  fija de 180 ruedas → anclaba en el borde a mitad de la caída (TEAM $242 en vez del techo real);
+  (2) zigzag de pivotes mayores → fragmentaba el movimiento y elegía un tramo interno, dejando
+  afuera el techo que se ve a simple vista (USO ancló $102→$142 ignorando $154.08; SLV ancló
+  $80.86 ignorando el pico de $109.83). La regla actual es auditable a ojo: los anclajes son los
+  dos extremos que se VEN en el chart. `at`/`relevant`/`retr_pct`/`start_off`/`end_off` como antes.
+  El texto nombra los anclajes con fecha ("del techo $154.08 (18-05-2026) al piso...").
+  **Convicción
   (2026-08, feedback: "patrones muy fuertes del gráfico global, no cualquier cosa")**: doble/triple
   profundidad ≥ max(2.5·ATR, 3.5%), HCH ≥ max(3·ATR, 5%) con cabeza ≥1.2·ATR, triángulo altura
   inicial ≥ max(4·ATR, 6%), bandera palo ≥ max(5·ATR, 8%), ruptura solo niveles de 3+ toques,

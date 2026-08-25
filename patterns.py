@@ -744,58 +744,51 @@ def _zigzag(highs, lows, min_swing, window=5):
     return zig
 
 
-def fibonacci(highs, lows, closes, atr, lookback=None, dates=None):
-    """Retrocesos y extensiones del ULTIMO SWING MAYOR del grafico completo.
+def fibonacci(highs, lows, closes, atr, lookback=250, dates=None):
+    """Retrocesos y extensiones del SWING DOMINANTE reciente.
 
-    Teoria: los fib se trazan entre dos pivotes estructurales del impulso
-    dominante (zigzag), NO entre el max/min de una ventana fija — eso anclaba
-    en puntos arbitrarios (el borde de la ventana a mitad de una tendencia).
-    Un swing es "mayor" si mide >= max(6·ATR, 12% del precio): figuras del
-    grafico global de 5 años, no ruido. Devuelve None si no hay swing mayor,
-    si es prehistorico (el retroceso ya no esta activo) o si ya retrocedio
-    entero (impulso negado)."""
+    Regla (simple, deterministica y auditable a ojo en el chart): el fib se
+    traza entre el MAXIMO y el MINIMO del grafico reciente, en el orden en que
+    ocurrieron. La ventana arranca en `lookback` (~1 año, la vista por defecto)
+    y se AGRANDA mientras alguno de los dos extremos caiga pegado al borde
+    izquierdo: si el maximo esta en el borde, el impulso real empezo antes y
+    recortarlo ahi anclaria a mitad de una tendencia (bug TEAM/USO/SLV — el
+    zigzag fragmentaba el movimiento y elegia un tramo interno, dejando afuera
+    el techo que se ve a simple vista).
+
+    Devuelve None si el swing no es relevante (< max(4·ATR, 8% del precio)), si
+    el extremo final ya es viejo (>150 ruedas: el retroceso dejo de mandar) o
+    si el precio ya retrocedio todo el impulso (queda negado)."""
     n = len(closes)
     if n < 60 or not atr:
         return None
     price = float(closes[-1])
     if price <= 0:
         return None
-    # El umbral de swing debe escalar con el RANGO del grafico, no solo con ATR
-    # y precio: con un umbral chico, una caida dominante se parte en pedazos por
-    # rebotes intermedios y el fib ancla en un pivote menor (bug TEAM: anclaba
-    # $242 en vez del techo real $326 que inicio la caida).
-    rango = max(highs) - min(lows)
-    min_swing = max(6 * atr, 0.12 * price, 0.20 * rango)
-    zig = _zigzag(highs, lows, min_swing)
-    if len(zig) < 2:
-        return None
-    # Impulso = el swing DOMINANTE entre los dos ultimos tramos del zigzag
-    # (asi lo traza un chartista): si el ultimo tramo es mas chico que el
-    # anterior, es el RETROCESO del impulso previo — el fib va sobre el previo;
-    # si el ultimo tramo es el mayor, es un impulso nuevo (extension/0%).
-    segs = [(zig[-2], zig[-1])]
-    if len(zig) >= 3:
-        segs.append((zig[-3], zig[-2]))
-    segs.sort(key=lambda s: -abs(s[1][1] - s[0][1]))
-    chosen = None
-    for a, b in segs:
-        if b[0] < n - 250:
-            continue                     # tramo prehistorico: retroceso ya no activo
-        _up = (a[2] == "L" and b[2] == "H")
-        _hi = float(b[1] if _up else a[1])
-        _lo = float(a[1] if _up else b[1])
-        _rng = _hi - _lo
-        if _rng < min_swing:
-            continue
-        _retr = ((_hi - price) / _rng) if _up else ((price - _lo) / _rng)
-        if -0.35 <= _retr <= 1.05:
-            chosen = (a, b, _up, _hi, _lo, _rng)
+
+    w = min(n, max(60, lookback))
+    i_hi = i_lo = 0
+    while True:
+        hs, ls = highs[n - w:], lows[n - w:]
+        i_hi = max(range(w), key=lambda i: hs[i])
+        i_lo = min(range(w), key=lambda i: ls[i])
+        # Extremo pegado al borde izquierdo => el impulso viene de mas atras
+        if min(i_hi, i_lo) > 2 or w >= n:
             break
-    if chosen is None:
-        return None
-    a, b, up, hi, lo, rng = chosen
-    hi_abs = b[0] if up else a[0]
-    lo_abs = a[0] if up else b[0]
+        w = min(n, int(w * 1.5) + 5)
+
+    hi, lo = float(hs[i_hi]), float(ls[i_lo])
+    rng = hi - lo
+    if rng < max(4 * atr, 0.08 * price):
+        return None                      # swing chico: no es estructura
+
+    term = max(i_hi, i_lo)               # extremo que cierra el impulso
+    if (w - 1 - term) > 150:
+        return None                      # impulso viejo: su retroceso ya no manda
+
+    up = i_lo < i_hi                     # el minimo vino primero: impulso alcista
+    hi_abs = (n - w) + i_hi
+    lo_abs = (n - w) + i_lo
     if up:
         levels = {k: hi - r * rng for k, r in _FIB_RATIOS}
         ext = {"127.2": lo + 1.272 * rng, "161.8": lo + 1.618 * rng}
@@ -804,21 +797,21 @@ def fibonacci(highs, lows, closes, atr, lookback=None, dates=None):
         levels = {k: lo + r * rng for k, r in _FIB_RATIOS}
         ext = {"127.2": hi - 1.272 * rng, "161.8": hi - 1.618 * rng}
         retr = (price - lo) / rng
-    if retr > 1.05:
-        return None                      # retrocedio todo: el impulso quedo negado
+    if retr > 1.05 or retr < -0.35:
+        return None                      # impulso negado o precio muy extendido
+
     tol = max(0.45 * atr, price * 0.004)
     at = next((k for k, v in levels.items() if abs(price - v) <= tol), None)
-    # Relevante para DECIDIR solo si el precio esta apoyado en un nivel fib o a
-    # <=1.2·ATR de alguno (retrocesos o extensiones) — si esta entre niveles,
-    # es contexto y no hace falta dibujarlo
     near = min(abs(price - v) for v in list(levels.values()) + list(ext.values()))
     relevant = (at is not None) or (near <= 1.2 * atr)
+
     dirw = "alcista" if up else "bajista"
     if retr < -0.02:
         pos_txt = ("extendiendo por encima del maximo del impulso" if up
                    else "extendiendo por debajo del minimo del impulso")
     else:
         pos_txt = f"retrocedio el {max(0.0, retr) * 100:.0f}% del impulso"
+
     def _dt(idx):
         try:
             s = str(dates[idx])[:10].replace("-", "")
@@ -835,9 +828,7 @@ def fibonacci(highs, lows, closes, atr, lookback=None, dates=None):
                       + f" al piso {_usd(_r(lo))}" + (f" ({d_end})" if d_end else ""))
     txt = (f"impulso {dirw} {anchor_txt}: {pos_txt}"
            + (f", apoyado en el nivel fib {at}% ({_usd(_r(levels[at]))})" if at else ""))
-    # Offsets (desde la ultima barra) de los dos extremos del impulso, para que
-    # el frontend dibuje los niveles fib DESDE el inicio del impulso hasta hoy
-    # (estilo investing.com), no como lineas de ancho completo
+
     start_abs = lo_abs if up else hi_abs      # origen del impulso (100%)
     end_abs = hi_abs if up else lo_abs        # extremo final (0%)
     return {
