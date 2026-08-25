@@ -157,7 +157,9 @@ def _pat_breakout(closes, all_levels, atr):
     min_move = 0.25 * atr
     best = None
     for lvl in all_levels:
-        if lvl["touches"] < 2:
+        # Conviccion: romper un nivel de 2 toques es poco — exigir 3+ toques
+        # (un nivel realmente defendido en el grafico global)
+        if lvl["touches"] < 3:
             continue
         L = lvl["level"]
         if c_ref < L and c_now > L + min_move:
@@ -218,7 +220,9 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
         seg = lows[idx_a:idx_b + 1] if is_top else highs[idx_a:idx_b + 1]
         neck = float(min(seg)) if is_top else float(max(seg))
         depth = (level - neck) if is_top else (neck - level)
-        if depth < 1.5 * atr:
+        # Conviccion: solo estructuras PROMINENTES del grafico global — la
+        # figura debe medir >= max(2.5·ATR, 3.5% del precio)
+        if depth < max(2.5 * atr, 0.035 * (closes[-1] or 1)):
             return None
         c = closes[-1]
         base = "Triple" if triple else "Doble"
@@ -293,7 +297,7 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
         if i3 < n - 45 or i2 - i1 < 5 or i3 - i2 < 5:
             return None
         if not inverted:
-            if not (p2 > p1 + 0.8 * atr and p2 > p3 + 0.8 * atr):
+            if not (p2 > p1 + 1.2 * atr and p2 > p3 + 1.2 * atr):
                 return None
             if abs(p1 - p3) > 1.6 * atr:        # hombros muy desparejos
                 return None
@@ -302,7 +306,7 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
             i_v1, i_v2 = i1 + seg1.index(min(seg1)), i2 + seg2.index(min(seg2))
             neck = (v1 + v2) / 2
             depth = p2 - neck
-            if depth < 2 * atr:
+            if depth < max(3 * atr, 0.05 * (closes[-1] or 1)):
                 return None
             c = closes[-1]
             if c < neck - 3 * atr:              # ya jugo
@@ -315,7 +319,7 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
             invalid = p3 + 0.5 * atr
             head_txt = _usd(_r(p2))
         else:
-            if not (p2 < p1 - 0.8 * atr and p2 < p3 - 0.8 * atr):
+            if not (p2 < p1 - 1.2 * atr and p2 < p3 - 1.2 * atr):
                 return None
             if abs(p1 - p3) > 1.6 * atr:
                 return None
@@ -324,7 +328,7 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
             i_v1, i_v2 = i1 + seg1.index(max(seg1)), i2 + seg2.index(max(seg2))
             neck = (v1 + v2) / 2
             depth = neck - p2
-            if depth < 2 * atr:
+            if depth < max(3 * atr, 0.05 * (closes[-1] or 1)):
                 return None
             c = closes[-1]
             if c > neck + 3 * atr:
@@ -395,6 +399,9 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
     spread0 = (ih + sh * x0) - (il + sl_ * x0)
     spread1 = (ih + sh * x1) - (il + sl_ * x1)
     if spread0 <= 0 or spread1 <= 0.3 * atr or spread1 > 0.72 * spread0:
+        return None
+    # Conviccion: la figura debe nacer con altura >= max(4·ATR, 6% del precio)
+    if spread0 < max(4 * atr, 0.06 * price):
         return None
     shp = sh / price * 100
     slp = sl_ / price * 100
@@ -486,7 +493,8 @@ def _pat_flag(highs, lows, closes, atr):
             if s < 0:
                 continue
             move = closes[end] - closes[s]
-            if abs(move) >= 3.5 * atr and (best is None or abs(move) > abs(best[2])):
+            if (abs(move) >= max(5 * atr, 0.08 * (closes[-1] or 1))
+                    and (best is None or abs(move) > abs(best[2]))):
                 best = (s, end, move)
     if best is None:
         return None
@@ -593,7 +601,7 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
              "x1": int(n - 1 - i2), "y1": _r(p2), "dash": True,
              "lbl": "Pivotes que divergen del RSI"},
         ]}
-        if bearish and p2 > p1 and r2 < r1 - 2:
+        if bearish and p2 > p1 and r2 < r1 - 5:
             return {"name": "Divergencia bajista", "direction": "bajista",
                     "status": "vigente", "key_level": None,
                     "breakout": None, "invalidation": None, "target": None,
@@ -602,7 +610,7 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
                              f"pero el RSI no acompaño ({r1:.0f} → {r2:.0f}) — "
                              "el impulso pierde fuerza"),
                     "draw": dv_draw}
-        if not bearish and p2 < p1 and r2 > r1 + 2:
+        if not bearish and p2 < p1 and r2 > r1 + 5:
             return {"name": "Divergencia alcista", "direction": "alcista",
                     "status": "vigente", "key_level": None,
                     "breakout": None, "invalidation": None, "target": None,
@@ -705,26 +713,84 @@ def _is_critical(p, price, atr):
     return False
 
 
-def fibonacci(highs, lows, closes, atr, lookback=180):
-    """Retrocesos y extensiones del impulso dominante de las ultimas ~180 ruedas.
+def _zigzag(highs, lows, min_swing, window=5):
+    """Pivotes MAYORES alternados (zigzag clasico): [[idx, precio, 'H'|'L']].
 
-    Devuelve None si no hay un impulso relevante (>4·ATR), si es prehistorico,
-    o si ya retrocedio entero (impulso negado)."""
+    Semilla: se trackean el mejor maximo y el mejor minimo hasta que su
+    distancia supera `min_swing` (asi una tendencia monotona tras un lateral
+    ancla en el extremo REAL de origen, no en un pivote menor arbitrario).
+    Despues, giro confirmado solo cuando el swing contrario >= min_swing;
+    extremos del mismo lado se reemplazan por el mas extremo."""
+    n = len(highs)
+    piv_h, piv_l = _pivots_arr(highs, lows, lookback=n, window=window)
+    pts = sorted([(i, p, "H") for i, p in piv_h] + [(i, p, "L") for i, p in piv_l])
+    zig = []
+    best_h = best_l = None
+    for i, p, t in pts:
+        if not zig:
+            if t == "H" and (best_h is None or p >= best_h[1]):
+                best_h = [i, p, "H"]
+            if t == "L" and (best_l is None or p <= best_l[1]):
+                best_l = [i, p, "L"]
+            if best_h and best_l and (best_h[1] - best_l[1]) >= min_swing:
+                zig = sorted([best_h, best_l], key=lambda z: z[0])
+            continue
+        li, lp, lt = zig[-1]
+        if t == lt:
+            if (t == "H" and p > lp) or (t == "L" and p < lp):
+                zig[-1] = [i, p, t]
+        elif abs(p - lp) >= min_swing:
+            zig.append([i, p, t])
+    return zig
+
+
+def fibonacci(highs, lows, closes, atr, lookback=None):
+    """Retrocesos y extensiones del ULTIMO SWING MAYOR del grafico completo.
+
+    Teoria: los fib se trazan entre dos pivotes estructurales del impulso
+    dominante (zigzag), NO entre el max/min de una ventana fija — eso anclaba
+    en puntos arbitrarios (el borde de la ventana a mitad de una tendencia).
+    Un swing es "mayor" si mide >= max(6·ATR, 12% del precio): figuras del
+    grafico global de 5 años, no ruido. Devuelve None si no hay swing mayor,
+    si es prehistorico (el retroceso ya no esta activo) o si ya retrocedio
+    entero (impulso negado)."""
     n = len(closes)
     if n < 60 or not atr:
         return None
-    w = min(n, lookback)
-    hs, ls = highs[n - w:], lows[n - w:]
-    hi_rel = max(range(w), key=lambda i: hs[i])
-    lo_rel = min(range(w), key=lambda i: ls[i])
-    hi, lo = float(hs[hi_rel]), float(ls[lo_rel])
-    rng = hi - lo
-    if rng < 4 * atr:
-        return None
-    if max(hi_rel, lo_rel) < w - 120:
-        return None                      # impulso demasiado viejo
-    up = lo_rel < hi_rel                 # el minimo vino primero: impulso alcista
     price = float(closes[-1])
+    if price <= 0:
+        return None
+    min_swing = max(6 * atr, 0.12 * price)
+    zig = _zigzag(highs, lows, min_swing)
+    if len(zig) < 2:
+        return None
+    # Impulso = el swing DOMINANTE entre los dos ultimos tramos del zigzag
+    # (asi lo traza un chartista): si el ultimo tramo es mas chico que el
+    # anterior, es el RETROCESO del impulso previo — el fib va sobre el previo;
+    # si el ultimo tramo es el mayor, es un impulso nuevo (extension/0%).
+    segs = [(zig[-2], zig[-1])]
+    if len(zig) >= 3:
+        segs.append((zig[-3], zig[-2]))
+    segs.sort(key=lambda s: -abs(s[1][1] - s[0][1]))
+    chosen = None
+    for a, b in segs:
+        if b[0] < n - 250:
+            continue                     # tramo prehistorico: retroceso ya no activo
+        _up = (a[2] == "L" and b[2] == "H")
+        _hi = float(b[1] if _up else a[1])
+        _lo = float(a[1] if _up else b[1])
+        _rng = _hi - _lo
+        if _rng < min_swing:
+            continue
+        _retr = ((_hi - price) / _rng) if _up else ((price - _lo) / _rng)
+        if -0.35 <= _retr <= 1.05:
+            chosen = (a, b, _up, _hi, _lo, _rng)
+            break
+    if chosen is None:
+        return None
+    a, b, up, hi, lo, rng = chosen
+    hi_abs = b[0] if up else a[0]
+    lo_abs = a[0] if up else b[0]
     if up:
         levels = {k: hi - r * rng for k, r in _FIB_RATIOS}
         ext = {"127.2": lo + 1.272 * rng, "161.8": lo + 1.618 * rng}
@@ -748,13 +814,11 @@ def fibonacci(highs, lows, closes, atr, lookback=180):
                    else "extendiendo por debajo del minimo del impulso")
     else:
         pos_txt = f"retrocedio el {max(0.0, retr) * 100:.0f}% del impulso"
-    txt = (f"impulso {dirw} {_usd(_r(lo))}→{_usd(_r(hi))}: {pos_txt}"
+    txt = (f"impulso {dirw} {_usd(_r(lo))}→{_usd(_r(hi))} (swing mayor del zigzag): {pos_txt}"
            + (f", apoyado en el nivel fib {at}% ({_usd(_r(levels[at]))})" if at else ""))
     # Offsets (desde la ultima barra) de los dos extremos del impulso, para que
     # el frontend dibuje los niveles fib DESDE el inicio del impulso hasta hoy
     # (estilo investing.com), no como lineas de ancho completo
-    hi_abs = (n - w) + hi_rel
-    lo_abs = (n - w) + lo_rel
     start_abs = lo_abs if up else hi_abs      # origen del impulso (100%)
     end_abs = hi_abs if up else lo_abs        # extremo final (0%)
     return {
@@ -798,7 +862,7 @@ _CANDLE_MEANING = {
 }
 
 
-def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3):
+def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=2):
     """Patrones de VELAS japonesas sobre las ultimas `lookback` ruedas del
     grafico DIARIO: reversion (martillo, envolvente, estrella de la mañana/
     tarde, penetrante, pinzas, harami), continuacion (tres soldados/cuervos,
@@ -862,59 +926,60 @@ def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3)
             return None
         b1 = body(i - 1)
         cands = []
-        pre_dn1, pre_up1 = drift(i - 1) <= -0.8 * atr, drift(i - 1) >= 0.8 * atr
-        pre_dn2, pre_up2 = drift(i - 2) <= -0.8 * atr, drift(i - 2) >= 0.8 * atr
-        pre_dn3, pre_up3 = drift(i - 3) <= -0.8 * atr, drift(i - 3) >= 0.8 * atr
+        # Conviccion: la tendencia previa debe ser CLARA (>=1.2 ATR de deriva)
+        pre_dn1, pre_up1 = drift(i - 1) <= -1.2 * atr, drift(i - 1) >= 1.2 * atr
+        pre_dn2, pre_up2 = drift(i - 2) <= -1.2 * atr, drift(i - 2) >= 1.2 * atr
+        pre_dn3, pre_up3 = drift(i - 3) <= -1.2 * atr, drift(i - 3) >= 1.2 * atr
 
         # ── 3 velas ──
         b2 = body(i - 2)
         mid2 = (opens[i - 2] + closes[i - 2]) / 2
-        if (b2 >= 0.8 * atr and bear(i - 2) and b1 <= 0.4 * b2
+        if (b2 >= 1.2 * atr and bear(i - 2) and b1 <= 0.4 * b2
                 and bull(i) and closes[i] >= mid2 and pre_dn3):
             cands.append(("Estrella de la mañana", "Estr. mañana", "alcista", "reversion", 86, 3))
-        if (b2 >= 0.8 * atr and bull(i - 2) and b1 <= 0.4 * b2
+        if (b2 >= 1.2 * atr and bull(i - 2) and b1 <= 0.4 * b2
                 and bear(i) and closes[i] <= mid2 and pre_up3):
             cands.append(("Estrella de la tarde", "Estr. tarde", "bajista", "reversion", 86, 3))
         if (all(bull(i - k) for k in (0, 1, 2))
-                and all(body(i - k) >= 0.6 * atr for k in (0, 1, 2))
+                and all(body(i - k) >= 0.8 * atr for k in (0, 1, 2))
                 and closes[i] > closes[i - 1] > closes[i - 2]
                 and upper(i) <= 0.35 * max(b, 1e-9)):
             cands.append(("Tres soldados blancos", "3 soldados", "alcista", "continuacion", 80, 3))
         if (all(bear(i - k) for k in (0, 1, 2))
-                and all(body(i - k) >= 0.6 * atr for k in (0, 1, 2))
+                and all(body(i - k) >= 0.8 * atr for k in (0, 1, 2))
                 and closes[i] < closes[i - 1] < closes[i - 2]
                 and lower(i) <= 0.35 * max(b, 1e-9)):
             cands.append(("Tres cuervos negros", "3 cuervos", "bajista", "continuacion", 80, 3))
 
         # ── 2 velas ──
-        if b1 >= 0.3 * atr and b >= 1.05 * b1 and _engulf(i):
+        if b1 >= 0.5 * atr and b >= 1.15 * b1 and _engulf(i):
             if bull(i) and bear(i - 1) and pre_dn2:
                 cands.append(("Envolvente alcista", "Envolvente", "alcista", "reversion", 84, 2))
             if bear(i) and bull(i - 1) and pre_up2:
                 cands.append(("Envolvente bajista", "Envolvente", "bajista", "reversion", 84, 2))
         mid1 = (opens[i - 1] + closes[i - 1]) / 2
-        if (bear(i - 1) and b1 >= 0.7 * atr and bull(i) and opens[i] <= closes[i - 1]
+        if (bear(i - 1) and b1 >= 1.0 * atr and bull(i) and opens[i] <= closes[i - 1]
                 and mid1 <= closes[i] < opens[i - 1] and pre_dn2):
             cands.append(("Linea penetrante", "Penetrante", "alcista", "reversion", 70, 2))
-        if (bull(i - 1) and b1 >= 0.7 * atr and bear(i) and opens[i] >= closes[i - 1]
+        if (bull(i - 1) and b1 >= 1.0 * atr and bear(i) and opens[i] >= closes[i - 1]
                 and opens[i - 1] < closes[i] <= mid1 and pre_up2):
             cands.append(("Nube oscura", "Nube oscura", "bajista", "reversion", 70, 2))
-        if (b1 >= 1.0 * atr and b <= 0.5 * b1
+        if (b1 >= 1.4 * atr and b <= 0.5 * b1
                 and max(opens[i], closes[i]) <= max(opens[i - 1], closes[i - 1])
                 and min(opens[i], closes[i]) >= min(opens[i - 1], closes[i - 1])):
             if bear(i - 1) and pre_dn2:
                 cands.append(("Harami alcista", "Harami", "alcista", "reversion", 62, 2))
             elif bull(i - 1) and pre_up2:
                 cands.append(("Harami bajista", "Harami", "bajista", "reversion", 62, 2))
-        if (abs(lows[i] - lows[i - 1]) <= 0.12 * atr and pre_dn2
-                and min(lower(i), lower(i - 1)) >= 0.3 * atr):
+        if (abs(lows[i] - lows[i - 1]) <= 0.10 * atr and pre_dn2
+                and min(lower(i), lower(i - 1)) >= 0.4 * atr):
             cands.append(("Pinzas de piso", "Pinzas", "alcista", "reversion", 60, 2))
-        if (abs(highs[i] - highs[i - 1]) <= 0.12 * atr and pre_up2
-                and min(upper(i), upper(i - 1)) >= 0.3 * atr):
+        if (abs(highs[i] - highs[i - 1]) <= 0.10 * atr and pre_up2
+                and min(upper(i), upper(i - 1)) >= 0.4 * atr):
             cands.append(("Pinzas de techo", "Pinzas", "bajista", "reversion", 60, 2))
 
         # ── 1 vela ──
-        if r >= 0.6 * atr:
+        if r >= 0.8 * atr:
             small = b <= 0.35 * r
             if small and lower(i) >= 2 * max(b, 0.05 * r) and upper(i) <= 0.2 * r:
                 if pre_dn1:
@@ -926,9 +991,9 @@ def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3)
                     cands.append(("Estrella fugaz", "Estr. fugaz", "bajista", "reversion", 75, 1))
                 elif pre_dn1:
                     cands.append(("Martillo invertido", "Mart. inv.", "alcista", "reversion", 65, 1))
-            if b <= 0.1 * r and r >= 0.8 * atr and (pre_dn1 or pre_up1):
+            if b <= 0.1 * r and r >= 1.2 * atr and (pre_dn1 or pre_up1):
                 cands.append(("Doji", "Doji", "neutral", "indecision", 50, 1))
-            if b >= 0.85 * r and r >= 1.1 * atr:
+            if b >= 0.85 * r and r >= 1.6 * atr:
                 d = "alcista" if bull(i) else "bajista"
                 cands.append((f"Marubozu {d}", "Marubozu", d, "continuacion", 55, 1))
 

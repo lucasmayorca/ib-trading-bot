@@ -237,9 +237,19 @@ labels can be directional while `signal` is still HOLD.
   ≥3.5·ATR + consolidación ≤55% del palo), cruce dorado/muerte (`include_cross`, solo pulso),
   divergencia RSI/precio, canal/estructura fallback (`include_fallback`, solo pulso). Cada figura:
   `{name, direction, status (en formacion/por confirmar/confirmada/vigente), key_level, breakout,
-  invalidation, target (objetivo MEDIDO), priority, text}`. **Fibonacci** aparte: retrocesos
-  23.6-78.6 + extensiones 127.2/161.8 del impulso dominante (≥4·ATR, ≤180 ruedas), con `at` (nivel
-  donde está apoyado el precio) y `retr_pct`; se descarta si retrocedió >105% (impulso negado).
+  invalidation, target (objetivo MEDIDO), priority, text}`. **Fibonacci por ZIGZAG (2026-08,
+  feedback: anclaba random)**: los fib se trazan entre PIVOTES MAYORES del zigzag (`_zigzag`,
+  window 5, swing mínimo max(6·ATR, 12% del precio)) sobre TODO el histórico — nunca max/min de
+  una ventana fija (anclaba en el borde de la ventana a mitad de una tendencia). El impulso es el
+  **swing dominante** de los dos últimos tramos del zigzag: si el último tramo es menor, es el
+  retroceso del impulso previo (fib sobre el previo); retr válido en [-35%, 105%]; el extremo final
+  debe estar en las últimas 250 ruedas. Con `at`/`relevant`/`retr_pct` como antes. **Convicción
+  (2026-08, feedback: "patrones muy fuertes del gráfico global, no cualquier cosa")**: doble/triple
+  profundidad ≥ max(2.5·ATR, 3.5%), HCH ≥ max(3·ATR, 5%) con cabeza ≥1.2·ATR, triángulo altura
+  inicial ≥ max(4·ATR, 6%), bandera palo ≥ max(5·ATR, 8%), ruptura solo niveles de 3+ toques,
+  divergencia RSI ≥5 pts. Velas: deriva previa ≥1.2·ATR, rango ≥0.8·ATR, marubozu ≥1.6·ATR,
+  doji ≥1.2·ATR, envolvente previa ≥0.5·ATR, harami madre ≥1.4·ATR, máx 2 reportadas — en un
+  barrido de 10 large caps: velas 1/10 (antes 3/10), figuras 6/10 prominentes.
 - **Dónde pega cada cosa**: `analyze_symbol` adjunta `sig["pattern"]/sig["fib"]` (payload de
   `/api/data`, `/api/etf-data`, top3, deep analysis de cartera). `_compute_price_levels` suma el
   objetivo medido de la figura (prio 0, solo si su dirección coincide con el label) y los niveles
