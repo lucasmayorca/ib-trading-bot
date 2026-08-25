@@ -4028,37 +4028,80 @@ function _scHist(times,arr,posC,negC){
 /* Primitive: bandas horizontales sombreadas (zonas de sobrecompra/sobreventa).
    LW no soporta bandas nativas; se dibujan sobre el canvas del panel, detrás de
    la serie. bands = [{from, to, color}] en precio. */
-// Recuadros translucidos sobre las velas que FORMAN un patron de velas
-// japonesas (resaltado estilo investing.com). boxes=[{i0,i1,lo,hi,fill,stroke}]
-// con i = indices logicos absolutos de barra.
+// Recuadros PUNTEADOS sobre las velas que FORMAN un patron de velas japonesas
+// (resaltado estilo investing.com) + nombre y significado dibujados al lado.
+// boxes=[{i0,i1,lo,hi,fill,stroke,label,sub}] con i = indices logicos ENTEROS.
+// GOTCHA LW 4.1: logicalToCoordinate NO acepta fraccionarios (devuelve 0) y
+// dentro del draw() del render pass tampoco es confiable — las coordenadas se
+// calculan en updateAllViews() con logicos enteros y medio-ancho de barra en
+// pixeles, y draw() solo pinta lo cacheado.
 function _scBoxOverlay(boxes){
-  let _series=null,_chart=null;
+  let _series=null,_chart=null,_px=[];
+  function _recalc(){
+    _px=[];
+    if(!_series||!_chart)return;
+    for(let b of boxes){
+      try{
+        let ts=_chart.timeScale();
+        let xa=ts.logicalToCoordinate(b.i0);
+        let xb=ts.logicalToCoordinate(b.i1);
+        let xn=ts.logicalToCoordinate(b.i1+1);
+        let y0=_series.priceToCoordinate(b.hi);
+        let y1=_series.priceToCoordinate(b.lo);
+        if(xa==null||xb==null||y0==null||y1==null)continue;
+        let half=(xn!=null&&xn>xb)?(xn-xb)/2:3;
+        _px.push({x0:xa-half,x1:xb+half,y0:y0,y1:y1,fill:b.fill,stroke:b.stroke,
+                  label:b.label||'',sub:b.sub||''});
+      }catch(e){}
+    }
+  }
   return {
     attached(p){_series=p.series;_chart=p.chart;},
     detached(){_series=null;_chart=null;},
-    updateAllViews(){},
+    updateAllViews(){_recalc();},
     paneViews(){
       return [{
         zOrder(){return 'bottom';},
         renderer(){
           return {draw(target){
-            if(!_series||!_chart)return;
             target.useMediaCoordinateSpace(function(scope){
               let ctx=scope.context;
-              for(let b of boxes){
-                let x0=null,x1=null;
-                try{
-                  x0=_chart.timeScale().logicalToCoordinate(b.i0-0.5);
-                  x1=_chart.timeScale().logicalToCoordinate(b.i1+0.5);
-                }catch(e){}
-                let y0=_series.priceToCoordinate(b.hi),y1=_series.priceToCoordinate(b.lo);
-                if(x0==null||x1==null||y0==null||y1==null)continue;
-                if(x1<0||x0>scope.mediaSize.width)continue;
-                ctx.fillStyle=b.fill;ctx.strokeStyle=b.stroke;ctx.lineWidth=1;
+              for(let p of _px){
+                if(p.x1<0||p.x0>scope.mediaSize.width)continue;
+                ctx.fillStyle=p.fill;ctx.strokeStyle=p.stroke;ctx.lineWidth=1;
+                ctx.setLineDash([4,3]);
                 ctx.beginPath();
-                if(ctx.roundRect)ctx.roundRect(x0,y0,x1-x0,y1-y0,3);
-                else ctx.rect(x0,y0,x1-x0,y1-y0);
+                if(ctx.roundRect)ctx.roundRect(p.x0,p.y0,p.x1-p.x0,p.y1-p.y0,3);
+                else ctx.rect(p.x0,p.y0,p.x1-p.x0,p.y1-p.y0);
                 ctx.fill();ctx.stroke();
+                ctx.setLineDash([]);
+                if(!p.label)continue;
+                // Nombre (linea 1) + significado (hasta 2 lineas) sobre el recuadro;
+                // si no hay lugar arriba, van debajo
+                let lines=[{t:p.label,f:'700 11px -apple-system,system-ui,sans-serif',c:p.stroke}];
+                if(p.sub){
+                  let words=p.sub.split(' '),l1='',l2='';
+                  for(let w of words){
+                    if(l1.length+w.length<44&&!l2)l1+=(l1?' ':'')+w;
+                    else if(l2.length+w.length<44)l2+=(l2?' ':'')+w;
+                    else{l2+='…';break;}
+                  }
+                  let subF='500 9.5px -apple-system,system-ui,sans-serif';
+                  lines.push({t:l1,f:subF,c:'#5c5c58'});
+                  if(l2)lines.push({t:l2,f:subF,c:'#5c5c58'});
+                }
+                let lh=12,blockH=lines.length*lh+4;
+                let above=p.y0-blockH>=4;
+                let y=above?(p.y0-blockH+lh-4):(p.y1+lh+2);
+                let x=Math.max(4,Math.min(p.x0,scope.mediaSize.width-180));
+                ctx.textBaseline='alphabetic';ctx.lineJoin='round';
+                for(let ln of lines){
+                  ctx.font=ln.f;
+                  ctx.strokeStyle='rgba(255,255,255,0.9)';ctx.lineWidth=3;
+                  ctx.strokeText(ln.t,x,y);
+                  ctx.fillStyle=ln.c;ctx.fillText(ln.t,x,y);
+                  y+=lh;
+                }
               }
             });
           }};
@@ -4313,7 +4356,7 @@ function scBuild(key,data,decorate,heights){
       if(!data.timeVis&&decorate.candleBoxes&&decorate.candleBoxes.length){
         candleBoxes=decorate.candleBoxes.map(function(b){
           return {i0:times.length-1-(b.off0||0),i1:times.length-1-(b.off1||0),
-                  lo:b.lo,hi:b.hi,fill:b.fill,stroke:b.stroke,
+                  lo:b.lo,hi:b.hi,fill:b.fill,stroke:b.stroke,sub:b.sub||'',
                   kind:'box',ref:null,w:1,label:b.label||'',tip:b.tip||''};
         });
         try{cs.attachPrimitive(_scBoxOverlay(candleBoxes));}catch(e){}
@@ -4768,8 +4811,9 @@ function _candleBoxes(cnds,ohlc,label){
           :' · ⚠ CONTRA la tesis actual — esperar confirmacion antes de ejecutar';
       }
       out.push({off0:ohlc.length-1-i0,off1:c.off||0,lo:lo-pad,hi:hi+pad,
-        fill:'rgba('+col+',0.10)',stroke:'rgba('+col+',0.45)',
+        fill:'rgba('+col+',0.10)',stroke:'rgba('+col+',0.55)',
         label:c.name+(c.status==='confirmada'?' ✓':(c.status==='por confirmar'?' ?':'')),
+        sub:c.meaning||'',
         tip:(c.text||'')+(c.meaning?(' · Que significa: '+c.meaning):'')+align});
     }catch(e){}
   }
@@ -4787,10 +4831,9 @@ function _candleMarkers(cnds,ohlc){
       if(i<0||i>=ohlc.length||!ohlc[i]||!ohlc[i].time)continue;
       let isBull=c.direction==='alcista';
       let col=isBull?'#0b7a4b':(c.direction==='bajista'?'#c22436':'#6d7480');
-      let suf=c.status==='confirmada'?' \u2713':(c.status==='por confirmar'?' ?':'');
       out.push({time:ohlc[i].time,position:isBull?'belowBar':'aboveBar',color:col,
         shape:isBull?'arrowUp':(c.direction==='bajista'?'arrowDown':'circle'),
-        text:(c.short||c.name)+suf});
+        text:''});
     }catch(e){}
   }
   return out;
