@@ -681,9 +681,12 @@ def _score_stock(sym, data, min_target_pct=None):
     # figura chartista alineada con el label refuerza el setup; una confirmada
     # en contra lo debilita. Los pesos se recalibran con /api/calibration
     # (hit-rate historico por tipo de figura), no se agrandan a ojo.
+    # Solo pesan las figuras con EDGE MEDIDO (patterns._EDGE, tier "validada"):
+    # las de tier "contexto" aportan niveles pero no mueven el ranking, porque
+    # su objetivo no se alcanza mas que el azar (evidencia de validate_universe).
     pat = data.get("pattern") or {}
     pat_dir = pat.get("direction")
-    if pat_dir in ("alcista", "bajista"):
+    if pat_dir in ("alcista", "bajista") and pat.get("tier") == "validada":
         aligned = (pat_dir == "bajista") == is_bearish
         confirmed = pat.get("status") == "confirmada"
         if aligned:
@@ -4537,7 +4540,9 @@ function figChips(r){
   let h='';
   if(r&&r.pattern){
     let p=r.pattern;
-    h+='<span class="rec-thesis-fig" title="'+String(p.text||'').replace(/"/g,'&quot;')+'">'+p.name+' ('+p.status+')</span>';
+    let _ctx=(p.tier==='contexto');
+    let _tt=String(p.text||'')+(_ctx?' · Figura de CONTEXTO: sus niveles sirven de referencia pero su objetivo medido no se alcanza mas que el azar (edge '+(p.edge!=null?p.edge:'s/d')+' medido en 60 simbolos x 5A), asi que no pesa en el score ni en el veredicto.':' · Figura VALIDADA: edge '+(p.edge!=null?'+'+p.edge:'')+' sobre el baseline aleatorio (60 simbolos x 5A).');
+    h+='<span class="rec-thesis-fig" title="'+_tt.replace(/"/g,'&quot;')+'">'+p.name+' ('+p.status+(_ctx?', contexto':'')+')</span>';
   }
   if(r&&r.fib&&r.fib.at){
     h+='<span class="rec-thesis-fig" title="'+String(r.fib.text||'').replace(/"/g,'&quot;')+'">Fib '+r.fib.at+'%</span>';
@@ -7715,7 +7720,8 @@ def _compute_position_verdict(data, position, levels=None):
     #     formacion. Peso acotado hasta que la calibracion demuestre mas edge.
     pat_v = data.get("pattern") or {}
     pat_dir = pat_v.get("direction")
-    if pat_dir in ("alcista", "bajista"):
+    # Igual que en _score_stock: solo las figuras de edge medido pesan
+    if pat_dir in ("alcista", "bajista") and pat_v.get("tier") == "validada":
         w_pat = {"confirmada": 8, "por confirmar": 5,
                  "en formacion": 4, "vigente": 3}.get(pat_v.get("status"), 3)
         detail = f"{pat_v.get('name', 'figura')} {pat_v.get('status', '')}".strip()
@@ -9173,6 +9179,18 @@ def build_calibration_report():
 
     report = _calib.calibrate_universe(ohlc_by_symbol)
     report["symbols_requested"] = len(syms)
+    # Validacion de figuras tecnicas: hit-rate real vs baseline aleatorio por
+    # tipo (la evidencia que gobierna patterns._EDGE)
+    try:
+        import patterns as _pat
+        report["patterns"] = _pat.validate_universe(ohlc_by_symbol)
+        report["patterns_policy"] = {
+            "edge_min_target": _pat._EDGE_MIN_TARGET,
+            "edge_min_show": _pat._EDGE_MIN_SHOW,
+            "edge_table": _pat._EDGE,
+        }
+    except Exception as e:
+        report["patterns_error"] = str(e)
     return report
 
 

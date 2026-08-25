@@ -337,11 +337,29 @@ labels can be directional while `signal` is still HOLD.
   usuario: figuras de menor plazo no son fiables): los trazos/labels ya se omitían por `timeVis`
   y las priceLines de figura/fib llevan `fig:true` para que scBuild también las saltee ahí —
   solo Entrada/Target/Stop del sistema persisten en intradía.
-- **Validación (evidencia, no fe)**: `patterns.validate_universe` en `/api/calibration` recorre 5Y
-  detectando figuras confirmadas con target y mide hit-rate (¿target antes que invalidación, en
-  ≤40 ruedas?) por tipo. Los pesos de score/veredicto son deliberadamente chicos hasta que esa
-  evidencia justifique subirlos (primer corte MSFT+SPY: banderas alcistas ~55%, HCH inv ~57%,
-  cuñas rotas ~26% — las cuñas rotas son sospechosas).
+- **Validación y POLÍTICA DE EDGE (2026-08, evidencia sobre 60 símbolos × 5Y)**:
+  `patterns.validate_universe` recorre la historia detectando figuras confirmadas con target y mide
+  si el precio alcanzó el objetivo **antes** que la invalidación en ≤40 ruedas. Clave metodológica:
+  el hit-rate NO se compara contra 50% sino contra el **baseline aleatorio** de cada figura
+  (`d_inval/(d_target+d_inval)`, ruina del jugador — el target casi siempre está más lejos que la
+  invalidación); ambos se promedian solo sobre eventos **resueltos**. `edge = hit_rate − baseline`.
+  Resultados: Bandera alcista +12.3 (n=47), Triple suelo +11.8 (58), Doble suelo +5.2 (176),
+  Triple techo +2.2 (35), Cuña desc rota −1.0 (103), **Doble techo −1.3 (145)**, Cuña asc rota −2.1
+  (212), Triángulos rotos −5.1/−8.9/−10.5, **HCH invertido −15.7 (83)**, Bandera bajista −20.4 (21),
+  **HCH −24.3 (59)**. Nota: la muestra es un único régimen (5Y mayormente alcistas), lo que explica
+  que las figuras bajistas midan peor — re-medir con `/api/calibration` (expone `patterns` +
+  `patterns_policy`) cuando haya otro régimen.
+  **Política `_apply_edge_policy` (patterns.py)**: `edge ≥ +5` ⇒ tier **"validada"** (conserva
+  objetivo medido y pesa en score/veredicto); `−12 < edge < +5` ⇒ tier **"contexto"** (se muestra por
+  sus niveles de ruptura/anulación, pero `target=None` y prioridad −25, y **no** mueve score ni
+  veredicto); `edge ≤ −12` ⇒ **no se emite** (HCH, HCH invertido, Bandera bajista). Los triángulos/
+  cuñas *en formación* heredan la medición de su propia variante "rota". El umbral de descarte es
+  −12 y no −5 a propósito: el límite de 40 ruedas del test castiga más a las figuras de objetivo
+  lejano, así que un edge levemente negativo degrada a contexto pero no borra la figura.
+  **Gates en vista_web.py**: `_score_stock` y el factor 9e del veredicto exigen
+  `pattern["tier"] == "validada"`; el chip de la tesis explica en su tooltip si la figura es
+  validada (con su edge) o solo contexto. `_compute_price_levels` se autorregula: las de contexto
+  llegan con `target=None` y no compiten como objetivo.
 - **Velas japonesas (2026-08, timing de entrada de corto)**: `patterns.detect_candles(opens,highs,
   lows,closes)` — reversion (martillo, envolvente, estrella mañana/tarde, penetrante/nube oscura,
   pinzas, harami), continuacion (3 soldados/cuervos, marubozu) e indecision (doji), sobre las

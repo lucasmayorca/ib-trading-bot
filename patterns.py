@@ -53,6 +53,77 @@ import math
 
 import numpy as np
 
+# ══════════════════════════════════════════════════════════════
+#  EDGE MEDIDO (evidencia, no fe) — validate_universe sobre 60 simbolos x 5Y
+#  (2026-08). `edge` = hit-rate real menos el baseline aleatorio de cada
+#  figura (el target casi siempre esta mas lejos que la invalidacion, asi que
+#  50% NO es la referencia: el baseline es d_inval/(d_target+d_inval)).
+#  Politica: solo las figuras con edge demostrado publican objetivo medido y
+#  pesan en score/veredicto; las neutras quedan como CONTEXTO (sus niveles de
+#  ruptura/anulacion siguen siendo utiles) y las de edge negativo no se emiten.
+#  OJO: la muestra cubre un unico regimen (5 años mayormente alcistas), lo que
+#  explica que las figuras bajistas midan peor que las alcistas. Re-medir con
+#  /api/calibration cuando haya mas historia de otro regimen.
+# ══════════════════════════════════════════════════════════════
+
+_EDGE = {
+    "Bandera alcista": 12.3,            # n=47  hit 44.1% vs base 31.8%
+    "Triple suelo": 11.8,               # n=58  hit 80.0% vs base 68.2%
+    "Doble suelo": 5.2,                 # n=176 hit 71.3% vs base 66.1%
+    "Triple techo": 2.2,                # n=35  hit 68.8% vs base 66.5%
+    "Cuña descendente rota": -1.0,      # n=103 hit 14.8% vs base 15.8%
+    "Doble techo": -1.3,                # n=145 hit 63.1% vs base 64.3%
+    "Cuña ascendente rota": -2.1,       # n=212 hit 15.7% vs base 17.7%
+    "Triangulo ascendente rota": -5.1,  # n=35  hit 10.0% vs base 15.1%
+    "Triangulo simetrico rota": -8.9,   # n=16  hit  0.0% vs base  8.9%
+    "Triangulo descendente rota": -10.5,
+    "HCH invertido": -15.7,             # n=83  hit 34.1% vs base 49.9%
+    "Bandera bajista": -20.4,           # n=21  hit 12.5% vs base 32.9%
+    "Hombro-cabeza-hombro": -24.3,      # n=59  hit 20.7% vs base 45.0%
+}
+_EDGE_MIN_TARGET = 5.0    # edge minimo para publicar el objetivo medido
+# Solo se descarta lo fuertemente negativo CON muestra decente: el limite de 40
+# ruedas del test penaliza mas a las figuras de objetivo lejano, asi que un
+# edge levemente negativo no alcanza para borrar una figura (queda contexto).
+_EDGE_MIN_SHOW = -12.0
+
+
+def _apply_edge_policy(cands):
+    """Filtra/degrada figuras segun su edge MEDIDO (ver _EDGE).
+
+    - edge >= +5  -> "validada": conserva objetivo medido y pesa en score
+    - -5 < edge < +5 -> "contexto": se muestra, SIN objetivo medido ni peso
+    - edge <= -5  -> se descarta (ruido demostrado)
+    Las figuras sin medicion (rupturas de nivel, divergencias, cruces, canal)
+    no tienen objetivo y quedan como contexto por construccion. Los triangulos
+    y cuñas EN FORMACION heredan el veredicto de su version rota: su objetivo
+    medido tampoco se alcanza mas que el azar."""
+    out = []
+    for c in cands:
+        if not c:
+            continue
+        nm = c.get("name", "")
+        edge = _EDGE.get(nm)
+        if edge is None and (nm.startswith("Triangulo") or nm.startswith("Cuña")):
+            # en formacion: hereda la medicion de SU MISMA variante rota
+            edge = _EDGE.get(nm + " rota")
+        if edge is not None and edge <= _EDGE_MIN_SHOW:
+            continue                              # ruido demostrado
+        c = dict(c)
+        if edge is None:
+            c["tier"] = "contexto"                # sin objetivo, sin medicion
+        elif edge >= _EDGE_MIN_TARGET:
+            c["tier"] = "validada"
+            c["edge"] = edge
+        else:
+            c["tier"] = "contexto"
+            c["edge"] = edge
+            c["target"] = None                    # objetivo no confiable
+            c["priority"] = max(20, c.get("priority", 50) - 25)
+        out.append(c)
+    return sorted(out, key=lambda x: -x["priority"])
+
+
 # ── prioridades (figura dominante = la de mayor prioridad) ──
 _PRIO = {
     "ruptura_conf": 90, "ruptura_por_conf": 80,
@@ -1160,7 +1231,9 @@ def detect(highs, lows, closes, rsi=None, sma50=None, sma200=None,
         cands.append(_pat_ma_cross(sma50, sma200))
     if include_fallback:
         cands.append(_pat_channel_fallback(closes, struct_txt))
-    cands = sorted([c for c in cands if c], key=lambda c: -c["priority"])
+    # Politica de edge medido: descarta ruido demostrado y degrada a contexto
+    # las figuras sin edge (les quita el objetivo medido)
+    cands = _apply_edge_policy(cands)
     # ¿Esta cada figura en su punto de decision? (el consumidor decide si
     # filtra por esto — el pulso muestra contexto siempre, el escaner filtra)
     for c in cands:
@@ -1274,10 +1347,20 @@ def validate_history(highs, lows, closes, step=3, horizon=40, warmup=120):
                     inv = j
                     break
         end = hit or inv
+        # Distancias al target y a la invalidacion (fracciones del precio):
+        # permiten comparar el hit-rate contra el baseline "aleatorio" de cada
+        # figura — el target casi siempre esta MAS LEJOS que la invalidacion,
+        # asi que 50% no es la referencia correcta. Baseline tipo ruina del
+        # jugador: p = d_inval / (d_target + d_inval).
+        px = closes[i] or 1.0
+        d_t = abs(p["target"] - px) / px
+        d_i = abs(p["invalidation"] - px) / px
         events.append({"type": p["name"], "direction": p["direction"],
                        "hit": hit is not None,
                        "resolved": end is not None,
-                       "bars": (end - i) if end else horizon})
+                       "bars": (end - i) if end else horizon,
+                       "d_target": d_t, "d_inval": d_i,
+                       "baseline": (d_i / (d_t + d_i)) if (d_t + d_i) > 0 else 0.5})
     return events
 
 
@@ -1296,20 +1379,30 @@ def validate_universe(ohlc_by_symbol):
     by_type = {}
     for e in all_events:
         t = by_type.setdefault(e["type"], {"n": 0, "hits": 0, "unresolved": 0,
-                                           "bars_sum": 0})
+                                           "bars_sum": 0, "base_sum": 0.0})
         t["n"] += 1
         if e["hit"]:
             t["hits"] += 1
         if not e["resolved"]:
             t["unresolved"] += 1
         t["bars_sum"] += e["bars"]
+        # El baseline se promedia SOLO sobre eventos resueltos, igual que el
+        # hit-rate: mezclarlo con los no resueltos sesga la comparacion.
+        if e["resolved"]:
+            t["base_sum"] += e.get("baseline", 0.5)
+            t["base_n"] = t.get("base_n", 0) + 1
     out = {}
     for t, v in sorted(by_type.items(), key=lambda kv: -kv[1]["n"]):
         resolved = v["n"] - v["unresolved"]
+        hr = (v["hits"] / resolved * 100) if resolved else None
+        bn = v.get("base_n", 0)
+        base = (v["base_sum"] / bn * 100) if bn else None
         out[t] = {
             "n": v["n"],
             "hits": v["hits"],
-            "hit_rate": round(v["hits"] / resolved * 100, 1) if resolved else None,
+            "hit_rate": round(hr, 1) if hr is not None else None,
+            "baseline": round(base, 1) if base is not None else None,
+            "edge": (round(hr - base, 1) if (hr is not None and base is not None) else None),
             "unresolved": v["unresolved"],
             "avg_bars": round(v["bars_sum"] / v["n"], 1) if v["n"] else None,
         }
