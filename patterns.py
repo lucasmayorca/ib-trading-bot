@@ -199,30 +199,37 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
     def _check(pivs, is_top):
         if len(pivs) < 2:
             return None
-        triple = False
-        if len(pivs) >= 3:
-            (i1, p1), (i2, p2), (i3, p3) = pivs[-3:]
-            if (max(p1, p2, p3) - min(p1, p2, p3) <= 0.75 * atr
-                    and i3 - i1 >= 20 and i2 - i1 >= 5 and i3 - i2 >= 5
-                    and i3 >= n - 70):
-                triple = True
-        if triple:
-            idx_a, idx_b = i1, i3
-            level = (p1 + p2 + p3) / 3
-            touch_pts = [(i1, p1), (i2, p2), (i3, p3)]
-        else:
-            (i1, p1), (i2, p2) = pivs[-2:]
-            if abs(p1 - p2) > 0.6 * atr or (i2 - i1) < 12 or i2 < n - 70:
-                return None
-            idx_a, idx_b = i1, i2
-            level = (p1 + p2) / 2
-            touch_pts = [(i1, p1), (i2, p2)]
+        # El pivote que CIERRA la figura debe ser reciente (figura viva)...
+        last_i, last_p = pivs[-1]
+        if last_i < n - 70:
+            return None
+        # ...pero los otros toques se buscan entre TODOS los pivotes mayores
+        # del historico de 5 años (antes solo miraba los ultimos 2-3 de la
+        # lista: un doble techo H1+H3 con un H2 mas bajo en medio no se veia).
+        tol_lvl = max(0.6 * atr, 0.015 * (closes[-1] or 1))
+        group = [(i, p) for i, p in pivs if abs(p - last_p) <= tol_lvl]
+        # separacion minima entre toques y span total <= ~1 año (mas que eso
+        # es un rango lateral, no un doble techo)
+        group = [g for g in group if last_i - g[0] <= 250]
+        pruned = []
+        for g in group:
+            if not pruned or (g[0] - pruned[-1][0]) >= 20:
+                pruned.append(g)
+        group = pruned
+        if len(group) < 2:
+            return None
+        triple = len(group) >= 3
+        touch_pts = group[-3:] if triple else group[-2:]
+        idx_a, idx_b = touch_pts[0][0], touch_pts[-1][0]
+        level = sum(p for _, p in touch_pts) / len(touch_pts)
+        if idx_b - idx_a < 20:
+            return None
         seg = lows[idx_a:idx_b + 1] if is_top else highs[idx_a:idx_b + 1]
         neck = float(min(seg)) if is_top else float(max(seg))
         depth = (level - neck) if is_top else (neck - level)
         # Conviccion: solo estructuras PROMINENTES del grafico global — la
         # figura debe medir >= max(2.5·ATR, 3.5% del precio)
-        if depth < max(2.5 * atr, 0.035 * (closes[-1] or 1)):
+        if depth < max(3 * atr, 0.05 * (closes[-1] or 1)):
             return None
         c = closes[-1]
         base = "Triple" if triple else "Doble"
@@ -290,11 +297,13 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
 
     def _check(inverted):
         pivs = piv_l if inverted else piv_h
-        rec = [(i, p) for i, p in pivs if i >= n - 220]
+        # Estructura buscada sobre las 5 años completas; el hombro derecho
+        # (i3) debe ser reciente y el span total acotado (<=400 ruedas)
+        rec = list(pivs)
         if len(rec) < 3:
             return None
         (i1, p1), (i2, p2), (i3, p3) = rec[-3:]
-        if i3 < n - 70 or i2 - i1 < 5 or i3 - i2 < 5:
+        if i3 < n - 70 or i2 - i1 < 5 or i3 - i2 < 5 or (i3 - i1) > 400:
             return None
         if not inverted:
             if not (p2 > p1 + 1.2 * atr and p2 > p3 + 1.2 * atr):
@@ -386,8 +395,10 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
         return None
     n = len(closes)
     price = closes[-1]
-    ph = [(i, p) for i, p in piv_h if i >= n - 160]
-    pl = [(i, p) for i, p in piv_l if i >= n - 160]
+    # Ventana de estructura amplia (hasta 400 ruedas): un triangulo del
+    # grafico de 5 años puede tardar mas de 160 ruedas en formarse
+    ph = [(i, p) for i, p in piv_h if i >= n - 400]
+    pl = [(i, p) for i, p in piv_l if i >= n - 400]
     if len(ph) < 3 or len(pl) < 3:
         return None
     xh, yh = np.array([p[0] for p in ph], float), np.array([p[1] for p in ph])
@@ -401,7 +412,7 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
     if spread0 <= 0 or spread1 <= 0.3 * atr or spread1 > 0.72 * spread0:
         return None
     # Conviccion: la figura debe nacer con altura >= max(4·ATR, 6% del precio)
-    if spread0 < max(4 * atr, 0.06 * price):
+    if spread0 < max(5 * atr, 0.08 * price):
         return None
     shp = sh / price * 100
     slp = sl_ / price * 100
@@ -493,7 +504,7 @@ def _pat_flag(highs, lows, closes, atr):
             if s < 0:
                 continue
             move = closes[end] - closes[s]
-            if (abs(move) >= max(5 * atr, 0.08 * (closes[-1] or 1))
+            if (abs(move) >= max(6 * atr, 0.10 * (closes[-1] or 1))
                     and (best is None or abs(move) > abs(best[2]))):
                 best = (s, end, move)
     if best is None:
@@ -586,7 +597,7 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
     rsi = np.asarray(_sanitize(rsi_series), float)
 
     def _check(pivs, bearish):
-        recent = [(i, p) for i, p in pivs if i >= n - 90]
+        recent = [(i, p) for i, p in pivs if i >= n - 250]
         if len(recent) < 2:
             return None
         (i1, p1), (i2, p2) = recent[-2], recent[-1]

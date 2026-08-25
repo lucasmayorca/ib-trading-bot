@@ -244,6 +244,19 @@ labels can be directional while `signal` is still HOLD.
   (`major`=estructura del gráfico global; `short`=banderas/divergencias/velas). `_scScaleFilter` en
   `scRenderStack` dibuja SOLO `major` en ALL/5Y (3 velas en 5Y son 3px — ilegible y sin sentido) y
   todo en 3M/1Y; nada en intradía. El recuadro de velas tiene ancho mínimo 14px para ser visible.
+- **Ventana de análisis = 5 AÑOS para TODOS los detectores (2026-08, "para todos los patrones")**:
+  la estructura se busca sobre el histórico completo y solo el elemento que CIERRA la figura debe
+  ser reciente (así sigue siendo accionable). Cambios: doble/triple techo-suelo ya no compara los
+  últimos 2-3 pivotes de la lista sino que agrupa TODOS los pivotes mayores de 5Y que estén al
+  mismo nivel (tol max(0.6·ATR, 1.5%), toques separados ≥20 ruedas, span ≤250 ruedas, último toque
+  ≤70 ruedas) — antes un doble techo H1+H3 con un H2 más bajo en medio no se veía; HCH de 220 →
+  histórico completo (span ≤400, hombro derecho ≤70 ruedas); triángulos/cuñas de 160 → 400 ruedas;
+  divergencia RSI de 90 → 250 ruedas. Con ventanas más amplias aparecen más figuras, así que se
+  subieron los umbrales: profundidad doble/triple ≥ max(3·ATR, 5%), altura inicial de triángulo
+  ≥ max(5·ATR, 8%), palo de bandera ≥ max(6·ATR, 10%). Barrido de 18 large caps: 13 con figura
+  (11 `major`), con anclas datadas a meses de distancia (MSFT doble suelo 02/26→07/26, XOM HCH inv
+  05/26→06/26→08/26). Las cuñas rotas siguen siendo el eslabón débil según `validate_universe`
+  (~26% hit-rate) — su peso en score/veredicto queda chico a propósito hasta tener más evidencia.
 - **Detectores**: ruptura de nivel (3+ toques), doble/TRIPLE techo-suelo, hombro-cabeza-hombro
   (+ invertido), triángulos/cuñas (incluye "rota" ≤8 ruedas), banderas de continuación (palo
   ≥3.5·ATR + consolidación ≤55% del palo), cruce dorado/muerte (`include_cross`, solo pulso),
