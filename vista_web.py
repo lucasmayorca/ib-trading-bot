@@ -4028,9 +4028,10 @@ function _scHist(times,arr,posC,negC){
 /* Primitive: bandas horizontales sombreadas (zonas de sobrecompra/sobreventa).
    LW no soporta bandas nativas; se dibujan sobre el canvas del panel, detrás de
    la serie. bands = [{from, to, color}] en precio. */
-// Recuadros PUNTEADOS sobre las velas que FORMAN un patron de velas japonesas
-// (resaltado estilo investing.com) + nombre y significado dibujados al lado.
-// boxes=[{i0,i1,lo,hi,fill,stroke,label,sub}] con i = indices logicos ENTEROS.
+// Recuadros PUNTEADOS que resaltan las velas que FORMAN un patron de velas
+// japonesas. SOLO el recuadro — el nombre y el significado van en el tooltip
+// del hover (texto dibujado encima del chart resultaba ilegible).
+// boxes=[{i0,i1,lo,hi,fill,stroke}] con i = indices logicos ENTEROS.
 // GOTCHA LW 4.1: logicalToCoordinate NO acepta fraccionarios (devuelve 0) y
 // dentro del draw() del render pass tampoco es confiable — las coordenadas se
 // calculan en updateAllViews() con logicos enteros y medio-ancho de barra en
@@ -4050,8 +4051,7 @@ function _scBoxOverlay(boxes){
         let y1=_series.priceToCoordinate(b.lo);
         if(xa==null||xb==null||y0==null||y1==null)continue;
         let half=(xn!=null&&xn>xb)?(xn-xb)/2:3;
-        _px.push({x0:xa-half,x1:xb+half,y0:y0,y1:y1,fill:b.fill,stroke:b.stroke,
-                  label:b.label||'',sub:b.sub||''});
+        _px.push({x0:xa-half,x1:xb+half,y0:y0,y1:y1,fill:b.fill,stroke:b.stroke});
       }catch(e){}
     }
   }
@@ -4068,40 +4068,13 @@ function _scBoxOverlay(boxes){
               let ctx=scope.context;
               for(let p of _px){
                 if(p.x1<0||p.x0>scope.mediaSize.width)continue;
-                ctx.fillStyle=p.fill;ctx.strokeStyle=p.stroke;ctx.lineWidth=1;
+                ctx.fillStyle=p.fill;ctx.strokeStyle=p.stroke;ctx.lineWidth=1.5;
                 ctx.setLineDash([4,3]);
                 ctx.beginPath();
                 if(ctx.roundRect)ctx.roundRect(p.x0,p.y0,p.x1-p.x0,p.y1-p.y0,3);
                 else ctx.rect(p.x0,p.y0,p.x1-p.x0,p.y1-p.y0);
                 ctx.fill();ctx.stroke();
                 ctx.setLineDash([]);
-                if(!p.label)continue;
-                // Nombre (linea 1) + significado (hasta 2 lineas) sobre el recuadro;
-                // si no hay lugar arriba, van debajo
-                let lines=[{t:p.label,f:'700 11px -apple-system,system-ui,sans-serif',c:p.stroke}];
-                if(p.sub){
-                  let words=p.sub.split(' '),l1='',l2='';
-                  for(let w of words){
-                    if(l1.length+w.length<44&&!l2)l1+=(l1?' ':'')+w;
-                    else if(l2.length+w.length<44)l2+=(l2?' ':'')+w;
-                    else{l2+='…';break;}
-                  }
-                  let subF='500 9.5px -apple-system,system-ui,sans-serif';
-                  lines.push({t:l1,f:subF,c:'#5c5c58'});
-                  if(l2)lines.push({t:l2,f:subF,c:'#5c5c58'});
-                }
-                let lh=12,blockH=lines.length*lh+4;
-                let above=p.y0-blockH>=4;
-                let y=above?(p.y0-blockH+lh-4):(p.y1+lh+2);
-                let x=Math.max(4,Math.min(p.x0,scope.mediaSize.width-180));
-                ctx.textBaseline='alphabetic';ctx.lineJoin='round';
-                for(let ln of lines){
-                  ctx.font=ln.f;
-                  ctx.strokeStyle='rgba(255,255,255,0.9)';ctx.lineWidth=3;
-                  ctx.strokeText(ln.t,x,y);
-                  ctx.fillStyle=ln.c;ctx.fillText(ln.t,x,y);
-                  y+=lh;
-                }
               }
             });
           }};
@@ -4326,7 +4299,7 @@ function scBuild(key,data,decorate,heights){
         if(data.timeVis&&pl.fig)return;
         let opts=Object.assign({},pl);delete opts.tip;delete opts.fig;
         let ref=cs.createPriceLine(opts);
-        hoverables.push({kind:'pl',ref:ref,price:pl.price,w:pl.lineWidth||1,label:pl.title||'',tip:pl.tip||''});
+        hoverables.push({kind:'pl',ref:ref,price:pl.price,w:pl.lineWidth||1,label:pl.title||'',tip:pl.tip||'',tipColor:pl.color});
       }catch(e){}});
       // Lineas superpuestas (canal de regresion, geometria de figuras):
       // decorate.lines=[{values,color,width,style,label,tip}] con values en el
@@ -4339,7 +4312,7 @@ function scBuild(key,data,decorate,heights){
         else if(vals.length<times.length)vals=new Array(times.length-vals.length).fill(null).concat(vals);
         let s=chart.addLineSeries({color:ln.color||'#88888866',lineWidth:ln.width||1,lineStyle:(ln.style!=null?ln.style:LightweightCharts.LineStyle.Dashed),priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
         s.setData(_scLine(times,vals));
-        if(ln.label||ln.tip)hoverables.push({kind:'ln',ref:s,vals:vals,w:ln.width||1,label:ln.label||'',tip:ln.tip||''});
+        if(ln.label||ln.tip)hoverables.push({kind:'ln',ref:s,vals:vals,w:ln.width||1,label:ln.label||'',tip:ln.tip||'',tipColor:ln.color});
       }catch(e){}});
       if(decorate.markers&&decorate.markers.length){try{cs.setMarkers(decorate.markers);}catch(e){}}
       // Etiquetas de texto sobre el chart (nombre de figura, % de fib) —
@@ -4356,8 +4329,8 @@ function scBuild(key,data,decorate,heights){
       if(!data.timeVis&&decorate.candleBoxes&&decorate.candleBoxes.length){
         candleBoxes=decorate.candleBoxes.map(function(b){
           return {i0:times.length-1-(b.off0||0),i1:times.length-1-(b.off1||0),
-                  lo:b.lo,hi:b.hi,fill:b.fill,stroke:b.stroke,sub:b.sub||'',
-                  kind:'box',ref:null,w:1,label:b.label||'',tip:b.tip||''};
+                  lo:b.lo,hi:b.hi,fill:b.fill,stroke:b.stroke,
+                  kind:'box',ref:null,w:1,label:b.label||'',tip:b.tip||'',tipColor:b.stroke};
         });
         try{cs.attachPrimitive(_scBoxOverlay(candleBoxes));}catch(e){}
       }
@@ -4398,7 +4371,10 @@ function scBuild(key,data,decorate,heights){
             if(hovered&&hovered.ref){try{hovered.ref.applyOptions({lineWidth:hovered.w+1});}catch(e){}}
           }
           if(hovered&&param&&param.point){
-            tipEl.textContent=(hovered.label?hovered.label:'')+(hovered.tip&&hovered.tip!==hovered.label?((hovered.label?' — ':'')+hovered.tip):'');
+            let _tt=(hovered.label?'<b>'+hovered.label+'</b>':'');
+            if(hovered.tip&&hovered.tip!==hovered.label)_tt+=(hovered.label?'<br>':'')+hovered.tip;
+            tipEl.innerHTML=_tt;
+            tipEl.style.borderLeftColor=hovered.tipColor||'#7c3aed';
             tipEl.style.display='block';
             let x=param.point.x+14,y=param.point.y+12;
             if(x+tipEl.offsetWidth>p.el.clientWidth-8)x=Math.max(8,param.point.x-tipEl.offsetWidth-14);
@@ -4811,9 +4787,8 @@ function _candleBoxes(cnds,ohlc,label){
           :' · ⚠ CONTRA la tesis actual — esperar confirmacion antes de ejecutar';
       }
       out.push({off0:ohlc.length-1-i0,off1:c.off||0,lo:lo-pad,hi:hi+pad,
-        fill:'rgba('+col+',0.10)',stroke:'rgba('+col+',0.55)',
-        label:c.name+(c.status==='confirmada'?' ✓':(c.status==='por confirmar'?' ?':'')),
-        sub:c.meaning||'',
+        fill:'rgba('+col+',0.10)',stroke:'rgba('+col+',0.65)',
+        label:c.name+(c.status==='confirmada'?' ✓ (confirmada)':(c.status==='por confirmar'?' ? (por confirmar)':'')),
         tip:(c.text||'')+(c.meaning?(' · Que significa: '+c.meaning):'')+align});
     }catch(e){}
   }

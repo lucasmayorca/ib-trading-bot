@@ -311,8 +311,10 @@ labels can be directional while `signal` is still HOLD.
   con fechas diarias; en intradia no matchean y no se dibujan). **Resaltado + encuadre (2026-08)**:
   cada patron lleva `span` (1-3 velas) y `meaning` (explicacion en castellano); `_candleBoxes` +
   primitive `_scBoxOverlay` dibujan un recuadro PUNTEADO translucido verde/rojo sobre las velas que
-  FORMAN el patron, con el nombre+estado y el significado (2 lineas envueltas) rotulados al lado, y
-  hoverable (tooltip = texto + significado + encuadre vs tesis). **GOTCHA LW 4.1 (costo debugging)**:
+  FORMAN el patron — SOLO el recuadro: el nombre, el significado y el encuadre vs tesis van en el
+  TOOLTIP del hover (texto dibujado sobre el chart resultaba ilegible encima de lineas/markers —
+  feedback del usuario 2026-08). El tooltip del hover muestra titulo en negrita + detalle y toma
+  el color de la linea/recuadro en su borde (`tipColor`). **GOTCHA LW 4.1 (costo debugging)**:
   `timeScale().logicalToCoordinate()` NO acepta logicos FRACCIONARIOS (devuelve 0, el recuadro
   colapsaba invisible en x=0) y dentro del `draw()` del render pass tampoco es confiable — las
   coordenadas se calculan en `updateAllViews()` con logicos ENTEROS + medio ancho de barra en px,
