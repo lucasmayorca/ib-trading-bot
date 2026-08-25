@@ -232,7 +232,19 @@ labels can be directional while `signal` is still HOLD.
   los análisis: escáner acciones/ETF, Top Recomendaciones, Mi Cartera y el pulso. Server-side puro
   (numpy, sin IO) sobre el `chart` que ya viaja en cada análisis — **el bridge NO se toca**: el
   cloud computa `attach_to_analysis` al recibir cada `analysis_batch`/`etf_analysis_batch`.
-- **Detectores**: ruptura de nivel (2+ toques), doble/TRIPLE techo-suelo, hombro-cabeza-hombro
+- **ANCLAJE UNIFICADO por zigzag (2026-08, crítico — feedback "no entiendo el anclaje")**: TODOS
+  los detectores se construyen sobre los MISMOS pivotes mayores (`_zigzag`, window 5, swing mínimo
+  max(2.5·ATR, 4% del precio)) sobre el histórico completo — antes usaban `_pivots_arr(window=3,
+  lookback=252)`, extremos locales de ±3 barras que en un gráfico de 5 años son ruido y anclaban
+  figuras en cualquier wiggle. Consecuencias: "N toques" = N swings mayores al mismo precio (no
+  pivotes menores agrupados), y las ventanas de recencia se ampliaron (dobles/HCH n−70, triángulo
+  n−160, divergencia n−90) porque los pivotes mayores son más espaciados. El fib usa el MISMO
+  zigzag con umbral más grueso (`0.20·rango` del gráfico) para que un impulso dominante no se parta
+  en pedazos por rebotes intermedios. **Escala por ventana**: cada figura lleva `scale`
+  (`major`=estructura del gráfico global; `short`=banderas/divergencias/velas). `_scScaleFilter` en
+  `scRenderStack` dibuja SOLO `major` en ALL/5Y (3 velas en 5Y son 3px — ilegible y sin sentido) y
+  todo en 3M/1Y; nada en intradía. El recuadro de velas tiene ancho mínimo 14px para ser visible.
+- **Detectores**: ruptura de nivel (3+ toques), doble/TRIPLE techo-suelo, hombro-cabeza-hombro
   (+ invertido), triángulos/cuñas (incluye "rota" ≤8 ruedas), banderas de continuación (palo
   ≥3.5·ATR + consolidación ≤55% del palo), cruce dorado/muerte (`include_cross`, solo pulso),
   divergencia RSI/precio, canal/estructura fallback (`include_fallback`, solo pulso). Cada figura:

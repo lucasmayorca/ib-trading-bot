@@ -243,7 +243,8 @@ def _detect_patterns(df, piv_h, piv_l, all_levels, atr, price,
         df["high"].tolist(), df["low"].tolist(), df["close"].tolist(),
         rsi=list(rsi_series) if rsi_series is not None else None,
         sma50=sma50_arr, sma200=sma200_arr,
-        include_cross=True, include_fallback=True)
+        include_cross=True, include_fallback=True,
+        dates=df["date"].tolist())
     struct_dir, struct_txt = res["structure"]
     return res["pattern"], struct_dir, struct_txt, res["fibonacci"]
 

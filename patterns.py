@@ -181,11 +181,11 @@ def _pat_breakout(closes, all_levels, atr):
     broke = "techo" if d == "alcista" else "piso"
     return {
         "name": ("Ruptura de techo" if d == "alcista" else "Perdida de piso"),
-        "direction": d, "status": st, "key_level": _r(L),
+        "scale": "major", "direction": d, "status": st, "key_level": _r(L),
         "breakout": _r(L), "invalidation": _r(L), "target": None,
         "priority": _PRIO["ruptura_conf"] if confirmed else _PRIO["ruptura_por_conf"],
         "text": (f"{'Ruptura del' if d == 'alcista' else 'Perdida del'} {broke} "
-                 f"{_usd(_r(L))} ({lvl['touches']} toques), {st} — "
+                 f"{_usd(_r(L))} ({lvl['touches']} swings mayores lo tocaron), {st} — "
                  f"ese nivel ahora actua de {rol}"),
     }
 
@@ -204,7 +204,7 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
             (i1, p1), (i2, p2), (i3, p3) = pivs[-3:]
             if (max(p1, p2, p3) - min(p1, p2, p3) <= 0.75 * atr
                     and i3 - i1 >= 20 and i2 - i1 >= 5 and i3 - i2 >= 5
-                    and i3 >= n - 45):
+                    and i3 >= n - 70):
                 triple = True
         if triple:
             idx_a, idx_b = i1, i3
@@ -212,7 +212,7 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
             touch_pts = [(i1, p1), (i2, p2), (i3, p3)]
         else:
             (i1, p1), (i2, p2) = pivs[-2:]
-            if abs(p1 - p2) > 0.6 * atr or (i2 - i1) < 12 or i2 < n - 45:
+            if abs(p1 - p2) > 0.6 * atr or (i2 - i1) < 12 or i2 < n - 70:
                 return None
             idx_a, idx_b = i1, i2
             level = (p1 + p2) / 2
@@ -270,7 +270,7 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
                         "pos": "above" if is_top else "below"}
                        for i, pv in touch_pts],
         }
-        return {"name": nm, "direction": d, "status": st,
+        return {"name": nm, "scale": "major", "direction": d, "status": st,
                 "key_level": _r(neck), "breakout": _r(neck),
                 "invalidation": _r(invalid), "target": _r(target),
                 "priority": _PRIO[key], "text": txt, "draw": draw}
@@ -290,11 +290,11 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
 
     def _check(inverted):
         pivs = piv_l if inverted else piv_h
-        rec = [(i, p) for i, p in pivs if i >= n - 140]
+        rec = [(i, p) for i, p in pivs if i >= n - 220]
         if len(rec) < 3:
             return None
         (i1, p1), (i2, p2), (i3, p3) = rec[-3:]
-        if i3 < n - 45 or i2 - i1 < 5 or i3 - i2 < 5:
+        if i3 < n - 70 or i2 - i1 < 5 or i3 - i2 < 5:
             return None
         if not inverted:
             if not (p2 > p1 + 1.2 * atr and p2 > p3 + 1.2 * atr):
@@ -371,7 +371,7 @@ def _pat_hch(highs, lows, closes, piv_h, piv_l, atr):
                  "pos": "below" if inverted else "above"},
             ],
         }
-        return {"name": nm, "direction": d, "status": st,
+        return {"name": nm, "scale": "major", "direction": d, "status": st,
                 "key_level": _r(neck), "breakout": _r(neck),
                 "invalidation": _r(invalid), "target": _r(target),
                 "priority": _PRIO["hch_conf" if confirmed else "hch_form"],
@@ -386,8 +386,8 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
         return None
     n = len(closes)
     price = closes[-1]
-    ph = [(i, p) for i, p in piv_h if i >= n - 90]
-    pl = [(i, p) for i, p in piv_l if i >= n - 90]
+    ph = [(i, p) for i, p in piv_h if i >= n - 160]
+    pl = [(i, p) for i, p in piv_l if i >= n - 160]
     if len(ph) < 3 or len(pl) < 3:
         return None
     xh, yh = np.array([p[0] for p in ph], float), np.array([p[1] for p in ph])
@@ -457,7 +457,7 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
         d2 = "alcista" if above else "bajista"
         lvl = float(line_h_now if above else line_l_now)
         target = lvl + spread0 if above else lvl - spread0
-        return {"name": nm + " rota", "direction": d2, "status": "confirmada",
+        return {"name": nm + " rota", "scale": "major", "direction": d2, "status": "confirmada",
                 "key_level": _r(lvl), "breakout": _r(lvl),
                 "invalidation": _r(lvl), "target": _r(target),
                 "priority": _PRIO["triangulo_roto"],
@@ -475,7 +475,7 @@ def _pat_triangle(highs, lows, closes, piv_h, piv_l, atr):
         target = _r(float(sup_now) - spread0) if sup_now else None
     else:
         breakout, invalid, target = res_now, sup_now, None
-    return {"name": nm, "direction": d, "status": "en formacion",
+    return {"name": nm, "scale": "major", "direction": d, "status": "en formacion",
             "key_level": breakout, "breakout": breakout,
             "invalidation": invalid, "target": target,
             "priority": _PRIO["triangulo_form"], "text": txt, "draw": tri_draw}
@@ -546,7 +546,7 @@ def _pat_flag(highs, lows, closes, atr):
         {"x0": off_e, "y0": _r(cons_l), "x1": 0, "y1": _r(cons_l), "dash": True,
          "lbl": "Piso de la consolidacion"},
     ]}
-    return {"name": nm, "direction": d, "status": st,
+    return {"name": nm, "scale": "short", "direction": d, "status": st,
             "key_level": _r(breakout), "breakout": _r(breakout),
             "invalidation": _r(invalid), "target": _r(target),
             "priority": _PRIO["bandera_conf" if confirmed else "bandera_form"],
@@ -568,7 +568,7 @@ def _pat_ma_cross(sma50, sma200):
             golden = diff[-1] > 0
             nm = "Cruce dorado" if golden else "Cruce de la muerte"
             return {
-                "name": nm, "direction": "alcista" if golden else "bajista",
+                "name": nm, "scale": "major", "direction": "alcista" if golden else "bajista",
                 "status": "confirmada", "key_level": None,
                 "breakout": None, "invalidation": None, "target": None,
                 "priority": _PRIO["cruce"],
@@ -586,11 +586,11 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
     rsi = np.asarray(_sanitize(rsi_series), float)
 
     def _check(pivs, bearish):
-        recent = [(i, p) for i, p in pivs if i >= n - 60]
+        recent = [(i, p) for i, p in pivs if i >= n - 90]
         if len(recent) < 2:
             return None
         (i1, p1), (i2, p2) = recent[-2], recent[-1]
-        if i2 < n - 25 or i1 >= len(rsi) or i2 >= len(rsi):
+        if i2 < n - 40 or i1 >= len(rsi) or i2 >= len(rsi):
             return None
         r1, r2 = rsi[i1], rsi[i2]
         if np.isnan(r1) or np.isnan(r2):
@@ -602,7 +602,7 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
              "lbl": "Pivotes que divergen del RSI"},
         ]}
         if bearish and p2 > p1 and r2 < r1 - 5:
-            return {"name": "Divergencia bajista", "direction": "bajista",
+            return {"name": "Divergencia bajista", "scale": "short", "direction": "bajista",
                     "status": "vigente", "key_level": None,
                     "breakout": None, "invalidation": None, "target": None,
                     "priority": _PRIO["divergencia"],
@@ -611,7 +611,7 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
                              "el impulso pierde fuerza"),
                     "draw": dv_draw}
         if not bearish and p2 < p1 and r2 > r1 + 5:
-            return {"name": "Divergencia alcista", "direction": "alcista",
+            return {"name": "Divergencia alcista", "scale": "short", "direction": "alcista",
                     "status": "vigente", "key_level": None,
                     "breakout": None, "invalidation": None, "target": None,
                     "priority": _PRIO["divergencia"],
@@ -647,7 +647,7 @@ def _pat_channel_fallback(closes, struct_txt, lookback=120):
     arr = np.asarray(closes[-lookback:], float)
     n = len(arr)
     if n < 40:
-        return {"name": "Estructura", "direction": "neutral", "status": "vigente",
+        return {"name": "Estructura", "scale": "major", "direction": "neutral", "status": "vigente",
                 "key_level": None, "breakout": None, "invalidation": None,
                 "target": None, "priority": _PRIO["estructura"],
                 "text": struct_txt.capitalize()}
@@ -676,7 +676,7 @@ def _pat_channel_fallback(closes, struct_txt, lookback=120):
         ptxt = "en la mitad superior del canal"
     else:
         ptxt = "en la mitad inferior del canal"
-    return {"name": nm, "direction": d, "status": "vigente",
+    return {"name": nm, "scale": "major", "direction": d, "status": "vigente",
             "key_level": _r(bot if d == "alcista" else top),
             "breakout": None, "invalidation": None, "target": None,
             "priority": _PRIO["canal"],
@@ -744,7 +744,7 @@ def _zigzag(highs, lows, min_swing, window=5):
     return zig
 
 
-def fibonacci(highs, lows, closes, atr, lookback=None):
+def fibonacci(highs, lows, closes, atr, lookback=None, dates=None):
     """Retrocesos y extensiones del ULTIMO SWING MAYOR del grafico completo.
 
     Teoria: los fib se trazan entre dos pivotes estructurales del impulso
@@ -760,7 +760,12 @@ def fibonacci(highs, lows, closes, atr, lookback=None):
     price = float(closes[-1])
     if price <= 0:
         return None
-    min_swing = max(6 * atr, 0.12 * price)
+    # El umbral de swing debe escalar con el RANGO del grafico, no solo con ATR
+    # y precio: con un umbral chico, una caida dominante se parte en pedazos por
+    # rebotes intermedios y el fib ancla en un pivote menor (bug TEAM: anclaba
+    # $242 en vez del techo real $326 que inicio la caida).
+    rango = max(highs) - min(lows)
+    min_swing = max(6 * atr, 0.12 * price, 0.20 * rango)
     zig = _zigzag(highs, lows, min_swing)
     if len(zig) < 2:
         return None
@@ -814,7 +819,21 @@ def fibonacci(highs, lows, closes, atr, lookback=None):
                    else "extendiendo por debajo del minimo del impulso")
     else:
         pos_txt = f"retrocedio el {max(0.0, retr) * 100:.0f}% del impulso"
-    txt = (f"impulso {dirw} {_usd(_r(lo))}→{_usd(_r(hi))} (swing mayor del zigzag): {pos_txt}"
+    def _dt(idx):
+        try:
+            s = str(dates[idx])[:10].replace("-", "")
+            return f"{s[6:8]}-{s[4:6]}-{s[:4]}" if len(s) >= 8 and s[:8].isdigit() else str(dates[idx])[:10]
+        except Exception:
+            return None
+    d_start = _dt(lo_abs if up else hi_abs) if dates else None
+    d_end = _dt(hi_abs if up else lo_abs) if dates else None
+    if up:
+        anchor_txt = (f"del piso {_usd(_r(lo))}" + (f" ({d_start})" if d_start else "")
+                      + f" al techo {_usd(_r(hi))}" + (f" ({d_end})" if d_end else ""))
+    else:
+        anchor_txt = (f"del techo {_usd(_r(hi))}" + (f" ({d_start})" if d_start else "")
+                      + f" al piso {_usd(_r(lo))}" + (f" ({d_end})" if d_end else ""))
+    txt = (f"impulso {dirw} {anchor_txt}: {pos_txt}"
            + (f", apoyado en el nivel fib {at}% ({_usd(_r(levels[at]))})" if at else ""))
     # Offsets (desde la ultima barra) de los dos extremos del impulso, para que
     # el frontend dibuje los niveles fib DESDE el inicio del impulso hasta hoy
@@ -1062,7 +1081,7 @@ def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=2)
 # ══════════════════════════════════════════════════════════════
 
 def detect(highs, lows, closes, rsi=None, sma50=None, sma200=None,
-           include_cross=False, include_fallback=False):
+           include_cross=False, include_fallback=False, dates=None):
     """Corre todos los detectores y elige la figura dominante.
 
     Returns {"pattern": dict|None, "candidates": [dicts], "fibonacci": dict|None,
@@ -1082,7 +1101,15 @@ def detect(highs, lows, closes, rsi=None, sma50=None, sma200=None,
     if not atr:
         return empty
 
-    piv_h, piv_l = _pivots_arr(highs, lows)
+    # ANCLAJE UNIFICADO (2026-08): todas las figuras se construyen sobre los
+    # MISMOS pivotes MAYORES del zigzag, no sobre extremos locales de ±3 barras
+    # (eso era ruido en un grafico de 5 años y anclaba figuras en cualquier
+    # wiggle). Un pivote mayor exige un swing >= max(2.5·ATR, 4% del precio):
+    # asi "3 toques" significa 3 swings reales al mismo precio, y los techos/
+    # pisos de una figura son estructura que se ve a simple vista en el chart.
+    zig = _zigzag(highs, lows, max(2.5 * atr, 0.04 * price), window=5)
+    piv_h = [(i, p) for i, p, t in zig if t == "H"]
+    piv_l = [(i, p) for i, p, t in zig if t == "L"]
     tol = max(0.5 * atr, price * 0.005)
     all_levels = _cluster_levels(piv_h + piv_l, tol)
     struct_dir, struct_txt = structure(piv_h, piv_l)
@@ -1114,7 +1141,7 @@ def detect(highs, lows, closes, rsi=None, sma50=None, sma200=None,
 
     fib = None
     try:
-        fib = fibonacci(highs, lows, closes, atr)
+        fib = fibonacci(highs, lows, closes, atr, dates=dates)
     except Exception:
         fib = None
 
@@ -1145,7 +1172,7 @@ def attach_to_analysis(sig):
         lows = [b.get("low") for b in ohlc]
         closes = [b.get("close") for b in ohlc]
         rsi = chart.get("rsi") or None
-        res = detect(highs, lows, closes, rsi=rsi)
+        res = detect(highs, lows, closes, rsi=rsi, dates=chart.get("dates"))
         cands = res["candidates"]
         main = next((dict(c) for c in cands if c.get("critical")), None)
         if main:

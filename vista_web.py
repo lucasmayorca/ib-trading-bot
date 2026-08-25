@@ -4056,7 +4056,11 @@ function _scBoxOverlay(boxes){
         let y1=_series.priceToCoordinate(b.lo);
         if(xa==null||xb==null||y0==null||y1==null)continue;
         let half=(xn!=null&&xn>xb)?(xn-xb)/2:3;
-        _px.push({x0:xa-half,x1:xb+half,y0:y0,y1:y1,fill:b.fill,stroke:b.stroke});
+        let x0=xa-half,x1=xb+half;
+        // Ancho minimo: 1-3 velas en 1Y son pocos px — el recuadro debe verse
+        let MINW=14;
+        if(x1-x0<MINW){let c=(x0+x1)/2;x0=c-MINW/2;x1=c+MINW/2;}
+        _px.push({x0:x0,x1:x1,y0:y0,y1:y1,fill:b.fill,stroke:b.stroke});
       }catch(e){}
     }
   }
@@ -4438,6 +4442,19 @@ function scBuild(key,data,decorate,heights){
 }
 
 /* Alto nivel: resuelve datos diarios/intradía (fetch on-demand) y construye el stack. */
+// Los patrones de CORTO plazo (velas japonesas, banderas, divergencias) son
+// ilegibles y poco significativos en vistas largas: 3 velas en 5Y son 3px.
+// En ALL/5Y se dibuja SOLO la estructura mayor (dobles/triples, HCH, rupturas,
+// fib); en 3M/1Y se dibuja todo. En intradia no se dibuja nada (ver scBuild).
+const SC_LONG_VIEWS={'ALL':1,'5Y':1};
+function _scScaleFilter(dec,period){
+  if(!dec||!SC_LONG_VIEWS[period])return dec||{};
+  let keep=a=>(a||[]).filter(x=>!x||!x.short);
+  return {priceLines:keep(dec.priceLines),lines:keep(dec.lines),
+          labels:keep(dec.labels),markers:keep(dec.markers),
+          candleBoxes:[],events:dec.events};
+}
+
 function scRenderStack(cfg){
   scDestroy(_scReg[cfg.key]);_scReg[cfg.key]=null;
   let period=cfg.period;
@@ -4456,7 +4473,7 @@ function scRenderStack(cfg){
   } else {
     let ch=cfg.chart;
     if(ch&&ch.ohlc&&ch.ohlc.length>=5){
-      _scReg[cfg.key]=scBuild(cfg.key,scWindowDaily(ch,period),cfg.decorate,cfg.heights);
+      _scReg[cfg.key]=scBuild(cfg.key,scWindowDaily(ch,period),_scScaleFilter(cfg.decorate,period),cfg.heights);
     } else {
       let cEl=document.getElementById('sc_candle_'+cfg.key);if(cEl)cEl.innerHTML='<div class="sc-nodata">Sin datos históricos disponibles.</div>';
     }
@@ -4662,9 +4679,10 @@ function _patternPriceLines(rec){
   let p=rec.pattern;
   if(p){
     let tag=p.name||'Figura';
-    if(p.breakout!=null)out.push({fig:true,price:p.breakout,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:tag,tip:p.text||tag});
-    if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({fig:true,price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase(),tip:'Si el precio cruza este nivel, la figura se ANULA — '+(p.text||tag)});
-    if(p.target!=null)out.push({fig:true,price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido',tip:'Objetivo MEDIDO de la figura (altura proyectada desde la ruptura) — '+(p.text||tag)});
+    let _sh=(p.scale==='short');
+    if(p.breakout!=null)out.push({fig:true,short:_sh,price:p.breakout,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:tag,tip:p.text||tag});
+    if(p.invalidation!=null&&p.invalidation!==p.breakout)out.push({fig:true,short:_sh,price:p.invalidation,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.SparseDotted,axisLabelVisible:false,title:'anula '+tag.toLowerCase(),tip:'Si el precio cruza este nivel, la figura se ANULA — '+(p.text||tag)});
+    if(p.target!=null)out.push({fig:true,short:_sh,price:p.target,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'obj. medido',tip:'Objetivo MEDIDO de la figura (altura proyectada desde la ruptura) — '+(p.text||tag)});
   }
   // Fibonacci ya NO va como priceLine de ancho completo: se dibuja estilo
   // investing.com (segmentos desde el inicio del impulso + etiquetas) via
@@ -4724,7 +4742,8 @@ function _fibLabels(f){
 function _figLabels(p){
   if(!p||!p.draw||!p.draw.segments||!p.draw.segments.length)return [];
   let sg=p.draw.segments[0];
-  return [{off:sg.x0,price:sg.y0,text:p.name||'Figura',color:'#7c3aed',bold:true}];
+  return [{off:sg.x0,price:sg.y0,text:p.name||'Figura',color:'#7c3aed',bold:true,
+           short:(p.scale==='short')}];
 }
 
 // Geometria DIBUJADA de la figura (rectas del triangulo, neckline, palo y canal
@@ -4746,7 +4765,7 @@ function _figDrawLines(p){
         let off=x0-k;
         vals[len-1-off]=y0+(y1-y0)*(k/span);
       }
-      out.push({values:vals,color:'#7c3aedb8',width:sg.w||2,
+      out.push({values:vals,color:'#7c3aedb8',width:sg.w||2,short:(p.scale==='short'),
         style:sg.dash?LightweightCharts.LineStyle.Dashed:LightweightCharts.LineStyle.Solid,
         label:sg.lbl||(p.name||'Figura'),tip:(sg.lbl?sg.lbl+' — ':'')+(p.text||p.name||'')});
     }catch(e){}
@@ -4791,7 +4810,7 @@ function _candleBoxes(cnds,ohlc,label){
           ?' · A FAVOR de la tesis: afina el timing de entrada'
           :' · ⚠ CONTRA la tesis actual — esperar confirmacion antes de ejecutar';
       }
-      out.push({off0:ohlc.length-1-i0,off1:c.off||0,lo:lo-pad,hi:hi+pad,
+      out.push({short:true,off0:ohlc.length-1-i0,off1:c.off||0,lo:lo-pad,hi:hi+pad,
         fill:'rgba('+col+',0.10)',stroke:'rgba('+col+',0.65)',
         label:c.name+(c.status==='confirmada'?' ✓ (confirmada)':(c.status==='por confirmar'?' ? (por confirmar)':'')),
         tip:(c.text||'')+(c.meaning?(' · Que significa: '+c.meaning):'')+align});
@@ -4811,7 +4830,7 @@ function _candleMarkers(cnds,ohlc){
       if(i<0||i>=ohlc.length||!ohlc[i]||!ohlc[i].time)continue;
       let isBull=c.direction==='alcista';
       let col=isBull?'#0b7a4b':(c.direction==='bajista'?'#c22436':'#6d7480');
-      out.push({time:ohlc[i].time,position:isBull?'belowBar':'aboveBar',color:col,
+      out.push({short:true,time:ohlc[i].time,position:isBull?'belowBar':'aboveBar',color:col,
         shape:isBull?'arrowUp':(c.direction==='bajista'?'arrowDown':'circle'),
         text:''});
     }catch(e){}
