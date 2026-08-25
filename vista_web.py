@@ -1154,7 +1154,11 @@ def _generate_rationale(sym, data, levels=None):
     if fibd and fibd.get("text") and fibd.get("relevant", True):
         parts.append(f"Fibonacci: {fibd['text']}")
     for c in (data.get("candles") or [])[:2]:
-        parts.append(f"Vela: {c['text']}")
+        t = c["text"]
+        if c.get("direction") in ("alcista", "bajista"):
+            aligned = (c["direction"] == "bajista") == is_bearish
+            t += " (a favor de la tesis)" if aligned else " (CONTRA la tesis — esperar confirmacion)"
+        parts.append(f"Vela: {t}")
 
     # 3. Trend from MAs
     sma200 = mas.get("sma200_val")
@@ -1541,10 +1545,21 @@ def _generate_thesis(sym, data, levels, fund):
     if fig_bits:
         lines.append("Figura tecnica: " + ". ".join(fig_bits) + ".")
 
-    # --- Line 5c: Velas japonesas recientes (timing de entrada de corto) ---
+    # --- Line 5c: Velas japonesas recientes (timing de entrada de corto).
+    # Cada vela se ENCUADRA contra la direccion de la tesis: alineada = afina
+    # el timing; en contra = advertencia explicita (no dejar la contradiccion
+    # sin explicar) ---
     cnds = data.get("candles") or []
     if cnds:
-        lines.append("Velas (timing corto): " + "; ".join(c["text"] for c in cnds[:2]) + ".")
+        bits = []
+        for c in cnds[:2]:
+            t = c["text"]
+            if c.get("direction") in ("alcista", "bajista"):
+                aligned = (c["direction"] == "bajista") == is_bearish
+                t += (" — a favor de la tesis: afina el timing de entrada" if aligned else
+                      " — OJO: va CONTRA la tesis; sugiere esperar confirmacion antes de ejecutar")
+            bits.append(t)
+        lines.append("Velas (timing corto): " + "; ".join(bits) + ".")
 
     # --- Line 6 (optional): Fundamental support ---
     if fund:
@@ -3309,7 +3324,8 @@ function _portAnalDecorate(rec,pos,ch){
   markers.sort((a,b)=>a.time<b.time?-1:1);
   return {priceLines:priceLines,markers:markers,
     lines:_figDrawLines(rec&&rec.pattern).concat(_fibDrawLines(rec&&rec.fib)),
-    labels:_figLabels(rec&&rec.pattern).concat(_fibLabels(rec&&rec.fib))};
+    labels:_figLabels(rec&&rec.pattern).concat(_fibLabels(rec&&rec.fib)),
+    candleBoxes:_candleBoxes(rec&&rec.candles,ch&&ch.ohlc,rec&&rec.signal_label)};
 }
 
 function _portAnalDestroy(sym){scDestroy(_scReg['port_'+sym]);_scReg['port_'+sym]=null;delete _portAnalCharts[sym];}
@@ -4012,6 +4028,46 @@ function _scHist(times,arr,posC,negC){
 /* Primitive: bandas horizontales sombreadas (zonas de sobrecompra/sobreventa).
    LW no soporta bandas nativas; se dibujan sobre el canvas del panel, detrás de
    la serie. bands = [{from, to, color}] en precio. */
+// Recuadros translucidos sobre las velas que FORMAN un patron de velas
+// japonesas (resaltado estilo investing.com). boxes=[{i0,i1,lo,hi,fill,stroke}]
+// con i = indices logicos absolutos de barra.
+function _scBoxOverlay(boxes){
+  let _series=null,_chart=null;
+  return {
+    attached(p){_series=p.series;_chart=p.chart;},
+    detached(){_series=null;_chart=null;},
+    updateAllViews(){},
+    paneViews(){
+      return [{
+        zOrder(){return 'bottom';},
+        renderer(){
+          return {draw(target){
+            if(!_series||!_chart)return;
+            target.useMediaCoordinateSpace(function(scope){
+              let ctx=scope.context;
+              for(let b of boxes){
+                let x0=null,x1=null;
+                try{
+                  x0=_chart.timeScale().logicalToCoordinate(b.i0-0.5);
+                  x1=_chart.timeScale().logicalToCoordinate(b.i1+0.5);
+                }catch(e){}
+                let y0=_series.priceToCoordinate(b.hi),y1=_series.priceToCoordinate(b.lo);
+                if(x0==null||x1==null||y0==null||y1==null)continue;
+                if(x1<0||x0>scope.mediaSize.width)continue;
+                ctx.fillStyle=b.fill;ctx.strokeStyle=b.stroke;ctx.lineWidth=1;
+                ctx.beginPath();
+                if(ctx.roundRect)ctx.roundRect(x0,y0,x1-x0,y1-y0,3);
+                else ctx.rect(x0,y0,x1-x0,y1-y0);
+                ctx.fill();ctx.stroke();
+              }
+            });
+          }};
+        }
+      }];
+    }
+  };
+}
+
 // Etiquetas de texto dibujadas sobre el panel de velas (estilo investing.com:
 // el nombre de la figura y los % de Fibonacci se leen directo en el grafico).
 // labels=[{idx,price,text,color,bold}] con idx = indice logico de barra; si la
@@ -4250,9 +4306,21 @@ function scBuild(key,data,decorate,heights){
           return {idx:times.length-1-(L.off||0),price:L.price,text:L.text,color:L.color,bold:L.bold};
         })));}catch(e){}
       }
+      // Recuadros de patrones de velas: resaltan las 1-3 velas que forman el
+      // patron; al pasar el cursor por el recuadro, el tooltip explica que
+      // significa y si va a favor o en contra de la tesis
+      let candleBoxes=[];
+      if(!data.timeVis&&decorate.candleBoxes&&decorate.candleBoxes.length){
+        candleBoxes=decorate.candleBoxes.map(function(b){
+          return {i0:times.length-1-(b.off0||0),i1:times.length-1-(b.off1||0),
+                  lo:b.lo,hi:b.hi,fill:b.fill,stroke:b.stroke,
+                  kind:'box',ref:null,w:1,label:b.label||'',tip:b.tip||''};
+        });
+        try{cs.attachPrimitive(_scBoxOverlay(candleBoxes));}catch(e){}
+      }
       // Hover: al pararse sobre una linea se engrosa apenas y aparece un
       // tooltip con que es (nivel de figura, fib, target del sistema, etc.)
-      if(hoverables.length){
+      if(hoverables.length||candleBoxes.length){
         let tipEl=document.createElement('div');tipEl.className='sc-figtip';p.el.appendChild(tipEl);
         let hovered=null;
         chart.subscribeCrosshairMove(function(param){
@@ -4273,13 +4341,18 @@ function scBuild(key,data,decorate,heights){
                   let d=Math.abs(v-pr);
                   if(d<=eps*1.2&&d<bestD){bestD=d;hit=hv;}
                 }
+                if(!hit&&idx!=null){
+                  for(let bx of candleBoxes){
+                    if(idx>=bx.i0&&idx<=bx.i1&&pr>=bx.lo&&pr<=bx.hi){hit=bx;break;}
+                  }
+                }
               }
             }
           }catch(e){hit=null;}
           if(hit!==hovered){
-            if(hovered){try{hovered.ref.applyOptions({lineWidth:hovered.w});}catch(e){}}
+            if(hovered&&hovered.ref){try{hovered.ref.applyOptions({lineWidth:hovered.w});}catch(e){}}
             hovered=hit;
-            if(hovered){try{hovered.ref.applyOptions({lineWidth:hovered.w+1});}catch(e){}}
+            if(hovered&&hovered.ref){try{hovered.ref.applyOptions({lineWidth:hovered.w+1});}catch(e){}}
           }
           if(hovered&&param&&param.point){
             tipEl.textContent=(hovered.label?hovered.label:'')+(hovered.tip&&hovered.tip!==hovered.label?((hovered.label?' — ':'')+hovered.tip):'');
@@ -4386,7 +4459,7 @@ function scStackHTML(key,legendHTML){
 function renderDetailCharts(idx,sym,period){
   if(!_data)return;let r=_data.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'scan_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc).concat(_candleMarkers(r.candles,r.chart.ohlc)).sort((a,b)=>a.time<b.time?-1:1),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc).concat(_candleMarkers(r.candles,r.chart.ohlc)).sort((a,b)=>a.time<b.time?-1:1),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib)),candleBoxes:_candleBoxes(r.candles,r.chart.ohlc,r.signal_label)},heights:{candle:300,ind:106},getPeriod:()=>_periods[idx]});
   _charts[idx]=1;
 }
 
@@ -4428,11 +4501,13 @@ function figChips(r){
   if(r&&r.fib&&r.fib.at){
     h+='<span class="rec-thesis-fig" title="'+String(r.fib.text||'').replace(/"/g,'&quot;')+'">Fib '+r.fib.at+'%</span>';
   }
-  // Vela japonesa mas reciente (timing de entrada de corto)
+  // Vela japonesa mas reciente (timing de entrada de corto); ⚠ si contradice la tesis
   if(r&&r.candles&&r.candles.length){
     let c=r.candles[0];
     let cls=c.direction==='alcista'?'vela-up':(c.direction==='bajista'?'vela-dn':'');
-    h+='<span class="rec-thesis-fig rec-thesis-vela '+cls+'" title="'+String(c.text||'').replace(/"/g,'&quot;')+'">Vela: '+c.name+(c.status==='confirmada'?' ✓':(c.status==='por confirmar'?' ?':''))+'</span>';
+    let contra=(c.direction==='alcista'||c.direction==='bajista')&&((c.direction==='bajista')!==_labelIsBearish(r.signal_label||r.signal||''));
+    let ttl=String(c.text||'')+(c.meaning?(' · '+c.meaning):'')+(contra?' · CONTRA la tesis actual: esperar confirmacion antes de ejecutar':'');
+    h+='<span class="rec-thesis-fig rec-thesis-vela '+cls+'" title="'+ttl.replace(/"/g,'&quot;')+'">Vela: '+c.name+(c.status==='confirmada'?' ✓':(c.status==='por confirmar'?' ?':''))+(contra?' ⚠':'')+'</span>';
   }
   return h;
 }
@@ -4669,6 +4744,38 @@ function _figDrawMarkers(p,ohlc){
   return out;
 }
 
+// Recuadro + tooltip sobre las velas que FORMAN cada patron de velas: que
+// patron es, que significa, y si va a favor o en contra de la tesis actual
+function _candleBoxes(cnds,ohlc,label){
+  let out=[];
+  if(!cnds||!cnds.length||!ohlc||!ohlc.length)return out;
+  let bearT=_labelIsBearish(label||'');
+  for(let c of cnds){
+    try{
+      let i1=ohlc.length-1-(c.off||0);
+      let i0=i1-((c.span||1)-1);
+      if(i0<0||i1>=ohlc.length)continue;
+      let lo=Infinity,hi=-Infinity;
+      for(let k=i0;k<=i1;k++){let b=ohlc[k];if(!b)continue;if(b.low!=null&&b.low<lo)lo=b.low;if(b.high!=null&&b.high>hi)hi=b.high;}
+      if(!(hi>lo))continue;
+      let pad=(hi-lo)*0.08;
+      let isBull=c.direction==='alcista';
+      let col=isBull?'11,122,75':(c.direction==='bajista'?'194,36,54':'109,116,128');
+      let align='';
+      if(c.direction==='alcista'||c.direction==='bajista'){
+        align=((c.direction==='bajista')===bearT)
+          ?' · A FAVOR de la tesis: afina el timing de entrada'
+          :' · ⚠ CONTRA la tesis actual — esperar confirmacion antes de ejecutar';
+      }
+      out.push({off0:ohlc.length-1-i0,off1:c.off||0,lo:lo-pad,hi:hi+pad,
+        fill:'rgba('+col+',0.10)',stroke:'rgba('+col+',0.45)',
+        label:c.name+(c.status==='confirmada'?' ✓':(c.status==='por confirmar'?' ?':'')),
+        tip:(c.text||'')+(c.meaning?(' · Que significa: '+c.meaning):'')+align});
+    }catch(e){}
+  }
+  return out;
+}
+
 // Marcadores de patrones de VELAS japonesas (timing corto): flecha verde/roja
 // en la vela del patron, con nombre corto y estado (✓ confirmada, ? por confirmar)
 function _candleMarkers(cnds,ohlc){
@@ -4704,7 +4811,8 @@ function _recDecorate(rec,ch){
   markers.sort((a,b)=>a.time<b.time?-1:1);
   return {priceLines:priceLines,markers:markers,
     lines:_figDrawLines(rec.pattern).concat(_fibDrawLines(rec.fib)),
-    labels:_figLabels(rec.pattern).concat(_fibLabels(rec.fib))};
+    labels:_figLabels(rec.pattern).concat(_fibLabels(rec.fib)),
+    candleBoxes:_candleBoxes(rec.candles,ch&&ch.ohlc,rec.signal_label)};
 }
 
 function renderRecDetailCharts(idx,rec,period){
@@ -5333,7 +5441,7 @@ function destroyEtfDetailCharts(idx){scDestroy(_scReg['etf_'+idx]);_scReg['etf_'
 function renderEtfDetailCharts(idx,sym,period){
   if(!_etfData)return;let r=_etfData.results[sym];if(!r||!r.chart)return;
   scRenderStack({key:'etf_'+idx,symbol:sym,chart:r.chart,period:period,
-    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc).concat(_candleMarkers(r.candles,r.chart.ohlc)).sort((a,b)=>a.time<b.time?-1:1),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib))},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
+    decorate:{priceLines:_patternPriceLines(r),lines:_figDrawLines(r.pattern).concat(_fibDrawLines(r.fib)),markers:_figDrawMarkers(r.pattern,r.chart.ohlc).concat(_candleMarkers(r.candles,r.chart.ohlc)).sort((a,b)=>a.time<b.time?-1:1),labels:_figLabels(r.pattern).concat(_fibLabels(r.fib)),candleBoxes:_candleBoxes(r.candles,r.chart.ohlc,r.signal_label)},heights:{candle:300,ind:106},getPeriod:()=>_etfPeriods[idx]});
   _etfCharts[idx]=1;
 }
 
@@ -5451,7 +5559,9 @@ function _mpDecorate(){
     .concat(_candleMarkers(_mpData&&_mpData.candles,_mpOhlc))
     .sort((a,b)=>a.time<b.time?-1:1);
   let labels=_figLabels(pat).concat(_fibLabels(fb));
-  return {priceLines:pls,lines:lines,markers:markers,labels:labels};
+  let candleBoxes=_candleBoxes(_mpData&&_mpData.candles,_mpOhlc,
+    _mpData&&_mpData.system?_mpData.system.label:'');
+  return {priceLines:pls,lines:lines,markers:markers,labels:labels,candleBoxes:candleBoxes};
 }
 function _mpMountChart(){
   if(!_mpData||!_mpData.chart)return;

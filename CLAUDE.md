@@ -308,7 +308,14 @@ labels can be directional while `signal` is still HOLD.
   to_analysis lo adjunta; cloud hereda). UI: markers flecha verde/roja en la vela (`_candleMarkers`,
   "Envolvente ✓" / "? por confirmar"), chip `Vela: <nombre>` verde/rojo (`figChips`), linea
   "Velas (timing corto):" en tesis y "Vela:" en racional. Solo vistas diarias (los markers van
-  con fechas diarias; en intradia no matchean y no se dibujan).
+  con fechas diarias; en intradia no matchean y no se dibujan). **Resaltado + encuadre (2026-08)**:
+  cada patron lleva `span` (1-3 velas) y `meaning` (explicacion en castellano); `_candleBoxes` +
+  primitive `_scBoxOverlay` dibujan un recuadro translucido verde/rojo sobre las velas que FORMAN
+  el patron, hoverable (tooltip = texto + significado + encuadre vs tesis). El ENCUADRE compara la
+  direccion de la vela con `_label_is_bearish(label)`: alineada = "a favor de la tesis: afina el
+  timing"; opuesta = "OJO: va CONTRA la tesis; esperar confirmacion antes de ejecutar" — en tesis,
+  racional, tooltip del recuadro y chip (⚠). Una vela contra-tesis NO es un bug: es una advertencia
+  de timing (ej. vela alcista con tesis bajista = no ejecutar la venta todavia).
 - Gotcha: `signals.py` NO se toca — las figuras son contexto/niveles, nunca gatillo de orden.
   Los tests sintéticos exigen techos separados ≥12 ruedas (dobles) y ciclos ~12 ruedas (triples).
 

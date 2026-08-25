@@ -775,6 +775,29 @@ def fibonacci(highs, lows, closes, atr, lookback=180):
 #  PATRONES DE VELAS (timing de entrada de corto plazo, sobre el diario)
 # ══════════════════════════════════════════════════════════════
 
+_CANDLE_MEANING = {
+    "Martillo": "tras la caida los vendedores empujaron fuerte, pero el cierre volvio arriba: los compradores defendieron la zona — posible piso",
+    "Hombre colgado": "tras la subida aparecio venta agresiva intradia aunque el cierre aguanto — primer aviso de techo",
+    "Martillo invertido": "los compradores intentaron revertir la caida; vale si el cierre siguiente lo confirma",
+    "Estrella fugaz": "el precio marco maximos pero cerro abajo: rechazo del nivel — posible techo",
+    "Envolvente alcista": "el cuerpo verde engulle a toda la vela roja previa: los compradores absorbieron la venta",
+    "Envolvente bajista": "el cuerpo rojo engulle a toda la vela verde previa: los vendedores tomaron el control",
+    "Estrella de la mañana": "caida → indecision → recuperacion fuerte: giro de piso clasico en 3 velas",
+    "Estrella de la tarde": "subida → indecision → caida fuerte: giro de techo clasico en 3 velas",
+    "Linea penetrante": "la vela verde recupero mas de la mitad del cuerpo rojo previo: demanda apareciendo",
+    "Nube oscura": "la vela roja borro mas de la mitad del cuerpo verde previo: oferta apareciendo",
+    "Harami alcista": "cuerpo chico dentro de la vela roja grande: la presion vendedora se seco",
+    "Harami bajista": "cuerpo chico dentro de la vela verde grande: la presion compradora se seco",
+    "Pinzas de piso": "dos minimos casi identicos: el mercado rechazo dos veces el mismo precio",
+    "Pinzas de techo": "dos maximos casi identicos: doble rechazo del mismo nivel",
+    "Tres soldados blancos": "tres cuerpos verdes consecutivos con cierres crecientes: demanda sostenida",
+    "Tres cuervos negros": "tres cuerpos rojos consecutivos con cierres decrecientes: distribucion sostenida",
+    "Doji": "apertura y cierre casi iguales tras la tendencia: equilibrio — el proximo cierre define",
+    "Marubozu alcista": "cuerpo pleno casi sin mechas: conviccion compradora de punta a punta",
+    "Marubozu bajista": "cuerpo pleno casi sin mechas: conviccion vendedora de punta a punta",
+}
+
+
 def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3):
     """Patrones de VELAS japonesas sobre las ultimas `lookback` ruedas del
     grafico DIARIO: reversion (martillo, envolvente, estrella de la mañana/
@@ -848,66 +871,66 @@ def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3)
         mid2 = (opens[i - 2] + closes[i - 2]) / 2
         if (b2 >= 0.8 * atr and bear(i - 2) and b1 <= 0.4 * b2
                 and bull(i) and closes[i] >= mid2 and pre_dn3):
-            cands.append(("Estrella de la mañana", "Estr. mañana", "alcista", "reversion", 86))
+            cands.append(("Estrella de la mañana", "Estr. mañana", "alcista", "reversion", 86, 3))
         if (b2 >= 0.8 * atr and bull(i - 2) and b1 <= 0.4 * b2
                 and bear(i) and closes[i] <= mid2 and pre_up3):
-            cands.append(("Estrella de la tarde", "Estr. tarde", "bajista", "reversion", 86))
+            cands.append(("Estrella de la tarde", "Estr. tarde", "bajista", "reversion", 86, 3))
         if (all(bull(i - k) for k in (0, 1, 2))
                 and all(body(i - k) >= 0.6 * atr for k in (0, 1, 2))
                 and closes[i] > closes[i - 1] > closes[i - 2]
                 and upper(i) <= 0.35 * max(b, 1e-9)):
-            cands.append(("Tres soldados blancos", "3 soldados", "alcista", "continuacion", 80))
+            cands.append(("Tres soldados blancos", "3 soldados", "alcista", "continuacion", 80, 3))
         if (all(bear(i - k) for k in (0, 1, 2))
                 and all(body(i - k) >= 0.6 * atr for k in (0, 1, 2))
                 and closes[i] < closes[i - 1] < closes[i - 2]
                 and lower(i) <= 0.35 * max(b, 1e-9)):
-            cands.append(("Tres cuervos negros", "3 cuervos", "bajista", "continuacion", 80))
+            cands.append(("Tres cuervos negros", "3 cuervos", "bajista", "continuacion", 80, 3))
 
         # ── 2 velas ──
         if b1 >= 0.3 * atr and b >= 1.05 * b1 and _engulf(i):
             if bull(i) and bear(i - 1) and pre_dn2:
-                cands.append(("Envolvente alcista", "Envolvente", "alcista", "reversion", 84))
+                cands.append(("Envolvente alcista", "Envolvente", "alcista", "reversion", 84, 2))
             if bear(i) and bull(i - 1) and pre_up2:
-                cands.append(("Envolvente bajista", "Envolvente", "bajista", "reversion", 84))
+                cands.append(("Envolvente bajista", "Envolvente", "bajista", "reversion", 84, 2))
         mid1 = (opens[i - 1] + closes[i - 1]) / 2
         if (bear(i - 1) and b1 >= 0.7 * atr and bull(i) and opens[i] <= closes[i - 1]
                 and mid1 <= closes[i] < opens[i - 1] and pre_dn2):
-            cands.append(("Linea penetrante", "Penetrante", "alcista", "reversion", 70))
+            cands.append(("Linea penetrante", "Penetrante", "alcista", "reversion", 70, 2))
         if (bull(i - 1) and b1 >= 0.7 * atr and bear(i) and opens[i] >= closes[i - 1]
                 and opens[i - 1] < closes[i] <= mid1 and pre_up2):
-            cands.append(("Nube oscura", "Nube oscura", "bajista", "reversion", 70))
+            cands.append(("Nube oscura", "Nube oscura", "bajista", "reversion", 70, 2))
         if (b1 >= 1.0 * atr and b <= 0.5 * b1
                 and max(opens[i], closes[i]) <= max(opens[i - 1], closes[i - 1])
                 and min(opens[i], closes[i]) >= min(opens[i - 1], closes[i - 1])):
             if bear(i - 1) and pre_dn2:
-                cands.append(("Harami alcista", "Harami", "alcista", "reversion", 62))
+                cands.append(("Harami alcista", "Harami", "alcista", "reversion", 62, 2))
             elif bull(i - 1) and pre_up2:
-                cands.append(("Harami bajista", "Harami", "bajista", "reversion", 62))
+                cands.append(("Harami bajista", "Harami", "bajista", "reversion", 62, 2))
         if (abs(lows[i] - lows[i - 1]) <= 0.12 * atr and pre_dn2
                 and min(lower(i), lower(i - 1)) >= 0.3 * atr):
-            cands.append(("Pinzas de piso", "Pinzas", "alcista", "reversion", 60))
+            cands.append(("Pinzas de piso", "Pinzas", "alcista", "reversion", 60, 2))
         if (abs(highs[i] - highs[i - 1]) <= 0.12 * atr and pre_up2
                 and min(upper(i), upper(i - 1)) >= 0.3 * atr):
-            cands.append(("Pinzas de techo", "Pinzas", "bajista", "reversion", 60))
+            cands.append(("Pinzas de techo", "Pinzas", "bajista", "reversion", 60, 2))
 
         # ── 1 vela ──
         if r >= 0.6 * atr:
             small = b <= 0.35 * r
             if small and lower(i) >= 2 * max(b, 0.05 * r) and upper(i) <= 0.2 * r:
                 if pre_dn1:
-                    cands.append(("Martillo", "Martillo", "alcista", "reversion", 75))
+                    cands.append(("Martillo", "Martillo", "alcista", "reversion", 75, 1))
                 elif pre_up1:
-                    cands.append(("Hombre colgado", "H. colgado", "bajista", "reversion", 65))
+                    cands.append(("Hombre colgado", "H. colgado", "bajista", "reversion", 65, 1))
             if small and upper(i) >= 2 * max(b, 0.05 * r) and lower(i) <= 0.2 * r:
                 if pre_up1:
-                    cands.append(("Estrella fugaz", "Estr. fugaz", "bajista", "reversion", 75))
+                    cands.append(("Estrella fugaz", "Estr. fugaz", "bajista", "reversion", 75, 1))
                 elif pre_dn1:
-                    cands.append(("Martillo invertido", "Mart. inv.", "alcista", "reversion", 65))
+                    cands.append(("Martillo invertido", "Mart. inv.", "alcista", "reversion", 65, 1))
             if b <= 0.1 * r and r >= 0.8 * atr and (pre_dn1 or pre_up1):
-                cands.append(("Doji", "Doji", "neutral", "indecision", 50))
+                cands.append(("Doji", "Doji", "neutral", "indecision", 50, 1))
             if b >= 0.85 * r and r >= 1.1 * atr:
                 d = "alcista" if bull(i) else "bajista"
-                cands.append((f"Marubozu {d}", "Marubozu", d, "continuacion", 55))
+                cands.append((f"Marubozu {d}", "Marubozu", d, "continuacion", 55, 1))
 
         if not cands:
             return None
@@ -919,7 +942,7 @@ def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3)
         t = _at(i)
         if not t:
             continue
-        name, short, d, kind, _prio = t
+        name, short, d, kind, _prio, span = t
         if name in seen:
             continue
         seen.add(name)
@@ -960,7 +983,8 @@ def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=3)
                     "indecision": "indecision — posible giro"}[kind]
         out.append({
             "name": name, "short": short, "direction": d, "kind": kind,
-            "off": int(off), "status": status,
+            "off": int(off), "span": int(span), "status": status,
+            "meaning": _CANDLE_MEANING.get(name, ""),
             "text": f"{name} {cuando} ({status}) — {kind_txt}",
         })
         if len(out) >= max_out:
