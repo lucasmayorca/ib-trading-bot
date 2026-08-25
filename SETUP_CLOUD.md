@@ -65,19 +65,18 @@ https://tu-proyecto.up.railway.app
 
 ### Paso 2 — Instalar el Bridge
 
-Abre una terminal y ejecuta:
+El instalador crea su propio entorno en `~/.ib-bridge` y deja el comando
+`ib-bridge` listo. Una sola línea:
 
 ```bash
-pip install ib-trading-bridge
+curl -sL https://raw.githubusercontent.com/lucasmayorca/ib-trading-bot/main/install-bridge.sh | bash
 ```
 
-> Si usas un entorno virtual:
-> ```bash
-> python -m venv bridge-env
-> source bridge-env/bin/activate    # Mac/Linux
-> bridge-env\Scripts\activate       # Windows
-> pip install ib-trading-bridge
-> ```
+> El dashboard, en la pestaña **"Conectar TWS"**, te muestra este mismo comando
+> ya con tu URL y tu token prellenados — es más cómodo copiarlo de ahí.
+
+> El repo debe ser público para que `curl` y el `pip install git+…` funcionen sin
+> credenciales.
 
 ### Paso 3 — Obtener tu Token
 
@@ -96,6 +95,8 @@ ib-bridge --server https://tu-proyecto.up.railway.app --token TU_TOKEN_AQUI
 ```bash
 ib-bridge --server https://tu-proyecto.up.railway.app --token TU_TOKEN_AQUI --ib-port 7496
 ```
+
+También queda un launcher: `~/.ib-bridge/run-bridge.sh URL TOKEN [PUERTO]`.
 
 ### Paso 5 — Verificar conexión
 
@@ -118,6 +119,39 @@ En el dashboard web, el indicador cambiará a **🟢 Conectado**.
 
 ---
 
+## Parte 4 — Actualizar el Bridge
+
+`run-bridge.sh` **solo lanza** el bridge ya instalado: no baja código nuevo. Si el
+bridge cambió (lo dicen las notas del release o te lo indicamos), reinstalá:
+
+```bash
+rm -rf ~/.ib-bridge
+curl -sL https://raw.githubusercontent.com/lucasmayorca/ib-trading-bot/main/install-bridge.sh | bash
+```
+
+Las mejoras que corren **server-side** — figuras técnicas, Fibonacci, velas
+japonesas, enriquecimiento (beta/RS/RVOL, analistas, insiders), órdenes pendientes
+— llegan solas con el deploy de Railway y **no** requieren reinstalar nada.
+
+---
+
+## Parte 5 — Historial completo de trades (opcional)
+
+`reqExecutions` de IB solo devuelve los fills de la **sesión actual** de TWS: no
+existe llamada que traiga meses de historia. Para ver tus trades cerrados
+históricos hace falta tu propio **IB Flex Web Service** (una sola vez):
+
+1. En IBKR: **Account Management → Performance & Reports → Flex Queries**
+2. Creá una query de la sección **"Trades"**, formato **XML**
+3. Generá un **Flex token**
+4. Pegá el token y el Query ID en el dashboard: **Conectar TWS → "Ver historial
+   completo de trades"**
+
+Si la pestaña *Trades Históricos* aparece vacía, casi siempre es esto: falta
+conectar Flex (vacío ≠ "no tenés historia").
+
+---
+
 ## Troubleshooting
 
 ### "No se pudo conectar a TWS"
@@ -132,6 +166,16 @@ En el dashboard web, el indicador cambiará a **🟢 Conectado**.
 ### "Auth failed: Invalid bridge token"
 - Ve al dashboard → "Conectar TWS" y copia el token de nuevo
 - Si regeneraste el token, el anterior ya no funciona
+
+### "No veo las funciones nuevas en el dashboard"
+- El navegador cachea el JavaScript del dashboard: recargá con **Cmd/Ctrl + Shift + R**
+- Verificá qué commit está desplegado: `curl https://tu-proyecto.up.railway.app/health`
+- Si el cambio era del bridge, reinstalalo (ver Parte 4)
+
+### "Mi Cartera muestra $0 / el escáner muestra Total 0"
+- Suele ser que el bridge no está corriendo o perdió la conexión: revisá su terminal
+- Tras un redeploy el servidor pierde su memoria y la repuebla desde el bridge o
+  desde su snapshot en PostgreSQL — puede tardar un ciclo (~5 min)
 
 ### El bridge se desconecta
 - El bridge se reconecta automáticamente si pierde la conexión al servidor
