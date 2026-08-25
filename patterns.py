@@ -766,29 +766,61 @@ def fibonacci(highs, lows, closes, atr, lookback=250, dates=None):
     if price <= 0:
         return None
 
+    # 1) Extremo TERMINAL: el maximo y el minimo de la ventana reciente son los
+    #    dos candidatos a "cierre del impulso" (el resto del chart es historia).
     w = min(n, max(60, lookback))
-    i_hi = i_lo = 0
-    while True:
-        hs, ls = highs[n - w:], lows[n - w:]
-        i_hi = max(range(w), key=lambda i: hs[i])
-        i_lo = min(range(w), key=lambda i: ls[i])
-        # Extremo pegado al borde izquierdo => el impulso viene de mas atras
-        if min(i_hi, i_lo) > 2 or w >= n:
-            break
-        w = min(n, int(w * 1.5) + 5)
+    base = n - w
+    seg_hi = base + max(range(w), key=lambda i: highs[base + i])
+    seg_lo = base + min(range(w), key=lambda i: lows[base + i])
 
-    hi, lo = float(hs[i_hi]), float(ls[i_lo])
-    rng = hi - lo
+    # 2) ORIGEN: desde el terminal se camina hacia atras hasta que el precio
+    #    haya operado MAS ALLA de ese nivel (ahi empezo el swing) — el origen es
+    #    el extremo opuesto de ese tramo, buscado sobre las 5 AÑOS de ruedas
+    #    completas. Asi el ancla es siempre un extremo estructural real y no el
+    #    borde de una ventana arbitraria (bug CPRT: anclo $50.11 a mitad de la
+    #    caida en vez del techo real $64.38 de hace 433 ruedas).
+    def _origin(t, term_is_low):
+        # Ventana de analisis = TODAS las ruedas disponibles (5 años): el origen
+        # del impulso puede estar tan atras como el chart lo muestre. Con tope
+        # (antes 500 ruedas) TEAM anclaba en $326 en vez de su techo real $483.
+        lv = lows[t] if term_is_low else highs[t]
+        j0 = 0
+        stop = j0
+        for j in range(t - 1, j0 - 1, -1):
+            if (lows[j] < lv) if term_is_low else (highs[j] > lv):
+                stop = j + 1
+                break
+        if stop >= t:
+            return None
+        if term_is_low:
+            oi = max(range(stop, t), key=lambda k: highs[k])
+            return oi, float(highs[oi])
+        oi = min(range(stop, t), key=lambda k: lows[k])
+        return oi, float(lows[oi])
+
+    # 3) Se elige el swing sin quiebres MAS GRANDE de los dos candidatos
+    best = None
+    for t, term_is_low in ((seg_lo, True), (seg_hi, False)):
+        if (n - 1 - t) > 150:
+            continue                     # terminal viejo: su retroceso ya no manda
+        org = _origin(t, term_is_low)
+        if not org:
+            continue
+        oi, ov = org
+        if term_is_low:
+            _hi, _lo, _hi_abs, _lo_abs, _up = ov, float(lows[t]), oi, t, False
+        else:
+            _hi, _lo, _hi_abs, _lo_abs, _up = float(highs[t]), ov, t, oi, True
+        _rng = _hi - _lo
+        if _rng <= 0:
+            continue
+        if best is None or _rng > best[0]:
+            best = (_rng, _up, _hi, _lo, _hi_abs, _lo_abs)
+    if best is None:
+        return None
+    rng, up, hi, lo, hi_abs, lo_abs = best
     if rng < max(4 * atr, 0.08 * price):
         return None                      # swing chico: no es estructura
-
-    term = max(i_hi, i_lo)               # extremo que cierra el impulso
-    if (w - 1 - term) > 150:
-        return None                      # impulso viejo: su retroceso ya no manda
-
-    up = i_lo < i_hi                     # el minimo vino primero: impulso alcista
-    hi_abs = (n - w) + i_hi
-    lo_abs = (n - w) + i_lo
     if up:
         levels = {k: hi - r * rng for k, r in _FIB_RATIOS}
         ext = {"127.2": lo + 1.272 * rng, "161.8": lo + 1.618 * rng}

@@ -249,20 +249,22 @@ labels can be directional while `signal` is still HOLD.
   ≥3.5·ATR + consolidación ≤55% del palo), cruce dorado/muerte (`include_cross`, solo pulso),
   divergencia RSI/precio, canal/estructura fallback (`include_fallback`, solo pulso). Cada figura:
   `{name, direction, status (en formacion/por confirmar/confirmada/vigente), key_level, breakout,
-  invalidation, target (objetivo MEDIDO), priority, text}`. **Fibonacci por VENTANA AUTO-EXPANSIVA (2026-08, tercera
-  iteración — feedback "este fibo esta raro" en USO/SLV)**: el fib se traza entre el **máximo y el
-  mínimo del gráfico reciente**, en el orden en que ocurrieron (ese orden define alcista/bajista).
-  La ventana arranca en 250 ruedas (~1 año, la vista por defecto) y **se agranda ×1.5 mientras
-  alguno de los extremos caiga pegado al borde izquierdo** (`min(i_hi,i_lo) <= 2`): si el máximo
-  está en el borde, el impulso empezó antes y recortarlo ahí anclaría a mitad de una tendencia.
-  Descartes: swing < max(4·ATR, 8% del precio), extremo final > 150 ruedas atrás (el retroceso
-  dejó de mandar), retr fuera de [−35%, 105%]. **Historia de bugs — no volver atrás**: (1) ventana
-  fija de 180 ruedas → anclaba en el borde a mitad de la caída (TEAM $242 en vez del techo real);
-  (2) zigzag de pivotes mayores → fragmentaba el movimiento y elegía un tramo interno, dejando
-  afuera el techo que se ve a simple vista (USO ancló $102→$142 ignorando $154.08; SLV ancló
-  $80.86 ignorando el pico de $109.83). La regla actual es auditable a ojo: los anclajes son los
-  dos extremos que se VEN en el chart. `at`/`relevant`/`retr_pct`/`start_off`/`end_off` como antes.
-  El texto nombra los anclajes con fecha ("del techo $154.08 (18-05-2026) al piso...").
+  invalidation, target (objetivo MEDIDO), priority, text}`. **Fibonacci por SWING SIN QUIEBRES sobre 5 años (2026-08, cuarta
+  iteración — feedback "es correcto que el fibo de CPRT esté puesto ahí?" / "agranda la ventana a
+  las ruedas de 5 años")**: (1) **terminal** = el máximo o el mínimo de las últimas 250 ruedas, el
+  que cierre el swing más grande (así el retroceso está VIVO; debe estar a ≤150 ruedas). (2)
+  **origen** = desde el terminal se camina hacia atrás sobre **TODO el histórico (5Y, sin tope)**
+  hasta que el precio operó más allá de ese nivel; el origen es el extremo opuesto de ese tramo.
+  Resultado: el ancla superior es un techo estructural real — en un barrido de 12 símbolos, 12/12
+  anclaron en el máximo de 5 años. Descartes: swing < max(4·ATR, 8% del precio), retr fuera de
+  [−35%, 105%]. **Historia de bugs — no volver atrás**: (1) ventana fija 180r → anclaba en el borde
+  a mitad de la caída (TEAM $242); (2) zigzag de pivotes mayores → fragmentaba el impulso y elegía
+  un tramo interno (USO $102→$142 ignorando $154.08; SLV $80.86 ignorando el pico $109.83); (3)
+  ventana auto-expansiva de 250r → el extremo no quedaba "pegado al borde" (índice 6, no ≤2) y no
+  expandía: CPRT ancló $50.11 a mitad de la caída en vez de su techo real $64.38 de 433 ruedas
+  atrás; (4) tope de 500r en la búsqueda del origen → TEAM anclaba $326 en vez de $483.13.
+  `at`/`relevant`/`retr_pct`/`start_off`/`end_off` como antes; el texto nombra los anclajes con
+  fecha ("del techo $64.38 (27-11-2024) al piso $26.81 (23-07-2026)").
   **Convicción
   (2026-08, feedback: "patrones muy fuertes del gráfico global, no cualquier cosa")**: doble/triple
   profundidad ≥ max(2.5·ATR, 3.5%), HCH ≥ max(3·ATR, 5%) con cabeza ≥1.2·ATR, triángulo altura
