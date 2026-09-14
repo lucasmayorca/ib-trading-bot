@@ -516,18 +516,31 @@ labels can be directional while `signal` is still HOLD.
      `_ep_totals` suma el `realized_pnl` de TODOS los fills del episodio, prorrateado por qty
      cuando un fill se parte entre episodios. **Chequeo de regresión**: Σ `pnl` de los trades
      construidos debe dar exactamente Σ `realized_pnl` del `trades_imported.json`.
-  2. **Una posición que nunca volvió a flat y no realizó nada NO es un trade cerrado** (un short
-     vivo, un spread abierto). Antes salían como filas "+$0.00 / +0.0% / LOSS / 0d". `_episodes`
-     solo emite episodios con fills de cierre. (El bloque que leía `portfolio_history.json` para
-     `open_symbols` era **dead code** — nunca se usaba — y se borró: el flat→flat lo cubre.)
-  3. **Opciones**: se agrupaban por (subyacente, expiry), fusionando spreads distintos abiertos en
+  2. **Quién decide si un fill ABRE o CIERRA es IB, no el contador de posición.** Reconstruir la
+     posición sumando qty y clasificar por el signo NO sirve: la ventana importada casi nunca
+     arranca en flat, así que el contador queda corrido para siempre. En ARKK quedaban 649
+     acciones fantasma de un largo, y la venta en corto de 700 @86.63 (`realized_pnl=0`, o sea
+     **apertura pura** para IB) se usaba para "cerrar" ese largo → solo 51 acciones entraban al
+     short, monto invertido **$4.418 en vez de $60.641** y P&L **+$208.76 en vez de +$2.875,61**
+     (el resto se perdía por el prorrateo de `_fill_share`). Regla: `realized_pnl != 0` ⇒ cierre;
+     `== 0` ⇒ apertura. Si un cierre excede la posición trackeada, el excedente va a un episodio
+     `estimated` (apertura previa a la ventana). `pnl_known` cae al criterio de posición solo si
+     NINGÚN fill del archivo trae `realized_pnl` (formato viejo).
+  3. **Una posición que nunca volvió a flat y no realizó nada NO es un trade cerrado** (un short
+     vivo, un spread abierto). Antes salían como filas "+$0.00 / +0.0% / LOSS / 0d". Pero
+     descartarlas en silencio hacía parecer que **"faltan trades"**: ahora `build_trades_history`
+     devuelve `open_positions` (símbolo/pata, dirección, qty, precio medio, desde cuándo) y el tab
+     las lista en un panel aparte bajo el listado (`renderThOpen`). (El bloque que leía
+     `portfolio_history.json` para `open_symbols` era **dead code** — nunca se usaba — y se borró:
+     el flat→flat lo cubre.)
+  4. **Opciones**: se agrupaban por (subyacente, expiry), fusionando spreads distintos abiertos en
      fechas distintas, y el "invertido" se calculaba neteando aperturas CONTRA cierres → retornos
      de −1018% o +266%. Ahora el episodio se arma **por pata** (root, expiry, tipo, strike) y las
      patas se agrupan por **fecha de apertura** (las patas de un spread se abren el mismo día).
      `invested` = |coste neto de apertura| (débito pagado o crédito cobrado, flag `direction`
      DEBITO/CREDITO). Nota: el `realized_pnl` de IB **ya viene neto de comisiones**, así que un
      débito puede perder >100% (AAPL C305/320: $400 de débito, −538.36 con $138 de comisiones).
-  4. **`_option_root`**: tras un ajuste/split IB renombra el contrato agregando un dígito al root
+  5. **`_option_root`**: tras un ajuste/split IB renombra el contrato agregando un dígito al root
      ('SQQQ' → 'SQQQ2'), así que la apertura y el cierre quedaban en símbolos distintos y el
      spread se listaba partido en dos filas (una en $0.00, otra con media pata).
 - Shorts de acciones soportados de punta a punta: `direction` LONG/SHORT en el payload, badge

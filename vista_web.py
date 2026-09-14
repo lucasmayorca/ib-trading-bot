@@ -2708,6 +2708,12 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .th-trade-badge.spread{background:rgba(124,58,237,.12);color:#7c3aed;border:1px solid rgba(124,58,237,.25)}
 .th-trade-badge.estimated{background:rgba(180,83,9,.12);color:#b45309;border:1px solid rgba(180,83,9,.25);font-size:9px}
 .th-trade-badge.be{background:rgba(100,116,139,.12);color:#64748b;border:1px solid rgba(100,116,139,.3)}
+.th-open{margin-top:18px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 18px}
+.th-open h4{margin:0 0 4px;font-size:12px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:var(--accent)}
+.th-open p{margin:0 0 10px;font-size:12px;color:var(--muted)}
+.th-open table{width:100%;border-collapse:collapse;font-size:12px}
+.th-open td{padding:5px 8px;border-bottom:1px solid var(--border)}
+.th-open tr:last-child td{border-bottom:none}
 .th-trade-badge.short{background:rgba(194,36,54,.10);color:#c22436;border:1px solid rgba(194,36,54,.25);font-size:9px}
 .th-trade-badge.credito{background:rgba(124,58,237,.10);color:#7c3aed;border:1px solid rgba(124,58,237,.25);font-size:9px}
 .th-trade-dates{font-size:12px;color:var(--muted);flex:1;min-width:0}
@@ -2938,6 +2944,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <button class="th-filter-btn" onclick="filterTrades('short')">Shorts</button>
     </div>
     <div class="th-list" id="th-list"></div>
+    <div id="th-open"></div>
   </div>
 </div>
 </div>
@@ -6811,6 +6818,7 @@ function loadTradesHistory(){
     document.getElementById('th-content').style.display='';
     renderThSummary(data.summary);
     renderThList(data.trades);
+    renderThOpen(data.open_positions);
     _thUpdateFilterCounts(data.trades);
     let st=document.getElementById('th-refresh-status');
     if(data.flex_last_update)st.textContent='Ultima sync: '+data.flex_last_update;
@@ -6819,6 +6827,23 @@ function loadTradesHistory(){
     document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">Error cargando trades: '+e.message+'</span>';
   });
 }
+// Posiciones todavia abiertas: NO son trades cerrados (no tienen P&L realizado
+// ni retorno), pero si no se muestran parece que "faltan trades" en el listado.
+function renderThOpen(list){
+  let el=document.getElementById('th-open');
+  if(!el)return;
+  if(!list||!list.length){el.innerHTML='';return;}
+  let h='<div class="th-open"><h4>Posiciones abiertas ('+list.length+')</h4>';
+  h+='<p>No figuran arriba porque siguen vivas: todavia no tienen P&L realizado. Apareceran como trade cuando se cierren.</p>';
+  h+='<table><tbody>';
+  list.forEach(p=>{
+    let dirTxt=p.direction==='SHORT'?'<span style="color:var(--sell);font-weight:700">SHORT</span>':'<span style="color:var(--buy);font-weight:700">LONG</span>';
+    h+='<tr><td style="font-weight:700">'+p.symbol+'</td><td>'+dirTxt+'</td><td>'+p.quantity+(p.kind==='OPT'?' contratos':' acciones')+'</td><td>$'+p.avg_price.toFixed(2)+'</td><td style="color:var(--muted)">desde '+(p.since||'---')+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  el.innerHTML=h;
+}
+
 function _thUpdateFilterCounts(trades){
   let counts={all:trades.length,stk:0,etf:0,opt:0,win:0,loss:0,short:0};
   trades.forEach(t=>{
@@ -8883,8 +8908,19 @@ def build_trades_history(trades_file=None):
             return 0.0
         return val * (qty / total)
 
-    def _episodes(fills):
-        """Parte fills ordenados en episodios flat->flat."""
+    def _episodes(fills, pnl_known=True):
+        """Parte fills ordenados en episodios flat->flat.
+
+        Quien decide si un fill ABRE o CIERRA es el propio IB: un fill con
+        `realized_pnl` cerro posicion, uno en 0 la abrio. Reconstruir la
+        posicion sumando qty y clasificar por el signo NO sirve, porque la
+        ventana importada casi nunca arranca en flat y el contador queda
+        corrido para siempre: en ARKK quedaban 649 acciones fantasma de un
+        largo, asi que la venta en corto de 700 @86.63 (realized_pnl=0, o sea
+        APERTURA pura para IB) se usaba para "cerrar" ese largo y solo 51
+        acciones entraban al short -> monto invertido $4.418 en vez de $60.641
+        y P&L +$208.76 en vez de los +$2.875,61 que reporta IB.
+        """
         def _new(direction, estimated=False):
             return {"opens": [], "closes": [], "dir": direction,
                     "estimated": estimated, "closed": False}
@@ -8892,47 +8928,67 @@ def build_trades_history(trades_file=None):
         eps = []
         pos = 0.0
         cur = None   # episodio con apertura trackeada
-        est = None   # cierres sin posicion previa (apertura fuera de ventana)
+        est = None   # cierres cuya apertura quedo fuera de la ventana
+
+        def _flush(ep):
+            # los episodios sin fills de cierre no son trades cerrados (son
+            # posicion viva), pero se devuelven igual para poder informarlos:
+            # descartarlos en silencio hacia parecer que "faltan trades"
+            if ep is not None and (ep["opens"] or ep["closes"]):
+                eps.append(ep)
 
         for f in fills:
             side = 1 if f["action"] == "BUY" else -1
             qty = float(f.get("filled_qty") or 0)
             if qty <= 0:
                 continue
-            closed_here = False
-            # (a) parte que cierra la posicion vigente
-            if pos != 0 and (1 if pos > 0 else -1) != side:
-                cq = min(qty, abs(pos))
-                cur["closes"].append((cq, f))
-                pos += side * cq
-                qty -= cq
-                closed_here = True
-                if pos == 0:
-                    cur["closed"] = True
-                    eps.append(cur)
+            if pnl_known:
+                is_close = bool(f.get("realized_pnl"))
+            else:
+                # import viejo sin realized_pnl: unico criterio posible
+                is_close = pos != 0 and (1 if pos > 0 else -1) != side
+
+            if not is_close:
+                # --- APERTURA ---
+                if cur is not None and cur["dir"] != side:
+                    # el episodio anterior nunca cerro (posicion previa a la
+                    # ventana, o drift): se corta aca y se arranca limpio
+                    _flush(cur)
                     cur = None
-            # (b) cierre de una posicion abierta ANTES de la ventana importada
-            if qty > 0 and pos == 0 and cur is None and not closed_here \
-                    and f.get("realized_pnl"):
-                if est is None:
-                    est = _new(-side, estimated=True)  # SELL que cierra => era largo
-                    est["closed"] = True
-                est["closes"].append((qty, f))
-                qty = 0
-            # (c) parte que abre
-            if qty > 0:
+                    pos = 0.0
                 if est is not None:
-                    eps.append(est)
+                    _flush(est)
                     est = None
                 if cur is None:
                     cur = _new(side)
                 cur["opens"].append((qty, f))
                 pos += side * qty
+                continue
 
-        if est is not None:
-            eps.append(est)
-        if cur is not None and cur["closes"]:
-            eps.append(cur)   # cierre parcial: el P&L realizado es real
+            # --- CIERRE ---
+            rem = qty
+            if cur is not None and pos != 0 and cur["dir"] == -side:
+                cq = min(rem, abs(pos))
+                cur["closes"].append((cq, f))
+                pos += side * cq
+                rem -= cq
+                if pos == 0:
+                    cur["closed"] = True
+                    _flush(cur)
+                    cur = None
+            if rem > 0:
+                # cierra posicion abierta ANTES de la ventana importada:
+                # la entrada se estima despues desde el realized_pnl
+                if est is not None and est["dir"] != -side:
+                    _flush(est)
+                    est = None
+                if est is None:
+                    est = _new(-side, estimated=True)  # SELL que cierra => era largo
+                    est["closed"] = True
+                est["closes"].append((rem, f))
+
+        _flush(est)
+        _flush(cur)   # cierre parcial: el P&L realizado es real
         return eps
 
     def _ep_totals(ep):
@@ -8966,13 +9022,32 @@ def build_trades_history(trades_file=None):
 
     completed_trades = []
 
+    # un import sin ningun realized_pnl (formato viejo) no permite usarlo como
+    # senal de apertura/cierre: ahi se cae al criterio de posicion
+    _pnl_known = any(t.get("realized_pnl") for t in all_trades)
+
+    open_positions = []   # posiciones vivas: no son trades, pero se informan
+
+    def _note_open(label, ep, tt, kind):
+        qty = tt["open_qty"] - tt["close_qty"]
+        if qty <= 0:
+            return
+        open_positions.append({
+            "symbol": label, "kind": kind,
+            "direction": "SHORT" if ep["dir"] < 0 else "LONG",
+            "quantity": qty,
+            "avg_price": round(tt["open_amt"] / tt["open_qty"], 2) if tt["open_qty"] else 0,
+            "since": tt["open_date"],
+        })
+
     # --- ACCIONES / ETFs -------------------------------------------------
     for sym, fills in sorted(stock_trades.items()):
         fills.sort(key=lambda x: x["date"])
-        for ep in _episodes(fills):
-            if not ep["closes"]:
-                continue
+        for ep in _episodes(fills, _pnl_known):
             tt = _ep_totals(ep)
+            if not ep["closes"]:
+                _note_open(sym, ep, tt, "ETF" if sym in _etf_set else "STK")
+                continue
             is_short = ep["dir"] < 0
             avg_exit = tt["close_amt"] / tt["close_qty"] if tt["close_qty"] else 0.0
 
@@ -9030,10 +9105,13 @@ def build_trades_history(trades_file=None):
     groups = defaultdict(list)  # (root, expiry, fecha_apertura) -> [(leg, ep, tot)]
     for leg, fills in leg_fills.items():
         fills.sort(key=lambda x: x["date"])
-        for ep in _episodes(fills):
-            if not ep["closes"]:
-                continue   # pata todavia abierta: no es un trade cerrado
+        for ep in _episodes(fills, _pnl_known):
             tt = _ep_totals(ep)
+            if not ep["closes"]:
+                # pata todavia abierta: no es un trade cerrado, pero se informa
+                _lbl = f"{leg[0]} {leg[2]}${leg[3]:g} exp {leg[1]}"
+                _note_open(_lbl, ep, tt, "OPT")
+                continue
             anchor = tt["open_date"] or tt["close_date"]
             groups[(leg[0], leg[1], anchor)].append((leg, ep, tt))
 
@@ -9168,7 +9246,9 @@ def build_trades_history(trades_file=None):
         },
     }
 
-    return {"trades": completed_trades, "summary": summary}
+    open_positions.sort(key=lambda p: p["since"] or "")
+    return {"trades": completed_trades, "summary": summary,
+            "open_positions": open_positions}
 
 
 def _fetch_trade_chart_data(symbol, entry_date, exit_date):
