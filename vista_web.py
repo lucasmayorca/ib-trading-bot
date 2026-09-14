@@ -2707,6 +2707,9 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .th-trade-badge.opt{background:rgba(180,83,9,.12);color:#b45309;border:1px solid rgba(180,83,9,.25)}
 .th-trade-badge.spread{background:rgba(124,58,237,.12);color:#7c3aed;border:1px solid rgba(124,58,237,.25)}
 .th-trade-badge.estimated{background:rgba(180,83,9,.12);color:#b45309;border:1px solid rgba(180,83,9,.25);font-size:9px}
+.th-trade-badge.be{background:rgba(100,116,139,.12);color:#64748b;border:1px solid rgba(100,116,139,.3)}
+.th-trade-badge.short{background:rgba(194,36,54,.10);color:#c22436;border:1px solid rgba(194,36,54,.25);font-size:9px}
+.th-trade-badge.credito{background:rgba(124,58,237,.10);color:#7c3aed;border:1px solid rgba(124,58,237,.25);font-size:9px}
 .th-trade-dates{font-size:12px;color:var(--muted);flex:1;min-width:0}
 .th-trade-metrics{display:flex;gap:18px;align-items:center}
 .th-trade-metric{text-align:right}
@@ -2932,6 +2935,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
       <span style="width:1px;background:var(--border);margin:0 4px"></span>
       <button class="th-filter-btn" onclick="filterTrades('win')">Ganadores</button>
       <button class="th-filter-btn" onclick="filterTrades('loss')">Perdedores</button>
+      <button class="th-filter-btn" onclick="filterTrades('short')">Shorts</button>
     </div>
     <div class="th-list" id="th-list"></div>
   </div>
@@ -6816,14 +6820,15 @@ function loadTradesHistory(){
   });
 }
 function _thUpdateFilterCounts(trades){
-  let counts={all:trades.length,stk:0,etf:0,opt:0,win:0,loss:0};
+  let counts={all:trades.length,stk:0,etf:0,opt:0,win:0,loss:0,short:0};
   trades.forEach(t=>{
     if(t.type==='STK')counts.stk++;
     else if(t.type==='ETF')counts.etf++;
     else counts.opt++;
-    if(t.result==='WIN')counts.win++;else counts.loss++;
+    if(t.result==='WIN')counts.win++;else if(t.result==='LOSS')counts.loss++;
+    if(t.direction==='SHORT')counts.short++;
   });
-  let labels={all:'Todos',stk:'Acciones',etf:'ETFs',opt:'Opciones',win:'Ganadores',loss:'Perdedores'};
+  let labels={all:'Todos',stk:'Acciones',etf:'ETFs',opt:'Opciones',win:'Ganadores',loss:'Perdedores',short:'Shorts'};
   Object.keys(labels).forEach(k=>{
     let btn=document.querySelector('.th-filter-btn[onclick*="\''+k+'\'"]');
     if(btn)btn.textContent=labels[k]+' ('+counts[k]+')';
@@ -6848,16 +6853,24 @@ function refreshTradesFromFlex(){
 }
 
 function _thComputeSummary(trades){
-  if(!trades||!trades.length)return null;
+  // con 0 resultados hay que devolver un resumen en cero: devolver null dejaba
+  // las tarjetas con los numeros del filtro anterior (ej. "Shorts (0)" -> 18 trades)
+  if(!trades||!trades.length)return {total_trades:0,wins:0,losses:0,breakeven:0,win_rate:0,
+    total_pnl:0,best_trade:null,worst_trade:null,avg_duration_days:0,avg_return_pct:0,
+    weighted_return_pct:0,total_commissions:0,stocks_count:0,etfs_count:0,options_count:0};
   let wins=trades.filter(t=>t.result==='WIN');
+  let losses=trades.filter(t=>t.result==='LOSS');
   let durs=trades.filter(t=>t.duration_days>0).map(t=>t.duration_days);
   let pnl=trades.reduce((a,t)=>a+t.pnl,0);
   let comm=trades.reduce((a,t)=>a+t.commissions,0);
+  let cap=trades.reduce((a,t)=>a+(t.invested>0?t.invested:0),0);
   let best=trades.reduce((a,t)=>t.pnl>a.pnl?t:a,trades[0]);
   let worst=trades.reduce((a,t)=>t.pnl<a.pnl?t:a,trades[0]);
   return {
-    total_trades:trades.length, wins:wins.length, losses:trades.length-wins.length,
-    win_rate:+(wins.length/trades.length*100).toFixed(1),
+    total_trades:trades.length, wins:wins.length, losses:losses.length,
+    breakeven:trades.length-wins.length-losses.length,
+    weighted_return_pct:cap>0?+(pnl/cap*100).toFixed(2):0,
+    win_rate:(wins.length+losses.length)?+(wins.length/(wins.length+losses.length)*100).toFixed(1):0,
     total_pnl:+pnl.toFixed(2),
     best_trade:{symbol:best.symbol,pnl:best.pnl,pnl_pct:best.pnl_pct},
     worst_trade:{symbol:worst.symbol,pnl:worst.pnl,pnl_pct:worst.pnl_pct},
@@ -6878,14 +6891,20 @@ function renderThSummary(s,filterLabel){
   let h='';
   let sub0=filterLabel||((s.stocks_count||0)+' acciones, '+(s.etfs_count||0)+' ETFs, '+(s.options_count||0)+' opciones');
   h+='<div class="th-card"><div class="label">Total Trades</div><div class="value">'+s.total_trades+'</div><div class="sub">'+sub0+'</div></div>';
-  h+='<div class="th-card"><div class="label">Win Rate</div><div class="value" style="'+wrColor+'">'+s.win_rate+'%</div><div class="sub">'+s.wins+'W / '+s.losses+'L</div></div>';
-  h+='<div class="th-card"><div class="label">P&L Total</div><div class="value" style="'+pnlColor+'">$'+fmtN(s.total_pnl)+'</div><div class="sub">Comisiones: $'+fmtN(s.total_commissions)+'</div></div>';
-  h+='<div class="th-card"><div class="label">Retorno Promedio</div><div class="value" style="'+(s.avg_return_pct>=0?'color:var(--buy)':'color:var(--sell)')+'">'+s.avg_return_pct.toFixed(1)+'%</div><div class="sub">Duracion prom: '+s.avg_duration_days+'d</div></div>';
+  let wrSub=s.wins+'W / '+s.losses+'L'+(s.breakeven?' / '+s.breakeven+' sin P&L':'');
+  h+='<div class="th-card"><div class="label">Win Rate</div><div class="value" style="'+wrColor+'">'+s.win_rate+'%</div><div class="sub">'+wrSub+'</div></div>';
+  h+='<div class="th-card"><div class="label">P&L Total</div><div class="value" style="'+pnlColor+'">'+(s.total_pnl<0?'-':'+')+'$'+fmtN(Math.abs(s.total_pnl))+'</div><div class="sub">Comisiones: $'+fmtN(s.total_commissions)+'</div></div>';
+  // ponderado por capital: el promedio simple de % daba -40% junto a un P&L
+  // de +$184k (una opcion de $300 que expira pesaba igual que una accion de $80k)
+  let wr2=(s.weighted_return_pct!==undefined&&s.weighted_return_pct!==null)?s.weighted_return_pct:s.avg_return_pct;
+  h+='<div class="th-card" title="P&L total sobre el capital invertido en los trades cerrados. Promedio simple de retornos: '+(s.avg_return_pct||0).toFixed(1)+'%"><div class="label">Retorno s/ Capital</div><div class="value" style="'+(wr2>=0?'color:var(--buy)':'color:var(--sell)')+'">'+(wr2>=0?'+':'')+wr2.toFixed(1)+'%</div><div class="sub">Duracion prom: '+s.avg_duration_days+'d</div></div>';
   if(s.best_trade){
-    h+='<div class="th-card"><div class="label">Mejor Trade</div><div class="value" style="color:var(--buy)">'+s.best_trade.symbol+'</div><div class="sub">+$'+fmtN(s.best_trade.pnl)+' (+'+s.best_trade.pnl_pct.toFixed(1)+'%)</div></div>';
+    let _bs=s.best_trade.pnl<0?'-':'+';
+    h+='<div class="th-card"><div class="label">Mejor Trade</div><div class="value" style="color:var(--buy)">'+s.best_trade.symbol+'</div><div class="sub">'+_bs+'$'+fmtN(Math.abs(s.best_trade.pnl))+' ('+(s.best_trade.pnl_pct<0?'':'+')+s.best_trade.pnl_pct.toFixed(1)+'%)</div></div>';
   }
   if(s.worst_trade){
-    h+='<div class="th-card"><div class="label">Peor Trade</div><div class="value" style="color:var(--sell)">'+s.worst_trade.symbol+'</div><div class="sub">$'+fmtN(s.worst_trade.pnl)+' ('+s.worst_trade.pnl_pct.toFixed(1)+'%)</div></div>';
+    let _ws=s.worst_trade.pnl<0?'-':'+';
+    h+='<div class="th-card"><div class="label">Peor Trade</div><div class="value" style="color:var(--sell)">'+s.worst_trade.symbol+'</div><div class="sub">'+_ws+'$'+fmtN(Math.abs(s.worst_trade.pnl))+' ('+s.worst_trade.pnl_pct.toFixed(1)+'%)</div></div>';
   }
   el.innerHTML=h;
 }
@@ -6896,7 +6915,7 @@ function filterTrades(f){
   document.querySelector('.th-filter-btn[onclick*="\''+f+'\'"]').classList.add('active');
   if(!_thData)return;
   let filtered=_thData.trades.filter(t=>_thFilterMatch(t,f));
-  let labels={all:null,stk:'Solo acciones',etf:'Solo ETFs',opt:'Solo opciones',win:'Solo ganadores',loss:'Solo perdedores'};
+  let labels={all:null,stk:'Solo acciones',etf:'Solo ETFs',opt:'Solo opciones',win:'Solo ganadores',loss:'Solo perdedores',short:'Solo shorts'};
   if(f==='all'){renderThSummary(_thData.summary);}
   else{let cs=_thComputeSummary(filtered);if(cs)renderThSummary(cs,labels[f]);}
   renderThList(_thData.trades);
@@ -6909,6 +6928,7 @@ function _thFilterMatch(t,f){
   if(f==='opt')return t.type==='OPT'||t.type==='SPREAD';
   if(f==='win')return t.result==='WIN';
   if(f==='loss')return t.result==='LOSS';
+  if(f==='short')return t.direction==='SHORT';
   return true;
 }
 
@@ -6926,8 +6946,10 @@ function renderThList(trades){
 
   let h='';
   filtered.forEach((t,i)=>{
-    let pnlColor=t.pnl>=0?'var(--buy)':'var(--sell)';
-    let pnlSign=t.pnl>=0?'+':'';
+    // el signo sale del valor, no de '>=0': antes los negativos quedaban
+    // sin '-' y con Math.abs se mostraba una perdida como "$5,428.84"
+    let pnlColor=t.pnl>0?'var(--buy)':(t.pnl<0?'var(--sell)':'var(--hold)');
+    let pnlSign=t.pnl>0?'+':(t.pnl<0?'-':'');
     let typeBadge=t.type==='STK'?'stk':t.type==='ETF'?'etf':t.type==='SPREAD'?'spread':'opt';
     let optDetail=t.option_detail?'<span class="th-trade-badge '+typeBadge+'" style="font-size:9px;padding:2px 7px">'+t.option_detail+'</span>':'';
 
@@ -6941,11 +6963,16 @@ function renderThList(trades){
     h+='<span class="th-trade-badge '+typeBadge+'">'+t.type+'</span>';
     if(t.estimated_entry)h+='<span class="th-trade-badge estimated">ENTRADA EST.</span>';
     h+=optDetail;
-    h+='<span class="th-trade-badge '+(t.result==='WIN'?'win':'loss')+'">'+t.result+'</span>';
+    let _rescls=t.result==='WIN'?'win':(t.result==='LOSS'?'loss':'be');
+    h+='<span class="th-trade-badge '+_rescls+'">'+(t.result==='BE'?'SIN P&L':t.result)+'</span>';
+    if(t.direction==='SHORT')h+='<span class="th-trade-badge short" title="Venta en corto: se abrio vendiendo y se cerro comprando">SHORT</span>';
+    else if(t.direction==='CREDITO')h+='<span class="th-trade-badge credito" title="Se abrio cobrando prima neta">CREDITO</span>';
+    if(t.partial_exit)h+='<span class="th-trade-badge estimated" title="Cierre parcial: queda posicion abierta. El P&L mostrado es solo el realizado.">PARCIAL</span>';
     h+='<span class="th-trade-dates">'+t.entry_date+' &rarr; '+t.exit_date+' ('+t.duration_days+'d)</span>';
     h+='<div class="th-trade-metrics">';
     h+='<div class="th-trade-metric"><div class="val" style="color:'+pnlColor+'">'+pnlSign+'$'+fmtN(Math.abs(t.pnl))+'</div><div class="lbl">P&L</div></div>';
-    h+='<div class="th-trade-metric"><div class="val" style="color:'+pnlColor+'">'+pnlSign+t.pnl_pct.toFixed(1)+'%</div><div class="lbl">Retorno</div></div>';
+    // el % ya trae su propio signo: prefijar pnlSign daba "- -40.3%"
+    h+='<div class="th-trade-metric"><div class="val" style="color:'+pnlColor+'">'+(t.pnl_pct>0?'+':'')+t.pnl_pct.toFixed(1)+'%</div><div class="lbl">Retorno</div></div>';
     h+='</div>';
     h+='<span class="th-trade-expand">&#9662;</span>';
     h+='</div>';
@@ -6961,10 +6988,16 @@ function renderThList(trades){
     h+='<div class="th-detail-section">';
     h+='<div class="th-detail-title">Detalle del Trade</div>';
     h+='<table class="th-fills-table"><tbody>';
-    h+='<tr><td style="color:var(--muted)">Precio Entrada</td><td style="font-weight:700">$'+t.entry_price.toFixed(2)+(t.estimated_entry?' (est.)':'')+'</td></tr>';
-    h+='<tr><td style="color:var(--muted)">Precio Salida</td><td style="font-weight:700">$'+t.exit_price.toFixed(2)+'</td></tr>';
-    h+='<tr><td style="color:var(--muted)">Cantidad</td><td>'+t.quantity+(t.type!=='STK'?' contratos':' acciones')+'</td></tr>';
-    h+='<tr><td style="color:var(--muted)">Monto Invertido</td><td>$'+fmtN(t.invested)+'</td></tr>';
+    // las etiquetas siguen a la direccion: en un short se entra VENDIENDO, y
+    // en un spread por credito lo que se arriesga no es un "monto invertido"
+    let _isOpt=(t.type==='OPT'||t.type==='SPREAD');
+    let _lblIn=t.direction==='SHORT'?'Precio Venta (entrada)':(_isOpt?'Prima neta apertura':'Precio Entrada');
+    let _lblOut=t.direction==='SHORT'?'Precio Compra (salida)':(_isOpt?'Prima neta cierre':'Precio Salida');
+    let _lblCap=t.direction==='CREDITO'?'Prima cobrada':(_isOpt?'Prima pagada':'Monto Invertido');
+    h+='<tr><td style="color:var(--muted)">'+_lblIn+'</td><td style="font-weight:700">$'+Math.abs(t.entry_price).toFixed(2)+(t.estimated_entry?' (est.)':'')+(_isOpt?' /contrato':'')+'</td></tr>';
+    h+='<tr><td style="color:var(--muted)">'+_lblOut+'</td><td style="font-weight:700">$'+Math.abs(t.exit_price).toFixed(2)+(_isOpt?' /contrato':'')+'</td></tr>';
+    h+='<tr><td style="color:var(--muted)">Cantidad</td><td>'+t.quantity+(t.type!=='STK'&&t.type!=='ETF'?' contratos':' acciones')+'</td></tr>';
+    h+='<tr><td style="color:var(--muted)">'+_lblCap+'</td><td>$'+fmtN(t.invested)+'</td></tr>';
     h+='<tr><td style="color:var(--muted)">Comisiones</td><td>$'+t.commissions.toFixed(2)+'</td></tr>';
     h+='<tr><td style="color:var(--muted)">P&L Neto</td><td style="color:'+pnlColor+';font-weight:700">'+pnlSign+'$'+fmtN(Math.abs(t.pnl))+'</td></tr>';
     h+='</tbody></table>';
@@ -7031,7 +7064,7 @@ function toggleThTrade(idx){
     let candleEl=document.getElementById('th-candle-'+idx);
     if(candleEl)candleEl.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:13px;padding:40px">Cargando grafico y análisis...</div>';
 
-    fetch('/api/trades-history/chart/'+encodeURIComponent(trade.id)+'?symbol='+trade.symbol+'&entry='+trade.entry_date+'&exit='+trade.exit_date)
+    fetch('/api/trades-history/chart/'+encodeURIComponent(trade.id)+'?symbol='+trade.symbol+'&entry='+trade.entry_date+'&exit='+trade.exit_date+'&dir='+encodeURIComponent(trade.direction||'LONG'))
       .then(r=>r.json())
       .then(chart=>{
         if(chart.error){
@@ -7053,13 +7086,20 @@ function _renderThTradeChart(idx,trade,chart){
   // del subyacente — etiquetarlas como tales sobre las velas del subyacente.
   let sameScale=(trade.type==='STK'||trade.type==='ETF');
   let pxLbl=sameScale?'$':'prima $';
+  // En un SHORT la entrada es la VENTA y la salida la COMPRA: dibujar siempre
+  // "BUY = entrada" ponia la flecha verde de apertura sobre el cierre.
+  let isShort=(trade.direction==='SHORT');
+  let openFills=(isShort?trade.sell_fills:trade.buy_fills)||[];
+  let closeFills=(isShort?trade.buy_fills:trade.sell_fills)||[];
+  let openAct=isShort?'SELL':'BUY', closeAct=isShort?'BUY':'SELL';
+  let openColor=isShort?'#c22436':'#0b7a4b', closeColor=isShort?'#0b7a4b':'#c22436';
   if(trade.entry_date){
-    markers.push({time:trade.entry_date,position:'belowBar',color:'#0b7a4b',shape:'arrowUp',text:'BUY '+pxLbl+trade.entry_price.toFixed(2)});
-    events.push({time:trade.entry_date,position:'aboveBar',color:'#0b7a4b',shape:'circle',text:'B'});
+    markers.push({time:trade.entry_date,position:isShort?'aboveBar':'belowBar',color:openColor,shape:isShort?'arrowDown':'arrowUp',text:openAct+' '+pxLbl+Math.abs(trade.entry_price).toFixed(2)+(trade.estimated_entry?' (est.)':'')});
+    events.push({time:trade.entry_date,position:'aboveBar',color:openColor,shape:'circle',text:openAct[0]});
   }
-  (trade.sell_fills||[]).forEach(sf=>{
-    markers.push({time:sf.date,position:'aboveBar',color:'#c22436',shape:'arrowDown',text:'SELL '+pxLbl+sf.price.toFixed(2)});
-    events.push({time:sf.date,position:'aboveBar',color:'#c22436',shape:'circle',text:'S'});
+  closeFills.forEach(cf=>{
+    markers.push({time:cf.date,position:isShort?'belowBar':'aboveBar',color:closeColor,shape:isShort?'arrowUp':'arrowDown',text:closeAct+' '+pxLbl+cf.price.toFixed(2)});
+    events.push({time:cf.date,position:'aboveBar',color:closeColor,shape:'circle',text:closeAct[0]});
   });
   markers.sort((a,b)=>a.time<b.time?-1:1);
   events.sort((a,b)=>a.time<b.time?-1:1);
@@ -7067,9 +7107,9 @@ function _renderThTradeChart(idx,trade,chart){
   // estira la escala del panel de velas hasta hacerlas ilegibles (prima $0.20
   // vs accion $300). Los marcadores (flechas con la prima) sí se mantienen.
   if(sameScale&&trade.entry_price!=null)priceLines.push({price:trade.entry_price,color:'#2563eb',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Entrada'});
-  if(sameScale&&trade.sell_fills&&trade.sell_fills.length>0){
-    let lastSell=trade.sell_fills[trade.sell_fills.length-1];
-    priceLines.push({price:lastSell.price,color:trade.pnl>=0?'#0b7a4b':'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Salida'});
+  if(sameScale&&closeFills.length>0){
+    let lastClose=closeFills[closeFills.length-1];
+    priceLines.push({price:lastClose.price,color:trade.pnl>=0?'#0b7a4b':'#c22436',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Salida'});
   }
 
   scRenderStack({key:'th_'+idx,symbol:trade.symbol||'',period:'ALL',
@@ -8570,6 +8610,22 @@ def _parse_option_symbol(raw_sym):
         return ticker, None, None, None
 
 
+def _option_root(ticker):
+    """Normaliza el root de un contrato ajustado de IB ('SQQQ2' -> 'SQQQ').
+
+    Tras un split/ajuste IB renombra el contrato agregando un digito al root,
+    asi que la apertura queda bajo 'SQQQ' y el cierre bajo 'SQQQ2': sin
+    normalizar, el episodio nunca cerraba y el spread se listaba partido en
+    dos filas (una en $0.00 y otra con el P&L de media pata).
+    """
+    if not ticker:
+        return ticker
+    base = ticker[:-1]
+    if ticker[-1].isdigit() and len(base) >= 2 and base.isalpha():
+        return base
+    return ticker
+
+
 def _is_option_symbol(sym):
     return len(sym.strip()) > 10 and ("C0" in sym or "P0" in sym)
 
@@ -8593,10 +8649,16 @@ def _group_spread_legs(trades_list):
     return spreads, standalone
 
 
-def _generate_trade_thesis(sym, entry_date, exit_date, indicators_at_entry, indicators_at_exit):
-    """Generate entry/exit thesis from indicator values."""
+def _generate_trade_thesis(sym, entry_date, exit_date, indicators_at_entry,
+                           indicators_at_exit, direction="LONG"):
+    """Generate entry/exit thesis from indicator values.
+
+    `direction` importa: en un SHORT se entra VENDIENDO, asi que un MACD
+    negativo al entrar no es "posible giro al alza" sino inercia a favor.
+    """
     entry_parts = []
     exit_parts = []
+    is_short = str(direction).upper() == "SHORT"
 
     if indicators_at_entry:
         rsi_e = indicators_at_entry.get("rsi")
@@ -8615,9 +8677,11 @@ def _generate_trade_thesis(sym, entry_date, exit_date, indicators_at_entry, indi
 
         if macd_h_e is not None:
             if macd_h_e < 0:
-                entry_parts.append(f"MACD histograma negativo ({macd_h_e:.2f}), posible giro al alza")
+                entry_parts.append(f"MACD histograma negativo ({macd_h_e:.2f})"
+                                   + ("" if is_short else ", posible giro al alza"))
             else:
-                entry_parts.append(f"MACD histograma positivo ({macd_h_e:.2f})")
+                entry_parts.append(f"MACD histograma positivo ({macd_h_e:.2f})"
+                                   + (", posible giro a la baja" if is_short else ""))
 
         marron_e = konc_e.get("marron")
         media_e = konc_e.get("media")
@@ -8644,7 +8708,8 @@ def _generate_trade_thesis(sym, entry_date, exit_date, indicators_at_entry, indi
 
         if macd_h_x is not None:
             if macd_h_x > 0:
-                exit_parts.append(f"MACD histograma positivo ({macd_h_x:.2f}), girando a la baja")
+                exit_parts.append(f"MACD histograma positivo ({macd_h_x:.2f})"
+                                  + ("" if is_short else ", girando a la baja"))
             else:
                 exit_parts.append(f"MACD histograma negativo ({macd_h_x:.2f})")
 
@@ -8656,8 +8721,9 @@ def _generate_trade_thesis(sym, entry_date, exit_date, indicators_at_entry, indi
             else:
                 exit_parts.append("Koncorde marron cayo por debajo de media")
 
-    entry_thesis = ". ".join(entry_parts) + "." if entry_parts else "Sin datos de indicadores al momento de la compra."
-    exit_thesis = ". ".join(exit_parts) + "." if exit_parts else "Sin datos de indicadores al momento de la venta."
+    _in, _out = ("la venta en corto", "la recompra") if is_short else ("la compra", "la venta")
+    entry_thesis = ". ".join(entry_parts) + "." if entry_parts else f"Sin datos de indicadores al momento de {_in}."
+    exit_thesis = ". ".join(exit_parts) + "." if exit_parts else f"Sin datos de indicadores al momento de {_out}."
     return entry_thesis, exit_thesis
 
 
@@ -8776,21 +8842,6 @@ def build_trades_history(trades_file=None):
     if not all_trades:
         return {"trades": [], "summary": {}}
 
-    # Get currently open positions to exclude them
-    history_file = os.path.join(os.path.dirname(__file__), "portfolio_history.json")
-    open_symbols = set()
-    if os.path.exists(history_file):
-        try:
-            with open(history_file) as f:
-                hist = json.load(f)
-            snapshots = hist.get("snapshots", [])
-            if snapshots:
-                latest = snapshots[-1]
-                for p in latest.get("positions", []):
-                    open_symbols.add(p.get("symbol", ""))
-        except Exception:
-            pass
-
     # Separate stock trades from option trades
     stock_trades = defaultdict(list)
     option_trades = defaultdict(list)
@@ -8803,180 +8854,265 @@ def build_trades_history(trades_file=None):
         else:
             stock_trades[sym].append(t)
 
-    completed_trades = []
+    # ------------------------------------------------------------------
+    # Emparejado por EPISODIO de posicion (flat -> flat).
+    #
+    # Reglas que costaron debugging real (no volver atras):
+    #  1. El realized_pnl de IB viaja en el fill que CIERRA. En un largo eso
+    #     es el SELL, pero en un CORTO -- y en la pata vendida de todo spread
+    #     -- es el BUY. Sumar solo los SELL dejaba los shorts en $0.00 y se
+    #     comia la pata corta entera de cada spread (COST -310.70 en vez de
+    #     -186.41, ADBE -1001.16 en vez de -693.32...).
+    #  2. Una posicion que nunca volvio a flat y no realizo nada NO es un
+    #     trade cerrado (short abierto, spread vivo) -> no se lista. Antes
+    #     salian como filas "+$0.00 / +0.0% / LOSS / 0d".
+    #  3. Los fills de apertura previos a la ventana importada no existen:
+    #     si un cierre llega sin posicion previa, la entrada se estima desde
+    #     el realized_pnl (flag estimated_entry).
+    #  4. Las opciones se agrupan por PATA y episodio, no por (subyacente,
+    #     expiry): agrupar por expiry fusionaba spreads distintos abiertos en
+    #     fechas distintas y calculaba "invertido" netando aperturas contra
+    #     cierres (de ahi retornos de -1018% o +266%).
+    # ------------------------------------------------------------------
 
-    def _make_stk_trade(sym, entry_buys, exit_sells, estimated=False):
-        """Create a completed stock trade dict from matched buy/sell fills."""
-        tb_qty = sum(b["filled_qty"] for b in entry_buys)
-        tb_cost = sum(b["filled_qty"] * b["avg_fill_price"] for b in entry_buys)
-        tb_comm = sum(b.get("commission", 0) for b in entry_buys)
-        ts_qty = sum(s["filled_qty"] for s in exit_sells)
-        ts_proceeds = sum(s["filled_qty"] * s["avg_fill_price"] for s in exit_sells)
-        ts_comm = sum(s.get("commission", 0) for s in exit_sells)
-        total_pnl = sum(s.get("realized_pnl", 0) for s in exit_sells)
+    def _fill_share(fill, qty, field):
+        """Parte proporcional de un campo del fill segun la qty usada."""
+        total = float(fill.get("filled_qty") or 0)
+        val = float(fill.get(field) or 0)
+        if total <= 0:
+            return 0.0
+        return val * (qty / total)
 
-        if estimated or not entry_buys:
-            avg_sell = ts_proceeds / ts_qty if ts_qty else 0
-            avg_entry = avg_sell - (total_pnl / ts_qty) if ts_qty else 0
-            entry_date = exit_sells[0]["date"]
-            closed_qty = ts_qty
-        else:
-            avg_entry = tb_cost / tb_qty if tb_qty else 0
-            entry_date = entry_buys[0]["date"]
-            closed_qty = min(tb_qty, ts_qty)
+    def _episodes(fills):
+        """Parte fills ordenados en episodios flat->flat."""
+        def _new(direction, estimated=False):
+            return {"opens": [], "closes": [], "dir": direction,
+                    "estimated": estimated, "closed": False}
 
-        avg_exit = ts_proceeds / ts_qty if ts_qty else 0
-        exit_date = exit_sells[-1]["date"]
-        invested = avg_entry * closed_qty
-        pnl_pct = (total_pnl / invested * 100) if invested > 0 else 0
-        try:
-            dur = (dt.strptime(exit_date, "%Y-%m-%d") - dt.strptime(entry_date, "%Y-%m-%d")).days
-        except ValueError:
-            dur = 0
+        eps = []
+        pos = 0.0
+        cur = None   # episodio con apertura trackeada
+        est = None   # cierres sin posicion previa (apertura fuera de ventana)
 
-        asset_class = "ETF" if sym in _etf_set else "STK"
-        trade_idx = sum(1 for t in completed_trades if t["symbol"] == sym and t["type"] == asset_class) + 1
+        for f in fills:
+            side = 1 if f["action"] == "BUY" else -1
+            qty = float(f.get("filled_qty") or 0)
+            if qty <= 0:
+                continue
+            closed_here = False
+            # (a) parte que cierra la posicion vigente
+            if pos != 0 and (1 if pos > 0 else -1) != side:
+                cq = min(qty, abs(pos))
+                cur["closes"].append((cq, f))
+                pos += side * cq
+                qty -= cq
+                closed_here = True
+                if pos == 0:
+                    cur["closed"] = True
+                    eps.append(cur)
+                    cur = None
+            # (b) cierre de una posicion abierta ANTES de la ventana importada
+            if qty > 0 and pos == 0 and cur is None and not closed_here \
+                    and f.get("realized_pnl"):
+                if est is None:
+                    est = _new(-side, estimated=True)  # SELL que cierra => era largo
+                    est["closed"] = True
+                est["closes"].append((qty, f))
+                qty = 0
+            # (c) parte que abre
+            if qty > 0:
+                if est is not None:
+                    eps.append(est)
+                    est = None
+                if cur is None:
+                    cur = _new(side)
+                cur["opens"].append((qty, f))
+                pos += side * qty
+
+        if est is not None:
+            eps.append(est)
+        if cur is not None and cur["closes"]:
+            eps.append(cur)   # cierre parcial: el P&L realizado es real
+        return eps
+
+    def _ep_totals(ep):
+        """Agrega cantidades, importes, P&L y comisiones de un episodio."""
+        o_qty = sum(q for q, _ in ep["opens"])
+        o_amt = sum(q * float(f["avg_fill_price"]) for q, f in ep["opens"])
+        c_qty = sum(q for q, _ in ep["closes"])
+        c_amt = sum(q * float(f["avg_fill_price"]) for q, f in ep["closes"])
+        pnl = sum(_fill_share(f, q, "realized_pnl")
+                  for q, f in ep["opens"] + ep["closes"])
+        comm = sum(_fill_share(f, q, "commission")
+                   for q, f in ep["opens"] + ep["closes"])
+        dates = [f["date"] for _, f in ep["opens"]] + [f["date"] for _, f in ep["closes"]]
         return {
-            "id": f"{sym}_{entry_date}_{trade_idx}",
-            "symbol": sym, "type": asset_class, "option_detail": None,
-            "entry_date": entry_date, "exit_date": exit_date,
-            "entry_price": round(avg_entry, 2), "exit_price": round(avg_exit, 2),
-            "quantity": closed_qty, "invested": round(invested, 2),
-            "pnl": round(total_pnl, 2), "pnl_pct": round(pnl_pct, 2),
-            "duration_days": max(dur, 0), "commissions": round(tb_comm + ts_comm, 2),
-            "result": "WIN" if total_pnl > 0 else "LOSS",
-            "estimated_entry": estimated or not entry_buys,
-            "buy_fills": [{"date": b["date"], "qty": b["filled_qty"], "price": b["avg_fill_price"]} for b in entry_buys],
-            "sell_fills": [{"date": s["date"], "qty": s["filled_qty"], "price": s["avg_fill_price"]} for s in exit_sells],
+            "open_qty": o_qty, "open_amt": o_amt,
+            "close_qty": c_qty, "close_amt": c_amt,
+            "pnl": pnl, "commissions": comm,
+            "open_date": min((f["date"] for _, f in ep["opens"]), default=None),
+            "close_date": max((f["date"] for _, f in ep["closes"]), default=None),
+            "first_date": min(dates) if dates else None,
         }
 
-    # --- Process STOCK trades (FIFO pairing) ---
-    for sym, fills in stock_trades.items():
+    def _duration(d1, d2):
+        try:
+            return max((dt.strptime(d2, "%Y-%m-%d") - dt.strptime(d1, "%Y-%m-%d")).days, 0)
+        except (ValueError, TypeError):
+            return 0
+
+    def _result(pnl):
+        return "WIN" if pnl > 0.005 else ("LOSS" if pnl < -0.005 else "BE")
+
+    completed_trades = []
+
+    # --- ACCIONES / ETFs -------------------------------------------------
+    for sym, fills in sorted(stock_trades.items()):
         fills.sort(key=lambda x: x["date"])
-        has_sells = any(f["action"] == "SELL" for f in fills)
-        if not has_sells:
-            continue
-
-        position = 0
-        cur_buys = []
-        cur_sells = []
-
-        for fill in fills:
-            if fill["action"] == "BUY":
-                if cur_sells and not cur_buys:
-                    completed_trades.append(_make_stk_trade(sym, [], cur_sells, estimated=True))
-                    cur_sells = []
-                    position = 0
-                position += fill["filled_qty"]
-                cur_buys.append(fill)
-            elif fill["action"] == "SELL":
-                position -= fill["filled_qty"]
-                cur_sells.append(fill)
-                if cur_buys and position <= 0:
-                    completed_trades.append(_make_stk_trade(sym, cur_buys, cur_sells))
-                    cur_buys = []
-                    cur_sells = []
-                    position = 0
-
-        if cur_sells:
-            completed_trades.append(_make_stk_trade(sym, cur_buys, cur_sells, estimated=not cur_buys))
-
-    # --- Process OPTION trades ---
-    # Group by underlying + expiry to detect spreads
-    opt_by_underlying = defaultdict(list)
-    for sym, trades in option_trades.items():
-        ticker, expiry, opt_type, strike = _parse_option_symbol(sym)
-        for t in trades:
-            t["_ticker"] = ticker
-            t["_expiry"] = expiry
-            t["_opt_type"] = opt_type
-            t["_strike"] = strike
-            t["_raw_sym"] = sym
-            opt_by_underlying[ticker].append(t)
-
-    # Group option trades by underlying + date range to form round trips
-    for ticker, opts in opt_by_underlying.items():
-        # Group by expiry date to identify related trades
-        by_expiry = defaultdict(list)
-        for o in opts:
-            by_expiry[o["_expiry"]].append(o)
-
-        for expiry, exp_trades in by_expiry.items():
-            buys = [t for t in exp_trades if t["action"] == "BUY"]
-            sells = [t for t in exp_trades if t["action"] == "SELL"]
-
-            if not buys and not sells:
+        for ep in _episodes(fills):
+            if not ep["closes"]:
                 continue
+            tt = _ep_totals(ep)
+            is_short = ep["dir"] < 0
+            avg_exit = tt["close_amt"] / tt["close_qty"] if tt["close_qty"] else 0.0
 
-            # Check if this is a spread (multiple strikes same expiry)
-            strikes_involved = set()
-            for t in exp_trades:
-                strikes_involved.add(t["_strike"])
-
-            is_spread = len(strikes_involved) > 1
-
-            total_buy_cost = sum(b["filled_qty"] * b["avg_fill_price"] * 100 for b in buys)
-            total_sell_proceeds = sum(s["filled_qty"] * s["avg_fill_price"] * 100 for s in sells)
-            total_pnl = sum(s.get("realized_pnl", 0) for s in sells)
-            total_comm = sum(t.get("commission", 0) for t in exp_trades)
-
-            all_dates = [t["date"] for t in exp_trades]
-            all_dates.sort()
-            entry_date = all_dates[0]
-            exit_date = all_dates[-1]
-
-            strikes_str = "/".join(f"${s:.0f}" for s in sorted(strikes_involved))
-            opt_types = set(t["_opt_type"] for t in exp_trades)
-            opt_type_str = "/".join(sorted(opt_types))
-
-            if is_spread:
-                type_label = "SPREAD"
-                detail = f"{opt_type_str} {strikes_str} exp {expiry}"
+            if ep["estimated"]:
+                closed_qty = tt["close_qty"]
+                # pnl = (salida - entrada)*q en largo; (entrada - salida)*q en corto
+                if closed_qty:
+                    avg_entry = avg_exit - tt["pnl"] / closed_qty if not is_short \
+                        else avg_exit + tt["pnl"] / closed_qty
+                else:
+                    avg_entry = 0.0
+                # sin apertura importada la fecha real se desconoce: se usa el
+                # PRIMER cierre como proxy (usar el ultimo dejaba duracion 0)
+                entry_date = min(f["date"] for _, f in ep["closes"])
             else:
-                type_label = "OPT"
-                detail = f"{opt_type_str} {strikes_str} exp {expiry}"
+                closed_qty = min(tt["open_qty"], tt["close_qty"])
+                avg_entry = tt["open_amt"] / tt["open_qty"] if tt["open_qty"] else 0.0
+                entry_date = tt["open_date"]
 
-            invested = abs(total_buy_cost - total_sell_proceeds) if is_spread else total_buy_cost
-            if invested == 0:
-                invested = abs(total_pnl) + total_comm if total_pnl else 1
-
-            pnl = total_pnl
-            pnl_pct = (pnl / invested * 100) if invested > 0 else 0
-
-            try:
-                d1 = dt.strptime(entry_date, "%Y-%m-%d")
-                d2 = dt.strptime(exit_date, "%Y-%m-%d")
-                duration = (d2 - d1).days
-            except ValueError:
-                duration = 0
-
+            exit_date = tt["close_date"]
+            invested = abs(avg_entry) * closed_qty
+            pnl_pct = (tt["pnl"] / invested * 100) if invested > 0 else 0.0
+            asset_class = "ETF" if sym in _etf_set else "STK"
+            idx = sum(1 for t in completed_trades
+                      if t["symbol"] == sym and t["type"] == asset_class) + 1
             completed_trades.append({
-                "id": f"{ticker}_{type_label}_{entry_date}_{expiry}",
-                "symbol": ticker,
-                "type": type_label,
-                "option_detail": detail,
-                "entry_date": entry_date,
-                "exit_date": exit_date,
-                "entry_price": round(total_buy_cost / 100, 2) if buys else 0,
-                "exit_price": round(total_sell_proceeds / 100, 2) if sells else 0,
-                "quantity": sum(b["filled_qty"] for b in buys) if buys else sum(s["filled_qty"] for s in sells),
-                "invested": round(invested, 2),
-                "pnl": round(pnl, 2),
-                "pnl_pct": round(pnl_pct, 2),
-                "duration_days": max(duration, 0),
-                "commissions": round(total_comm, 2),
-                "result": "WIN" if pnl > 0 else "LOSS",
-                "estimated_entry": False,
-                "buy_fills": [{"date": b["date"], "qty": b["filled_qty"], "price": b["avg_fill_price"]} for b in buys],
-                "sell_fills": [{"date": s["date"], "qty": s["filled_qty"], "price": s["avg_fill_price"]} for s in sells],
+                "id": f"{sym}_{entry_date}_{idx}",
+                "symbol": sym, "type": asset_class, "option_detail": None,
+                "direction": "SHORT" if is_short else "LONG",
+                "entry_date": entry_date, "exit_date": exit_date,
+                "entry_price": round(avg_entry, 2), "exit_price": round(avg_exit, 2),
+                "quantity": closed_qty, "invested": round(invested, 2),
+                "pnl": round(tt["pnl"], 2), "pnl_pct": round(pnl_pct, 2),
+                "duration_days": _duration(entry_date, exit_date),
+                "commissions": round(tt["commissions"], 2),
+                "result": _result(tt["pnl"]),
+                "estimated_entry": ep["estimated"],
+                "partial_exit": not ep["closed"],
+                "buy_fills": [{"date": f["date"], "qty": q, "price": f["avg_fill_price"]}
+                              for q, f in (ep["opens"] if not is_short else ep["closes"])],
+                "sell_fills": [{"date": f["date"], "qty": q, "price": f["avg_fill_price"]}
+                               for q, f in (ep["closes"] if not is_short else ep["opens"])],
             })
 
+    # --- OPCIONES --------------------------------------------------------
+    # Episodio por PATA (root, expiry, tipo, strike); luego se agrupan las
+    # patas abiertas el mismo dia sobre el mismo vencimiento = un spread.
+    leg_fills = defaultdict(list)
+    for sym, trades in option_trades.items():
+        ticker, expiry, opt_type, strike = _parse_option_symbol(sym)
+        root = _option_root(ticker)
+        for t in trades:
+            leg_fills[(root, expiry, opt_type, strike)].append(t)
+
+    groups = defaultdict(list)  # (root, expiry, fecha_apertura) -> [(leg, ep, tot)]
+    for leg, fills in leg_fills.items():
+        fills.sort(key=lambda x: x["date"])
+        for ep in _episodes(fills):
+            if not ep["closes"]:
+                continue   # pata todavia abierta: no es un trade cerrado
+            tt = _ep_totals(ep)
+            anchor = tt["open_date"] or tt["close_date"]
+            groups[(leg[0], leg[1], anchor)].append((leg, ep, tt))
+
+    for (root, expiry, anchor), legs in sorted(groups.items(), key=lambda kv: kv[0][2] or ""):
+        contracts = max((tt["open_qty"] or tt["close_qty"]) for _, _, tt in legs)
+        open_cost = 0.0     # + debito pagado, - credito cobrado
+        close_proceeds = 0.0
+        pnl = comm = 0.0
+        estimated = False
+        strikes, types = [], set()
+        buy_fills, sell_fills = [], []
+        for leg, ep, tt in legs:
+            if not ep["opens"]:
+                estimated = True
+            for q, f in ep["opens"]:
+                sign = 1 if f["action"] == "BUY" else -1
+                open_cost += sign * q * float(f["avg_fill_price"]) * 100
+            for q, f in ep["closes"]:
+                sign = 1 if f["action"] == "SELL" else -1
+                close_proceeds += sign * q * float(f["avg_fill_price"]) * 100
+            pnl += tt["pnl"]
+            comm += tt["commissions"]
+            strikes.append(leg[3])
+            types.add(leg[2])
+            for q, f in ep["opens"] + ep["closes"]:
+                row = {"date": f["date"], "qty": q, "price": f["avg_fill_price"]}
+                (buy_fills if f["action"] == "BUY" else sell_fills).append(row)
+
+        if estimated or open_cost == 0:
+            # apertura fuera de la ventana importada: se deduce del P&L
+            open_cost = close_proceeds - pnl
+            estimated = True
+
+        entry_date = anchor
+        exit_date = max(tt["close_date"] for _, _, tt in legs)
+        per = 100.0 * contracts if contracts else 100.0
+        invested = abs(open_cost) or (abs(pnl) + comm) or 1.0
+        pnl_pct = pnl / invested * 100
+
+        strikes_str = "/".join(f"${s:g}" for s in sorted(set(strikes)))
+        type_label = "SPREAD" if len(legs) > 1 else "OPT"
+        detail = f"{'/'.join(sorted(types))} {strikes_str} exp {expiry}"
+
+        completed_trades.append({
+            "id": f"{root}_{type_label}_{entry_date}_{expiry}",
+            "symbol": root, "type": type_label, "option_detail": detail,
+            "direction": "CREDITO" if open_cost < 0 else "DEBITO",
+            "entry_date": entry_date, "exit_date": exit_date,
+            "entry_price": round(open_cost / per, 2),
+            "exit_price": round(close_proceeds / per, 2),
+            "quantity": contracts, "invested": round(invested, 2),
+            "pnl": round(pnl, 2), "pnl_pct": round(pnl_pct, 2),
+            "duration_days": _duration(entry_date, exit_date),
+            "commissions": round(comm, 2),
+            "result": _result(pnl),
+            "estimated_entry": estimated,
+            "partial_exit": False,
+            "buy_fills": sorted(buy_fills, key=lambda r: r["date"]),
+            "sell_fills": sorted(sell_fills, key=lambda r: r["date"]),
+        })
     # Sort by exit_date descending (most recent first)
     completed_trades.sort(key=lambda x: x["exit_date"], reverse=True)
 
     # Summary
     wins = [t for t in completed_trades if t["result"] == "WIN"]
     losses = [t for t in completed_trades if t["result"] == "LOSS"]
+    breakeven = [t for t in completed_trades if t["result"] == "BE"]
+
+    def _weighted_return(subset):
+        """Retorno sobre el capital realmente puesto (Sum P&L / Sum invertido).
+
+        El promedio simple de pnl_pct no sirve como titular: una opcion que
+        expira sin valor pesa -100% igual que una accion de $80k que hace
+        +10%, y el panel mostraba "-40.5%" al lado de un P&L de +$184k.
+        """
+        cap = sum(t["invested"] for t in subset if t["invested"] > 0)
+        if cap <= 0:
+            return 0.0
+        return round(sum(t["pnl"] for t in subset) / cap * 100, 2)
     total_pnl = sum(t["pnl"] for t in completed_trades)
     best = max(completed_trades, key=lambda x: x["pnl"]) if completed_trades else None
     worst = min(completed_trades, key=lambda x: x["pnl"]) if completed_trades else None
@@ -8995,11 +9131,13 @@ def build_trades_history(trades_file=None):
             "wins": len(sw),
             "losses": len(subset) - len(sw),
             "win_rate": round(len(sw) / len(subset) * 100, 1),
+            "breakeven": sum(1 for t in subset if t["result"] == "BE"),
             "total_pnl": round(sp, 2),
             "best_trade": {"symbol": sb["symbol"], "pnl": sb["pnl"], "pnl_pct": sb["pnl_pct"]},
             "worst_trade": {"symbol": sw2["symbol"], "pnl": sw2["pnl"], "pnl_pct": sw2["pnl_pct"]},
             "avg_duration_days": round(sum(sd) / len(sd), 0) if sd else 0,
             "avg_return_pct": round(sum(t["pnl_pct"] for t in subset) / len(subset), 2),
+            "weighted_return_pct": _weighted_return(subset),
             "total_commissions": round(sum(t["commissions"] for t in subset), 2),
         }
 
@@ -9011,12 +9149,14 @@ def build_trades_history(trades_file=None):
         "total_trades": len(completed_trades),
         "wins": len(wins),
         "losses": len(losses),
-        "win_rate": round(len(wins) / len(completed_trades) * 100, 1) if completed_trades else 0,
+        "breakeven": len(breakeven),
+        "win_rate": round(len(wins) / (len(wins) + len(losses)) * 100, 1) if (wins or losses) else 0,
         "total_pnl": round(total_pnl, 2),
         "best_trade": {"symbol": best["symbol"], "pnl": best["pnl"], "pnl_pct": best["pnl_pct"]} if best else None,
         "worst_trade": {"symbol": worst["symbol"], "pnl": worst["pnl"], "pnl_pct": worst["pnl_pct"]} if worst else None,
         "avg_duration_days": round(sum(durations) / len(durations), 0) if durations else 0,
         "avg_return_pct": round(sum(t["pnl_pct"] for t in completed_trades) / len(completed_trades), 2) if completed_trades else 0,
+        "weighted_return_pct": _weighted_return(completed_trades),
         "total_commissions": round(sum(t["commissions"] for t in completed_trades), 2),
         "stocks_count": len(stk_list),
         "etfs_count": len(etf_list),
@@ -9384,7 +9524,9 @@ def api_trade_chart(trade_id):
     # Generate thesis
     ind_entry = chart.get("indicators_at_entry")
     ind_exit = chart.get("indicators_at_exit")
-    entry_thesis, exit_thesis = _generate_trade_thesis(symbol, entry_date, exit_date, ind_entry, ind_exit)
+    entry_thesis, exit_thesis = _generate_trade_thesis(
+        symbol, entry_date, exit_date, ind_entry, ind_exit,
+        flask_req.args.get("dir", "LONG"))
     chart["entry_thesis"] = entry_thesis
     chart["exit_thesis"] = exit_thesis
 

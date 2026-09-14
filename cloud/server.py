@@ -1452,7 +1452,9 @@ def api_trades_history_chart(trade_id):
 
     ind_entry = chart.get("indicators_at_entry")
     ind_exit = chart.get("indicators_at_exit")
-    entry_thesis, exit_thesis = _generate_trade_thesis(symbol, entry_date, exit_date, ind_entry, ind_exit)
+    entry_thesis, exit_thesis = _generate_trade_thesis(
+        symbol, entry_date, exit_date, ind_entry, ind_exit,
+        request.args.get("dir", "LONG"))
     chart["entry_thesis"] = entry_thesis
     chart["exit_thesis"] = exit_thesis
 

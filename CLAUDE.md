@@ -507,6 +507,42 @@ labels can be directional while `signal` is still HOLD.
 - CSS classes prefixed `.olab-`
 
 ## Trades Históricos (tab)
+- **Emparejado por EPISODIO de posición (flat → flat), 2026-09** — `build_trades_history`
+  (`vista_web.py`, el cloud la importa tal cual). Cuatro bugs que costaron plata mal reportada:
+  1. **El `realized_pnl` de IB viaja en el fill que CIERRA**: en un largo es el SELL, pero en un
+     **corto** y en **la pata vendida de todo spread** es el BUY. El código sumaba solo los SELL →
+     los shorts salían en $0.00 y cada spread perdía la pata corta entera (COST −310.70 en vez de
+     −186.41, ADBE −1001.16 en vez de −693.32, TSLA −1248.67 en vez de −857.97). Ahora
+     `_ep_totals` suma el `realized_pnl` de TODOS los fills del episodio, prorrateado por qty
+     cuando un fill se parte entre episodios. **Chequeo de regresión**: Σ `pnl` de los trades
+     construidos debe dar exactamente Σ `realized_pnl` del `trades_imported.json`.
+  2. **Una posición que nunca volvió a flat y no realizó nada NO es un trade cerrado** (un short
+     vivo, un spread abierto). Antes salían como filas "+$0.00 / +0.0% / LOSS / 0d". `_episodes`
+     solo emite episodios con fills de cierre. (El bloque que leía `portfolio_history.json` para
+     `open_symbols` era **dead code** — nunca se usaba — y se borró: el flat→flat lo cubre.)
+  3. **Opciones**: se agrupaban por (subyacente, expiry), fusionando spreads distintos abiertos en
+     fechas distintas, y el "invertido" se calculaba neteando aperturas CONTRA cierres → retornos
+     de −1018% o +266%. Ahora el episodio se arma **por pata** (root, expiry, tipo, strike) y las
+     patas se agrupan por **fecha de apertura** (las patas de un spread se abren el mismo día).
+     `invested` = |coste neto de apertura| (débito pagado o crédito cobrado, flag `direction`
+     DEBITO/CREDITO). Nota: el `realized_pnl` de IB **ya viene neto de comisiones**, así que un
+     débito puede perder >100% (AAPL C305/320: $400 de débito, −538.36 con $138 de comisiones).
+  4. **`_option_root`**: tras un ajuste/split IB renombra el contrato agregando un dígito al root
+     ('SQQQ' → 'SQQQ2'), así que la apertura y el cierre quedaban en símbolos distintos y el
+     spread se listaba partido en dos filas (una en $0.00, otra con media pata).
+- Shorts de acciones soportados de punta a punta: `direction` LONG/SHORT en el payload, badge
+  SHORT, filtro "Shorts", etiquetas "Precio Venta (entrada)" / "Precio Compra (salida)", flechas
+  del gráfico invertidas (SELL abre / BUY cierra) y `_generate_trade_thesis(..., direction)` que
+  no dice "posible giro al alza" en la entrada de un corto (el endpoint recibe `?dir=`).
+- `result` es WIN / LOSS / **BE** (antes `pnl > 0 else LOSS` marcaba perdedor a todo lo que diera
+  exactamente 0); el win rate se calcula sobre WIN+LOSS, sin los BE.
+- **Retorno del panel = ponderado por capital** (`weighted_return_pct` = Σpnl / Σinvertido). El
+  promedio simple de `pnl_pct` mostraba **−40.5% al lado de un P&L de +$184k**: una opción de $300
+  que expira vale −100% y pesaba igual que una acción de $80k haciendo +10%. `avg_return_pct`
+  sigue en el payload y se muestra en el tooltip de la tarjeta.
+- **Signos en el JS**: `pnlSign` salía de `pnl>=0?'+':''` y el valor iba con `Math.abs` → una
+  pérdida se mostraba como "$5,428.84" sin el menos. El signo se deriva del valor (`>0` / `<0`),
+  y el **`pnl_pct` NO lleva prefijo de signo** (ya trae el suyo: prefijarlo daba "- -40.3%").
 - Pairs BUY/SELL fills from `trades_imported.json` into completed round-trip trades
 - Supports stocks (STK), options (OPT), and spreads (multiple strikes same expiry grouped)
 - Option symbol format: `AAPL  260417C00305000` → ticker, expiry, type (C/P), strike
