@@ -191,7 +191,14 @@ etf_update_lock = threading.Lock()
 
 # Circuit breaker: si IB no responde N historicos seguidos (TWS caida/colgada),
 # saltear IB por el resto del ciclo y usar yfinance directo. Se resetea por ciclo.
-_IB_HIST_FAILS = {"n": 0}
+#
+# Es POR LOOP a proposito: el loop de acciones y el de ETFs corren en threads
+# paralelos, y con un contador compartido el corte de uno arrastraba al otro a
+# mitad de pasada (o se lo reseteaba). Resultado: un mismo simbolo podia salir
+# analizado con barras de IB en un tab y con barras de yfinance en el otro
+# (cierres distintos -> MACD/RSI/backtest/score distintos para el mismo activo).
+_IB_HIST_FAILS = {"n": 0}          # loop de acciones (y usos puntuales)
+_IB_HIST_FAILS_ETF = {"n": 0}      # loop de ETFs
 _IB_HIST_FAILS_MAX = 3
 
 
@@ -214,9 +221,10 @@ def _fetch_historical_yf(symbol, duration):
         return None
 
 
-def fetch_historical(app, symbol, req_id, duration=None):
+def fetch_historical(app, symbol, req_id, duration=None, breaker=None):
     dur = duration or config.HIST_DURATION
-    if app is not None and app.isConnected() and _IB_HIST_FAILS["n"] < _IB_HIST_FAILS_MAX:
+    fails = breaker if breaker is not None else _IB_HIST_FAILS
+    if app is not None and app.isConnected() and fails["n"] < _IB_HIST_FAILS_MAX:
         contract = make_contract(symbol)
         app.historical_data[req_id] = []
         app.hist_done[req_id] = False
@@ -231,14 +239,14 @@ def fetch_historical(app, symbol, req_id, duration=None):
             time.sleep(0.2)
         data = app.historical_data.get(req_id, [])
         if data:
-            _IB_HIST_FAILS["n"] = 0
+            fails["n"] = 0
             return pd.DataFrame(data)
-        _IB_HIST_FAILS["n"] += 1
-        if _IB_HIST_FAILS["n"] == _IB_HIST_FAILS_MAX:
+        fails["n"] += 1
+        if fails["n"] == _IB_HIST_FAILS_MAX:
             print(f"  IB sin responder historicos ({_IB_HIST_FAILS_MAX} seguidos) — "
                   "usando yfinance para el resto del ciclo")
     df = _fetch_historical_yf(symbol, dur)
-    if df is not None and _IB_HIST_FAILS["n"] < _IB_HIST_FAILS_MAX:
+    if df is not None and fails["n"] < _IB_HIST_FAILS_MAX:
         print(f"  {symbol}: IB sin datos — usando yfinance")
     return df
 
@@ -426,12 +434,14 @@ def get_etf_rt_price(symbol):
 
 def run_etf_analysis():
     global etf_analysis_cache, etf_last_update_time
+    _IB_HIST_FAILS_ETF["n"] = 0  # reintentar IB al inicio de cada ciclo
     total = len(etf_list)
     for i, symbol in enumerate(etf_list):
         req_id = 3000 + i
         print(f"  [ETF] Analizando {symbol}... ({i + 1}/{total})")
         df = fetch_historical(ib_app, symbol, req_id,
-                              duration=config.BACKTEST_DURATION)
+                              duration=config.BACKTEST_DURATION,
+                              breaker=_IB_HIST_FAILS_ETF)
         result = analyze_symbol(df)
         with etf_update_lock:
             etf_analysis_cache[symbol] = result
@@ -9637,6 +9647,20 @@ def main():
     print(f"Escaneando top {config.SCAN_COUNT} ETFs por volumen...")
     etfs = get_top_volume_etfs()
     etf_list = [s["symbol"] for s in etfs] if etfs else []
+
+    # Universos DISJUNTOS: un ETF vive en el escaner de ETFs, nunca en el de
+    # acciones. Para IB un ETF es secType "STK", asi que el scanner de acciones
+    # (instrument="STK") los devuelve mezclados; scanner._strip_etfs ya los saca
+    # del top-volumen, y esto cubre lo que quede (cache viejo, lista fallback).
+    # Sin esto el mismo simbolo se analiza en los DOS loops, en momentos
+    # distintos, y cada tab muestra un score distinto para el mismo activo.
+    if etf_list and stock_list:
+        _etf_set = set(etf_list)
+        dup = [s for s in stock_list if s in _etf_set]
+        if dup:
+            stock_list = [s for s in stock_list if s not in _etf_set]
+            print(f"  {len(dup)} ETFs fuera del universo de acciones: {', '.join(dup)}")
+
     if etf_list:
         print(f"Obtenidos {len(etf_list)} ETFs: {', '.join(etf_list[:10])}...\n")
 

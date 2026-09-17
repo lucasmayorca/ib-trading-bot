@@ -82,6 +82,22 @@ labels can be directional while `signal` is still HOLD.
   con la lista curada de respaldo hasta completar 100 únicos (con/sin TWS). Fallbacks:
   `FALLBACK_STOCKS`=100, `FALLBACK_ETFS`=113. El bridge (`bridge/main.py`) tiene sus
   propias copias (self-contained) también a 100 — `get_stock_list()[:100]`, `get_etf_list()[:100]`
+- **Universos acciones/ETF DISJUNTOS (2026-09)**: para IB un ETF **es** `secType="STK"`, así que
+  se colaban por dos vías y el mismo símbolo (p.ej. USO) aparecía en los DOS escáneres, analizado
+  dos veces por ciclo en momentos distintos → **dos scores distintos para el mismo activo**
+  (cada pasada ve un snapshot propio: barra parcial, fuente IB/yfinance, o un fallo que deja
+  el store con el valor del ciclo anterior). Vías tapadas: (1) `scanner.get_top_volume_stocks()`
+  usa `instrument="STK"` y el `MOST_ACTIVE` de IB devuelve ETFs mezclados → `_strip_etfs()`
+  (basado en `is_etf_symbol` / `FALLBACK_ETFS`) filtra el vivo **y el cache en disco**;
+  (2) el bridge mergea las tenencias en la watchlist de acciones filtrando `secType=="STK"` →
+  `split_held(positions)` manda los ETFs conocidos al universo de ETFs y deja en acciones sólo
+  los que NO están en `FALLBACK_ETFS` (p.ej. IBIT, que el bridge no cubre) para que igual tengan
+  chart en Mi Cartera — ese era el motivo original del merge; (3) red de seguridad en
+  `vista_web.main()`: se restan de `stock_list` los símbolos que están en `etf_list`.
+  **`_IB_HIST_FAILS` es POR LOOP** (`_IB_HIST_FAILS` acciones / `_IB_HIST_FAILS_ETF` ETFs,
+  `fetch_historical(..., breaker=)`): era un global compartido entre dos threads paralelos, así
+  que el corte de circuito de un loop arrastraba al otro a yfinance a mitad de pasada (o se lo
+  reseteaba) → un símbolo podía analizarse con barras de IB en un tab y de yfinance en el otro.
 - `SCAN_INTERVAL_SECONDS = 300` (5 min)
 - **`SIGNALS_CONFIRMED_CLOSE_ONLY = True` (2026-08)**: señales/recomendaciones SOLO sobre cierres
   diarios confirmados. `_drop_partial_bar` (vista_web.py, espejo en `bridge/main.py` — paridad)

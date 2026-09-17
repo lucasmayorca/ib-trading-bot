@@ -316,12 +316,32 @@ FALLBACK_ETFS = [
 ]
 
 
+_ETF_SET = set(FALLBACK_ETFS)
+
+
 def get_stock_list():
     return FALLBACK_STOCKS[:100]
 
 
 def get_etf_list():
     return FALLBACK_ETFS[:100]
+
+
+def split_held(positions):
+    """Separa las tenencias en (acciones, ETFs) para no mezclar universos.
+
+    IB reporta los ETFs con secType "STK" (para IB un ETF ES una accion), asi
+    que filtrar por secType=="STK" metia un ETF en cartera (USO, SQQQ...) en la
+    lista del escaner de ACCIONES cuando ese mismo simbolo ya estaba en la de
+    ETFs. El simbolo se analizaba DOS veces por ciclo, en momentos distintos de
+    la pasada, y cada tab mostraba un score distinto para el mismo activo.
+
+    Un ETF conocido se manda al universo de ETFs; uno que no esta en la lista
+    curada sigue yendo a acciones para que igual tenga historicos/chart en Mi
+    Cartera (ese era el motivo original del merge de tenencias)."""
+    held = {p["symbol"] for p in positions if p.get("secType") == "STK"}
+    etfs = {s for s in held if s in _ETF_SET}
+    return held - etfs, etfs
 
 
 # ══════════════════════════════════════════════════════════════
@@ -676,7 +696,9 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 # list (e.g. IBIT) would never get analyzed and its chart
                 # would show "Sin datos historicos disponibles" forever.
                 # Merge current holdings in so every position gets a chart.
-                held_stocks = {p["symbol"] for p in ib_app.portfolio_positions if p.get("secType") == "STK"}
+                # OJO: un ETF en cartera va al universo de ETFs, no aca --
+                # ver split_held() (IB marca los ETFs como secType "STK").
+                held_stocks, held_etfs = split_held(ib_app.portfolio_positions)
                 for sym in held_stocks:
                     if sym not in stocks:
                         stocks.append(sym)
@@ -715,6 +737,9 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
                 # --- ETF scan ---
                 etfs = get_etf_list()
+                for sym in held_etfs:
+                    if sym not in etfs:
+                        etfs.append(sym)
                 safe_emit(sio, "etf_stock_list", {"symbols": etfs}, server_url, authenticated)
                 log(f"Escaneando {len(etfs)} ETFs...", C)
 

@@ -130,7 +130,8 @@ def get_top_volume_stocks(count=None):
     if not app.connected:
         print("ERROR: Scanner no pudo conectar a TWS")
         app.disconnect()
-        return _merge_to_count(_load_scan_cache("stocks") or [], get_fallback_stocks(), count)
+        return _merge_to_count(_strip_etfs(_load_scan_cache("stocks") or []),
+                               get_fallback_stocks(), count)
 
     sub = ScannerSubscription()
     sub.instrument = "STK"
@@ -153,13 +154,20 @@ def get_top_volume_stocks(count=None):
     if not app.symbols:
         cached = _load_scan_cache("stocks")
         if cached:
-            return _merge_to_count(cached, get_fallback_stocks(), count)
+            return _merge_to_count(_strip_etfs(cached), get_fallback_stocks(), count)
         print(f"  Scanner sin resultados. Usando lista fallback de {count} acciones.")
         return _merge_to_count([], get_fallback_stocks(), count)
 
     _save_scan_cache("stocks", app.symbols)
+    # El scanner de IB con instrument="STK" devuelve ETFs mezclados (para IB un
+    # ETF ES un STK): se sacan aca para no duplicarlos contra el escaner de ETFs.
+    live = _strip_etfs(app.symbols)
+    dropped = len(app.symbols) - len(live)
+    if dropped:
+        print(f"  Scanner: {dropped} ETFs descartados del universo de acciones "
+              "(se analizan en el escaner de ETFs)")
     # Fusiona el top-volumen en vivo (<=50) con el fallback curado hasta `count`
-    return _merge_to_count(app.symbols, get_fallback_stocks(), count)
+    return _merge_to_count(live, get_fallback_stocks(), count)
 
 
 # Fallback: top 100 acciones mas liquidas de USA (por si el scanner no funciona)
@@ -233,6 +241,28 @@ def get_fallback_etfs():
         {"rank": i + 1, "symbol": s, "secType": "STK", "exchange": "SMART", "currency": "USD", "conId": 0}
         for i, s in enumerate(FALLBACK_ETFS)
     ]
+
+
+_ETF_SYMBOLS = set(FALLBACK_ETFS)
+
+
+def is_etf_symbol(symbol):
+    """True si `symbol` es un ETF conocido (lista curada FALLBACK_ETFS).
+
+    IB clasifica los ETFs con secType "STK" y el scanner con instrument="STK"
+    los devuelve MEZCLADOS con acciones: por eso un ETF muy operado (USO, SQQQ,
+    TQQQ...) se colaba en el escaner de ACCIONES estando ademas en el de ETFs.
+    El mismo simbolo quedaba analizado dos veces por ciclo (dos pasadas, en
+    momentos distintos) y cada tab mostraba un score distinto para el mismo
+    activo. Los universos de acciones y de ETFs deben ser DISJUNTOS.
+    """
+    return symbol in _ETF_SYMBOLS
+
+
+def _strip_etfs(rows):
+    """Saca los ETFs de un resultado del scanner de acciones (en vivo o cacheado).
+    El cache en disco puede traer ETFs guardados antes de este filtro."""
+    return [d for d in rows if not is_etf_symbol(d.get("symbol"))]
 
 
 def get_top_volume_etfs(count=None):
