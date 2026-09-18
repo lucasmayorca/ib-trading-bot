@@ -121,6 +121,16 @@ def _compute_symbol_metrics(closes, volumes, spy_ret):
     return out
 
 
+def _yf_symbol(sym):
+    """Simbolo de IB -> simbolo de yfinance.
+
+    IB separa la clase de accion con espacio ("BRK B"); yfinance usa guion
+    ("BRK-B"). Sin convertirlo, esos simbolos quedaban SIN beta/RS/RVOL ni
+    datos de analistas y ensuciaban los logs con "possibly delisted".
+    """
+    return sym.replace(" ", "-")
+
+
 def refresh_market_metrics(symbols):
     """Una descarga batcheada de yfinance para todo el universo + SPY y
     recalculo de beta/RS/RVOL. Best-effort: nunca levanta excepcion."""
@@ -129,10 +139,12 @@ def refresh_market_metrics(symbols):
         return
     if "SPY" not in syms:
         syms.append("SPY")
+    # se descarga con el simbolo de yfinance pero se indexa por el de IB
+    yf_of = {s: _yf_symbol(s) for s in syms}
     try:
         df = yf.download(
-            tickers=syms, period="2y", interval="1d", group_by="ticker",
-            threads=False, progress=False, auto_adjust=True,
+            tickers=sorted(set(yf_of.values())), period="2y", interval="1d",
+            group_by="ticker", threads=False, progress=False, auto_adjust=True,
         )
     except Exception as e:
         print(f"[ENRICH] market download fallo: {e}", flush=True)
@@ -146,8 +158,8 @@ def refresh_market_metrics(symbols):
     fresh = {}
     for sym in syms:
         try:
-            closes = _extract_series(df, sym, "Close")
-            volumes = _extract_series(df, sym, "Volume")
+            closes = _extract_series(df, yf_of[sym], "Close")
+            volumes = _extract_series(df, yf_of[sym], "Volume")
             m = _compute_symbol_metrics(closes, volumes, spy_ret)
             if m:
                 fresh[sym] = m
@@ -164,7 +176,7 @@ def refresh_market_metrics(symbols):
 # ══════════════════════════════════════════════════════════════
 
 def _fetch_wallst(sym):
-    t = yf.Ticker(sym)
+    t = yf.Ticker(_yf_symbol(sym))
     try:
         info = t.info or {}
     except Exception:

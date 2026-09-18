@@ -282,7 +282,7 @@ FALLBACK_STOCKS = [
     "MRK", "ABBV", "LLY", "KO", "PEP", "BAC", "COST", "TMO", "MCD",
     "WMT", "CSCO", "CRM", "ACN", "ABT", "ADBE", "AMD", "NFLX", "DHR",
     "ORCL", "TXN", "INTC", "QCOM", "UBER", "MS", "GS", "SCHW", "MELI",
-    "DIS", "NKE", "PYPL", "SQ", "COIN",
+    "DIS", "NKE", "PYPL", "XYZ", "COIN",   # XYZ = Block (ex SQ, renombrado 2025)
     # 51-100
     "NOW", "ISRG", "BKNG", "AMGN", "AMAT", "AXP", "IBM", "GE", "CAT",
     "LRCX", "MDLZ", "ADI", "GILD", "REGN", "VRTX", "PANW", "SYK", "SNPS",
