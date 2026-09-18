@@ -72,9 +72,16 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 `signal_label` is display-only; `signal` (BUY/SELL/HOLD) drives order execution in `bot.py`.
 The thesis (`_generate_thesis`) and rationale (`_generate_rationale`) use `signal_label` for direction consistency.
 `_label_is_bearish(label)` (vista_web.py) is the shared bearish/bullish check used by `_compute_price_levels`
-(entry/target/stop), `_score_stock` (win_rate/avg_return component), and the recommendation/portfolio deep-analysis
-win_rate/avg_return fields — always branch on `signal_label` here, not raw `signal`, since INMINENTE/VIRANDO/ZONA
-labels can be directional while `signal` is still HOLD.
+(entry/target/stop), `_score_stock` (win_rate/avg_return component), `_generate_rationale` (qué lado del backtest
+se narra) y the recommendation/portfolio deep-analysis win_rate/avg_return fields — always branch on `signal_label`
+here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional while `signal` is still HOLD.
+- **TRAMPA DE SUBCADENAS (2026-09, costó un bug en los dos espejos)**: `"SOBREVENTA"` contiene `"VENTA"` y
+  `"SOBRECOMPRA"` contiene `"COMPRA"`. Testear la subcadena suelta hacía que **ZONA DE SOBREVENTA** (RSI<35,
+  lectura ALCISTA) se clasificara como bajista — target por debajo del precio, stats del lado sell, UI en rojo —
+  y que `fstr()` pintara de **verde alcista** una ZONA DE SOBRECOMPRA. La regla correcta excluye el prefijo:
+  `("VENTA" in label and "SOBREVENTA" not in label) or "SOBRECOMPRA" in label`. El espejo JS `_labelIsBearish`
+  hace lo mismo con indexOf — **mantener paridad**; cualquier chequeo direccional nuevo debe llamar a estas dos
+  funciones, nunca reimplementar el test con substrings.
 
 ## Configuration (config.py)
 - `SCAN_COUNT = 100` acciones y ETFs. El scanner de IB devuelve máx ~50 filas por
@@ -709,6 +716,38 @@ User's machine                          Railway (shared)
 - **Bridge reinstall**: `run-bridge.sh` only *launches* the already-installed `ib-bridge` CLI — it
   does not pull new code. After any `bridge/` change, the fix requires `rm -rf ~/.ib-bridge &&
   curl -sL .../install-bridge.sh | bash` (a fresh `pip install --upgrade`), not just relaunching.
+
+## Invariantes de la revisión 2026-09 (no reintroducir)
+Cada uno costó debugging real; los tres primeros son chequeos que conviene correr tras tocar esas áreas.
+- **Unidades de Options Lab**: `payoff_points[].pnl`, `max_profit`, `max_loss`, `capital_required` y
+  `expected_value` van TODOS **por posición** (×100). `_compute_payoff` calcula por acción y `_per_position()`
+  convierte al exportar — mezclarlas hacía que el gráfico dibujara la curva por acción bajo etiquetas por
+  posición ("Max +$305" sobre una curva cuyo máximo es 3.05). Chequeo: `max(payoff_points.pnl) == max_profit`.
+- **Covered Call y Protective Put llevan la pata de 100 acciones** (`covered=True`): sin ella la covered call
+  mostraba pérdida ilimitada AL ALZA y la protective put (bullish) rendía su máximo si el subyacente colapsaba.
+- **Trades Históricos**: Σ`pnl` de los trades construidos == Σ`realized_pnl` de `trades_imported.json` (exacto).
+  Un cierre PARCIAL además emite la posición remanente en `open_positions` (si no, "faltan trades").
+  `_is_option_symbol` debe coincidir con `_parse_option_symbol`: un fill que pase el primero y falle el segundo
+  tumbaba el endpoint entero.
+- **reqIds on-demand**: `/api/bars` y el deep analysis de cartera usan `next_ondemand_req_id()` (contador bajo
+  lock, 11000-12999) y `portfolio.fetch_chart_data` su propio contador — NO `hash(symbol) % rango`: los rangos
+  viejos se solapaban y una colisión servía las barras de otro símbolo sin error visible. La lectura de
+  `historical_data[req_id]` va DENTRO del lock.
+- **Circuit breakers por consumidor**: `_IB_HIST_FAILS` (loop acciones), `_IB_HIST_FAILS_ETF` (loop ETFs) y
+  `_IB_HIST_FAILS_UI` (endpoints on-demand). Compartirlos cortaba un loop a mitad de pasada y mezclaba barras
+  de IB y de yfinance dentro del mismo ciclo.
+- **`fetch_historical` exige `hist_done`**: con datos parciales (timeout mientras IB streamea) devolvía las
+  barras MÁS VIEJAS y publicaba una señal de hace meses como si fuera de hoy.
+- **`/api/data` y `/api/etf-data` toman el lock SOLO para el snapshot**; `compute_top3` (que dispara requests
+  HTTP de fundamentals) y la serialización van fuera, o el loop de análisis queda frenado decenas de segundos.
+- **Inyección del cloud**: los 5 splices de `_inject_cloud_setup_tab` pasan por `_replace_once`, que lanza si el
+  ancla no aparece exactamente una vez. Un ancla obsoleta era un `.replace()` no-op SILENCIOSO (ya pasó: el
+  commit del Pulso movió una línea de `switchTab` y el tab "Conectar TWS" dejó de inicializarse).
+- **`enrichment.py` traduce el símbolo a yfinance** (`_yf_symbol`: "BRK B" → "BRK-B") pero indexa por el de IB.
+- **ddof**: las Bollinger del Koncorde usan `std(ddof=0)` (el `stdev()` de Pine es poblacional) y el beta de
+  enrichment `np.var(ddof=1)` (para igualar el denominador de `np.cov`).
+- **`patterns.detect(apply_policy=False)`** es el modo CRUDO que usa `validate_history`: medir el edge sobre el
+  resultado ya filtrado por la política es circular y congela los edges para siempre.
 
 ## Reference
 - Original Pine Script: `MACD+RSI+KONCORDE YAMIL.txt`

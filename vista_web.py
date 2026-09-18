@@ -262,10 +262,17 @@ def fetch_historical(app, symbol, req_id, duration=None, breaker=None):
         start = time.time()
         while not app.hist_done.get(req_id, False) and time.time() - start < timeout:
             time.sleep(0.2)
+        done = app.hist_done.get(req_id, False)
         data = app.historical_data.get(req_id, [])
-        if data:
+        # Exigir hist_done: al vencer el timeout con IB todavia streameando,
+        # historical_data tiene solo las barras MAS VIEJAS (llegan en orden
+        # cronologico). Devolverlas igual publicaba una señal calculada sobre un
+        # historico truncado meses atras como si fuera de hoy.
+        if data and done:
             fails["n"] = 0
             return pd.DataFrame(data)
+        if data and not done:
+            print(f"  {symbol}: respuesta de IB incompleta ({len(data)} barras) — se descarta")
         fails["n"] += 1
         if fails["n"] == _IB_HIST_FAILS_MAX:
             print(f"  IB sin responder historicos ({_IB_HIST_FAILS_MAX} seguidos) — "
@@ -298,8 +305,13 @@ def _drop_partial_bar(df, now_et=None):
                 from zoneinfo import ZoneInfo
                 now_et = datetime.now(ZoneInfo("America/New_York"))
             except Exception:
+                # Sin zoneinfo: EDT (UTC-4) de marzo a noviembre, EST (UTC-5) el
+                # resto. Con el -5 fijo el reloj corria 1h atrasado en verano y
+                # entre las 16:00 y 17:00 ET descartaba un cierre YA confirmado.
                 from datetime import timedelta, timezone
-                now_et = datetime.now(timezone.utc) - timedelta(hours=5)  # aprox ET
+                _utc = datetime.now(timezone.utc)
+                _off = 4 if 3 <= _utc.month <= 11 else 5
+                now_et = _utc - timedelta(hours=_off)
         if now_et.hour >= 16:
             return df
         last_raw = str(df["date"].iloc[-1]).strip().split()[0].replace("-", "")[:8]
@@ -1892,112 +1904,6 @@ def compute_top3(cache, min_target_pct=None):
         }
         top3.append(rec)
     return top3
-
-
-def compute_secondary_opps(cache):
-    """Scan analysis_cache for individual technical patterns.
-    Returns dict with 5 categories, each a list of max 5 stocks."""
-    sobreventa = []
-    sobrecompra = []
-    cerca_sma200 = []
-    death_cross = []
-    golden_cross = []
-
-    for sym, data in cache.items():
-        if data is None:
-            continue
-        price = data.get("price")
-        if not price or price <= 0:
-            continue
-        signal = data.get("signal", "HOLD")
-
-        vals = data.get("values") or {}
-        rsi = vals.get("rsi")
-        mas = ((data.get("chart") or {}).get("mas") or {})
-        sma200_val = mas.get("sma200_val")
-        sma50_val = mas.get("sma50_val")
-        sma200_series = mas.get("sma200", [])
-        sma50_series = mas.get("sma50", [])
-
-        # --- Sobreventa (RSI < 35) ---
-        if rsi is not None and not math.isnan(rsi) and rsi < 35:
-            label = "SOBREVENTA EXTREMA" if rsi < 25 else ("SOBREVENTA" if rsi < 30 else "Acercandose a sobreventa")
-            sobreventa.append({
-                "symbol": sym, "price": round(price, 2),
-                "rsi": round(rsi, 1), "signal": signal,
-                "detail": f"RSI {rsi:.1f} — {label}",
-                "relevance": round(100 - rsi, 1),
-            })
-
-        # --- Sobrecompra (RSI > 65) ---
-        if rsi is not None and not math.isnan(rsi) and rsi > 65:
-            label = "SOBRECOMPRA EXTREMA" if rsi > 80 else ("SOBRECOMPRA" if rsi > 70 else "Acercandose a sobrecompra")
-            sobrecompra.append({
-                "symbol": sym, "price": round(price, 2),
-                "rsi": round(rsi, 1), "signal": signal,
-                "detail": f"RSI {rsi:.1f} — {label}",
-                "relevance": round(rsi, 1),
-            })
-
-        # --- Cerca de SMA200 (dentro de 3%) ---
-        if sma200_val is not None and not math.isnan(sma200_val) and sma200_val > 0:
-            pct_diff = abs(price - sma200_val) / sma200_val * 100
-            if pct_diff < 3.0:
-                side = "sobre" if price >= sma200_val else "bajo"
-                cerca_sma200.append({
-                    "symbol": sym, "price": round(price, 2),
-                    "sma200": round(sma200_val, 2), "pct_diff": round(pct_diff, 1),
-                    "signal": signal,
-                    "detail": f"Precio {pct_diff:.1f}% {side} SMA200 (${sma200_val:.2f})",
-                    "relevance": round(100 - pct_diff * 33, 1),
-                })
-
-        # --- Death Cross / Golden Cross inminente (gap SMA50-SMA200 < 2%) ---
-        if (sma50_val is not None and sma200_val is not None
-                and not math.isnan(sma50_val) and not math.isnan(sma200_val)
-                and sma200_val > 0):
-            pct_gap = abs(sma50_val - sma200_val) / sma200_val * 100
-            if pct_gap < 2.0:
-                # Verificar convergencia: gap actual vs 5 barras atras
-                converging = False
-                if len(sma50_series) >= 6 and len(sma200_series) >= 6:
-                    gap_now = abs(sma50_series[-1] - sma200_series[-1])
-                    gap_prev = abs(sma50_series[-6] - sma200_series[-6])
-                    converging = gap_now < gap_prev
-
-                conv_txt = "convergiendo" if converging else "estable"
-
-                if sma50_val > sma200_val:
-                    death_cross.append({
-                        "symbol": sym, "price": round(price, 2),
-                        "sma50": round(sma50_val, 2), "sma200": round(sma200_val, 2),
-                        "pct_gap": round(pct_gap, 1), "signal": signal,
-                        "detail": f"SMA50 {pct_gap:.1f}% sobre SMA200 — {conv_txt}",
-                        "relevance": round(100 - pct_gap * 50, 1),
-                    })
-                else:
-                    golden_cross.append({
-                        "symbol": sym, "price": round(price, 2),
-                        "sma50": round(sma50_val, 2), "sma200": round(sma200_val, 2),
-                        "pct_gap": round(pct_gap, 1), "signal": signal,
-                        "detail": f"SMA50 {pct_gap:.1f}% bajo SMA200 — {conv_txt}",
-                        "relevance": round(100 - pct_gap * 50, 1),
-                    })
-
-    # Ordenar por relevancia y limitar a 5
-    sobreventa.sort(key=lambda x: x["relevance"], reverse=True)
-    sobrecompra.sort(key=lambda x: x["relevance"], reverse=True)
-    cerca_sma200.sort(key=lambda x: x["relevance"], reverse=True)
-    death_cross.sort(key=lambda x: x["relevance"], reverse=True)
-    golden_cross.sort(key=lambda x: x["relevance"], reverse=True)
-
-    return {
-        "sobreventa": sobreventa[:5],
-        "sobrecompra": sobrecompra[:5],
-        "cerca_sma200": cerca_sma200[:5],
-        "death_cross": death_cross[:5],
-        "golden_cross": golden_cross[:5],
-    }
 
 
 # ══════════════════════════════════════════════════════════════
