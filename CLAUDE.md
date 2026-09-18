@@ -368,16 +368,34 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   el hit-rate NO se compara contra 50% sino contra el **baseline aleatorio** de cada figura
   (`d_inval/(d_target+d_inval)`, ruina del jugador — el target casi siempre está más lejos que la
   invalidación); ambos se promedian solo sobre eventos **resueltos**. `edge = hit_rate − baseline`.
-  Resultados: Bandera alcista +12.3 (n=47), Triple suelo +11.8 (58), Doble suelo +5.2 (176),
-  Triple techo +2.2 (35), Cuña desc rota −1.0 (103), **Doble techo −1.3 (145)**, Cuña asc rota −2.1
-  (212), Triángulos rotos −5.1/−8.9/−10.5, **HCH invertido −15.7 (83)**, Bandera bajista −20.4 (21),
-  **HCH −24.3 (59)**. Nota: la muestra es un único régimen (5Y mayormente alcistas), lo que explica
-  que las figuras bajistas midan peor — re-medir con `/api/calibration` (expone `patterns` +
-  `patterns_policy`) cuando haya otro régimen.
+  El tie-break intrabar es **conservador**: si target e invalidación se tocan en la MISMA barra manda
+  la invalidación (misma regla que el backtest usa para SL vs TP). En la medición vigente eso no
+  movió nada — **0 colisiones en 973 eventos** —, pero queda como seguro estructural.
+- **RE-MEDICIÓN 2026-09-18** (60 símbolos × 5Y, 973 eventos, detectores actuales y modo crudo
+  `detect(apply_policy=False)` — la medición anterior corría sobre la detección ya filtrada, así que
+  las figuras suprimidas no podían re-medirse nunca):
+  Bandera alcista **+16.6** (n=56, res=27), Triple suelo **+6.7** (51/16), Doble suelo **+3.2**
+  (139/77), Triángulo sim roto −1.2, Triángulo asc roto −2.9, Doble techo −3.0, Cuña asc rota −4.5,
+  Cuña desc rota −5.1, Triángulo desc roto −6.2, HCH invertido **−10.9** (63/26), Triple techo −11.5,
+  Bandera bajista −23.4, HCH **−29.1**.
+  **Dos cambios de tier**: Doble suelo `validada → contexto` (cruzó el umbral de +5 hacia abajo) y
+  HCH invertido `no se emite → contexto` (subió por encima de −12).
+  **LEER `res`, NO `n`**: el hit-rate se promedia solo sobre eventos RESUELTOS y esa muestra es mucho
+  menor (Doble suelo: 139 eventos, 77 resueltos).
+  **Hallazgo incómodo que conviene tener presente**: las únicas figuras con edge **estadísticamente
+  significativo** (95%) son las cuatro negativas — Cuña desc rota, Triángulo desc roto, Bandera
+  bajista y HCH. **Ninguna de las positivas lo es**: Bandera alcista tiene IC95 [−2.2, +35.4] sobre 27
+  eventos resueltos y Triple suelo [−14.5, +27.9] sobre 16. O sea, el tier "validada" hoy se concede
+  con evidencia que no descarta que el edge sea cero. La muestra sigue siendo un único régimen (5Y
+  mayormente alcistas), lo que explica que las bajistas midan peor. Antes de apoyarse fuerte en esos
+  objetivos convendría ampliar la muestra, o hacer la política sensible a la significancia en vez de
+  comparar un estimador puntual contra un umbral duro (hoy un cruce de umbral puede ser puro ruido:
+  Doble suelo pasó de +5.2 a +3.2 con IC [−7.4, +13.8]).
   **Política `_apply_edge_policy` (patterns.py)**: `edge ≥ +5` ⇒ tier **"validada"** (conserva
   objetivo medido y pesa en score/veredicto); `−12 < edge < +5` ⇒ tier **"contexto"** (se muestra por
   sus niveles de ruptura/anulación, pero `target=None` y prioridad −25, y **no** mueve score ni
-  veredicto); `edge ≤ −12` ⇒ **no se emite** (HCH, HCH invertido, Bandera bajista). Los triángulos/
+  veredicto); `edge ≤ −12` ⇒ **no se emite** (con la medición 2026-09: HCH y Bandera bajista; HCH invertido
+  volvió a `contexto`). Los triángulos/
   cuñas *en formación* heredan la medición de su propia variante "rota". El umbral de descarte es
   −12 y no −5 a propósito: el límite de 40 ruedas del test castiga más a las figuras de objetivo
   lejano, así que un edge levemente negativo degrada a contexto pero no borra la figura.

@@ -66,20 +66,36 @@ import numpy as np
 #  /api/calibration cuando haya mas historia de otro regimen.
 # ══════════════════════════════════════════════════════════════
 
+# Medicion vigente: 2026-09-18, 60 simbolos (40 acciones + 20 ETFs de las listas
+# del scanner) x 5 años, 973 eventos, con los detectores actuales y el modo crudo
+# (detect(apply_policy=False)) — la medicion anterior corria sobre la deteccion ya
+# filtrada, asi que las figuras suprimidas no podian re-medirse nunca.
+#
+# LEER "res", NO "n": el hit-rate y el baseline se promedian solo sobre eventos
+# RESUELTOS (los que tocaron target o invalidacion dentro de las 40 ruedas), y
+# esa muestra es bastante mas chica que n. "sig" marca si el edge se distingue
+# de 0 al 95% (|edge| >= 1.96 * EE del hit-rate).
+#
+# HALLAZGO INCOMODO: las UNICAS figuras con edge estadisticamente significativo
+# son las CUATRO negativas de abajo. Ninguna de las positivas lo es — Bandera
+# alcista (+16.6) tiene IC95 [-2.2, +35.4] sobre 27 eventos resueltos y Triple
+# suelo (+6.7) tiene [-14.5, +27.9] sobre 16. O sea: el tier "validada" hoy se
+# concede con evidencia que no descarta que el edge sea cero. Subir la muestra
+# (mas simbolos o mas historia) antes de apoyarse fuerte en esos objetivos.
 _EDGE = {
-    "Bandera alcista": 12.3,            # n=47  hit 44.1% vs base 31.8%
-    "Triple suelo": 11.8,               # n=58  hit 80.0% vs base 68.2%
-    "Doble suelo": 5.2,                 # n=176 hit 71.3% vs base 66.1%
-    "Triple techo": 2.2,                # n=35  hit 68.8% vs base 66.5%
-    "Cuña descendente rota": -1.0,      # n=103 hit 14.8% vs base 15.8%
-    "Doble techo": -1.3,                # n=145 hit 63.1% vs base 64.3%
-    "Cuña ascendente rota": -2.1,       # n=212 hit 15.7% vs base 17.7%
-    "Triangulo ascendente rota": -5.1,  # n=35  hit 10.0% vs base 15.1%
-    "Triangulo simetrico rota": -8.9,   # n=16  hit  0.0% vs base  8.9%
-    "Triangulo descendente rota": -10.5,
-    "HCH invertido": -15.7,             # n=83  hit 34.1% vs base 49.9%
-    "Bandera bajista": -20.4,           # n=21  hit 12.5% vs base 32.9%
-    "Hombro-cabeza-hombro": -24.3,      # n=59  hit 20.7% vs base 45.0%
+    "Bandera alcista": 16.6,            # n=56  res=27  hit 48.1% vs base 31.6%  sig=no  IC[-2.2,+35.4]
+    "Triple suelo": 6.7,                # n=51  res=16  hit 75.0% vs base 68.3%  sig=no  IC[-14.5,+27.9]
+    "Doble suelo": 3.2,                 # n=139 res=77  hit 66.2% vs base 63.1%  sig=no  IC[-7.4,+13.8]
+    "Triangulo simetrico rota": -1.2,   # n=16  res=13  hit  7.7% vs base  8.9%  sig=no
+    "Triangulo ascendente rota": -2.9,  # n=39  res=36  hit  8.3% vs base 11.2%  sig=no
+    "Doble techo": -3.0,                # n=130 res=66  hit 62.1% vs base 65.1%  sig=no
+    "Cuña ascendente rota": -4.5,       # n=189 res=172 hit 11.0% vs base 15.5%  sig=no (z=-1.89)
+    "Cuña descendente rota": -5.1,      # n=165 res=147 hit 10.9% vs base 16.0%  sig=SI
+    "Triangulo descendente rota": -6.2, # n=36  res=31  hit  3.2% vs base  9.4%  sig=SI
+    "HCH invertido": -10.9,             # n=63  res=26  hit 38.5% vs base 49.4%  sig=no
+    "Triple techo": -11.5,              # n=21  res=11  hit 54.5% vs base 66.1%  sig=no
+    "Bandera bajista": -23.4,           # n=20  res=10  hit 10.0% vs base 33.4%  sig=SI
+    "Hombro-cabeza-hombro": -29.1,      # n=48  res=26  hit 11.5% vs base 40.7%  sig=SI
 }
 _EDGE_MIN_TARGET = 5.0    # edge minimo para publicar el objetivo medido
 # Solo se descarta lo fuertemente negativo CON muestra decente: el limite de 40
@@ -1359,22 +1375,27 @@ def validate_history(highs, lows, closes, step=3, horizon=40, warmup=120):
         last_seen[key] = (klvl, i)
         up = p["direction"] == "alcista"
         hit = inv = None
+        both = 0        # barras donde se tocaron AMBOS niveles
         for j in range(i + 1, min(n, i + 1 + horizon)):
             if up:
-                if highs[j] >= p["target"]:
-                    hit = j
-                    break
-                if lows[j] <= p["invalidation"]:
-                    inv = j
-                    break
+                t_hit = highs[j] >= p["target"]
+                i_hit = lows[j] <= p["invalidation"]
             else:
-                if lows[j] <= p["target"]:
-                    hit = j
-                    break
-                if highs[j] >= p["invalidation"]:
-                    inv = j
-                    break
-        end = hit or inv
+                t_hit = lows[j] <= p["target"]
+                i_hit = highs[j] >= p["invalidation"]
+            # Si ambos se tocan en la MISMA barra manda la INVALIDACION: con
+            # barras diarias no se conoce el orden intrabar, y dar por buena la
+            # figura seria contarse un acierto que pudo no ocurrir. Es la misma
+            # regla conservadora que usa el backtest para SL vs TP.
+            if t_hit and i_hit:
+                both += 1
+            if i_hit:
+                inv = j
+                break
+            if t_hit:
+                hit = j
+                break
+        end = hit if hit is not None else inv
         # Distancias al target y a la invalidacion (fracciones del precio):
         # permiten comparar el hit-rate contra el baseline "aleatorio" de cada
         # figura — el target casi siempre esta MAS LEJOS que la invalidacion,
@@ -1386,6 +1407,7 @@ def validate_history(highs, lows, closes, step=3, horizon=40, warmup=120):
         events.append({"type": p["name"], "direction": p["direction"],
                        "hit": hit is not None,
                        "resolved": end is not None,
+                       "same_bar": both,   # colisiones target/invalidacion
                        "bars": (end - i) if end else horizon,
                        "d_target": d_t, "d_inval": d_i,
                        "baseline": (d_i / (d_t + d_i)) if (d_t + d_i) > 0 else 0.5})
@@ -1407,13 +1429,15 @@ def validate_universe(ohlc_by_symbol):
     by_type = {}
     for e in all_events:
         t = by_type.setdefault(e["type"], {"n": 0, "hits": 0, "unresolved": 0,
-                                           "bars_sum": 0, "base_sum": 0.0})
+                                           "bars_sum": 0, "base_sum": 0.0,
+                                           "same_bar": 0})
         t["n"] += 1
         if e["hit"]:
             t["hits"] += 1
         if not e["resolved"]:
             t["unresolved"] += 1
         t["bars_sum"] += e["bars"]
+        t["same_bar"] = t.get("same_bar", 0) + e.get("same_bar", 0)
         # El baseline se promedia SOLO sobre eventos resueltos, igual que el
         # hit-rate: mezclarlo con los no resueltos sesga la comparacion.
         if e["resolved"]:
@@ -1432,6 +1456,7 @@ def validate_universe(ohlc_by_symbol):
             "baseline": round(base, 1) if base is not None else None,
             "edge": (round(hr - base, 1) if (hr is not None and base is not None) else None),
             "unresolved": v["unresolved"],
+            "same_bar": v.get("same_bar", 0),
             "avg_bars": round(v["bars_sum"] / v["n"], 1) if v["n"] else None,
         }
     return out
