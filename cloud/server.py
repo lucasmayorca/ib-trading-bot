@@ -239,7 +239,7 @@ def api_register():
     result = db.create_user(email, hashed)
     token = auth.create_jwt(result["id"], email)
     resp = jsonify({"token": token, "bridge_token": result["bridge_token"]})
-    resp.set_cookie("token", token, httponly=True, samesite="Lax", max_age=86400)
+    resp.set_cookie("token", token, httponly=True, secure=True, samesite="Lax", max_age=86400)
     return resp, 201
 
 
@@ -253,7 +253,7 @@ def api_login():
         return jsonify({"error": "Invalid email or password"}), 401
     token = auth.create_jwt(user["id"], email)
     resp = jsonify({"token": token, "bridge_token": user["bridge_token"]})
-    resp.set_cookie("token", token, httponly=True, samesite="Lax", max_age=86400)
+    resp.set_cookie("token", token, httponly=True, secure=True, samesite="Lax", max_age=86400)
     return resp
 
 
@@ -361,7 +361,10 @@ def logout():
 
 @socketio.on("bridge_auth")
 def handle_bridge_auth(data):
-    print(f"[WS] bridge_auth received: {data}", flush=True)
+    # NO loguear `data`: lleva el bridge_token en claro, y los logs de Railway
+    # los ve cualquiera con acceso al panel (podria suplantar ese bridge).
+    _tok_tail = str((data or {}).get("bridge_token", ""))[-4:]
+    print(f"[WS] bridge_auth received (token ...{_tok_tail})", flush=True)
     token = data.get("bridge_token", "")
     user = db.get_user_by_token(token)
     if not user:
@@ -1065,13 +1068,13 @@ def api_debug():
     stocks = store.get("stocks", [])
     analysis = store.get("analysis", {})
 
-    all_connected_users = []
-    for sid, uid in bridge_sessions.items():
-        try:
-            u = db.get_user_by_id(uid)
-            all_connected_users.append({"user_id": uid, "email": u.get("email", "") if u else "?"})
-        except Exception:
-            all_connected_users.append({"user_id": uid, "email": "?"})
+    # Solo las sesiones del usuario que pregunta. Antes se devolvia el padron
+    # completo (user_id + email de TODOS los bridges conectados) a cualquier
+    # usuario autenticado: fuga de PII y ruptura del aislamiento multi-tenant.
+    all_connected_users = [
+        {"user_id": uid, "email": request.user_email}
+        for uid in bridge_sessions.values() if uid == request.user_id
+    ]
 
     return jsonify({
         "current_user_id": request.user_id,
@@ -2056,10 +2059,26 @@ def _inject_cloud_setup_tab(html):
     template. The cloud version reuses it verbatim for parity, but needs one
     extra thing the local bot doesn't: a way to connect a per-user IB Bridge.
     This splices in a "Conectar TWS" tab + bridge status header, leaving the
-    rest of the template completely untouched."""
+    rest of the template completely untouched.
+
+    Cada splice pasa por _replace_once: un ancla que deja de existir (porque
+    vista_web.py cambio esa linea) hacia que el .replace() fuera un no-op
+    SILENCIOSO y la UI quedara degradada en produccion sin ningun error. Ya
+    paso: el commit del Pulso del Mercado inserto una linea en switchTab y
+    renderSetup()/onFeedbackTab() dejaron de engancharse."""
+
+    def _replace_once(h, anchor, repl):
+        n = h.count(anchor)
+        if n != 1:
+            raise RuntimeError(
+                f"_inject_cloud_setup_tab: el ancla aparece {n} veces (esperaba 1). "
+                f"Cambio DASHBOARD_HTML en vista_web.py — actualizar el ancla:\n{anchor[:120]}"
+            )
+        return h.replace(anchor, repl)
 
     # 1. Nav tab button
-    html = html.replace(
+    html = _replace_once(
+        html,
         '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Históricos</button>\n</div>',
         '<button class="nav-tab" onclick="switchTab(\'trades\')">Trades Históricos</button>\n'
         '  <button class="nav-tab" onclick="switchTab(\'setup\')">Conectar TWS</button>\n'
@@ -2067,7 +2086,8 @@ def _inject_cloud_setup_tab(html):
     )
 
     # 2. Header: bridge status + user email + logout (right side, stacked under the sub line)
-    html = html.replace(
+    html = _replace_once(
+        html,
         '<div class="sub">Esc&aacute;ner &middot; Se&ntilde;ales &middot; Cartera &middot; Opciones &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n</div>',
         '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">\n'
         '    <div class="sub">Esc&aacute;ner &middot; Se&ntilde;ales &middot; Cartera &middot; Opciones &nbsp;&bull;&nbsp; <span id="port-info"></span></div>\n'
@@ -2241,12 +2261,15 @@ def _inject_cloud_setup_tab(html):
 </div>
 
 '''
-    html = html.replace('\n<div class="footer">', setup_tab_html + feedback_tab_html + '<div class="footer">')
+    html = _replace_once(html, '\n<div class="footer">', setup_tab_html + feedback_tab_html + '<div class="footer">')
 
     # 4. switchTab(): load the setup tab's dynamic content when opened
-    html = html.replace(
-        "if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}\n}",
-        "if(tab==='etf'&&!_etfLoaded){_etfLoaded=true;updateEtf();}\n"
+    # OJO: el ancla es la ULTIMA linea del if-chain de switchTab. Si vista_web.py
+    # agrega otra rama (como paso con el Pulso del Mercado), hay que moverla aca.
+    html = _replace_once(
+        html,
+        "if(tab==='etf'&&!_mpLoaded){_mpLoaded=true;updateMarketPulse();}\n}",
+        "if(tab==='etf'&&!_mpLoaded){_mpLoaded=true;updateMarketPulse();}\n"
         "  if(tab==='setup')renderSetup();\n"
         "  if(tab==='feedback')onFeedbackTab();\n}",
     )
@@ -2479,7 +2502,7 @@ fetchFlexConfig();
 setInterval(fetchStatus,10000);
 </script>
 '''
-    html = html.replace("</body>\n</html>", cloud_script + "</body>\n</html>")
+    html = _replace_once(html, "</body>\n</html>", cloud_script + "</body>\n</html>")
     return html
 
 
