@@ -66,36 +66,41 @@ import numpy as np
 #  /api/calibration cuando haya mas historia de otro regimen.
 # ══════════════════════════════════════════════════════════════
 
-# Medicion vigente: 2026-09-18, 60 simbolos (40 acciones + 20 ETFs de las listas
-# del scanner) x 5 años, 973 eventos, con los detectores actuales y el modo crudo
-# (detect(apply_policy=False)) — la medicion anterior corria sobre la deteccion ya
-# filtrada, asi que las figuras suprimidas no podian re-medirse nunca.
+# Medicion vigente: 2026-09-18 sobre el UNIVERSO COMPLETO — 217 simbolos (100
+# acciones + 118 ETFs de las listas del scanner; solo falta MMC, que yfinance no
+# sirve) x 10 años: 6.935 eventos, 4.742 resueltos. Detectores actuales y modo
+# crudo (detect(apply_policy=False)); la medicion original corria sobre la
+# deteccion ya filtrada, asi que las figuras suprimidas no podian re-medirse.
 #
 # LEER "res", NO "n": el hit-rate y el baseline se promedian solo sobre eventos
-# RESUELTOS (los que tocaron target o invalidacion dentro de las 40 ruedas), y
-# esa muestra es bastante mas chica que n. "sig" marca si el edge se distingue
-# de 0 al 95% (|edge| >= 1.96 * EE del hit-rate).
+# RESUELTOS (los que tocaron target o invalidacion dentro de las 40 ruedas).
+# "sig" = el edge se distingue de 0 al 95% (|edge| >= 1.96 * EE del hit-rate).
 #
-# HALLAZGO INCOMODO: las UNICAS figuras con edge estadisticamente significativo
-# son las CUATRO negativas de abajo. Ninguna de las positivas lo es — Bandera
-# alcista (+16.6) tiene IC95 [-2.2, +35.4] sobre 27 eventos resueltos y Triple
-# suelo (+6.7) tiene [-14.5, +27.9] sobre 16. O sea: el tier "validada" hoy se
-# concede con evidencia que no descarta que el edge sea cero. Subir la muestra
-# (mas simbolos o mas historia) antes de apoyarse fuerte en esos objetivos.
+# La ventana de 10 años incluye la correccion de 2018, el desplome de 2020 y el
+# bear market de 2022, asi que ya no es "un unico regimen alcista". Control sobre
+# los ultimos 5 años (3.676 eventos): las 5 figuras significativas lo son en AMBAS
+# ventanas y con magnitudes estables — Bandera alcista +17.0/+22.1, Triple suelo
+# +14.4/+13.9, Doble suelo +9.8/+11.0, Bandera bajista -14.6/-15.1, HCH
+# -17.6/-15.9. Las no significativas oscilan alrededor de cero entre ventanas
+# (Cuña descendente rota: +0.3 en 10Y vs -5.3 en 5Y — es ruido, no una señal).
+#
+# Con esta muestra las 3 figuras "validada" SI tienen edge significativo, y las 2
+# descartadas tambien: la politica quedo respaldada por evidencia, cosa que con la
+# muestra chica de 60 simbolos no pasaba.
 _EDGE = {
-    "Bandera alcista": 16.6,            # n=56  res=27  hit 48.1% vs base 31.6%  sig=no  IC[-2.2,+35.4]
-    "Triple suelo": 6.7,                # n=51  res=16  hit 75.0% vs base 68.3%  sig=no  IC[-14.5,+27.9]
-    "Doble suelo": 3.2,                 # n=139 res=77  hit 66.2% vs base 63.1%  sig=no  IC[-7.4,+13.8]
-    "Triangulo simetrico rota": -1.2,   # n=16  res=13  hit  7.7% vs base  8.9%  sig=no
-    "Triangulo ascendente rota": -2.9,  # n=39  res=36  hit  8.3% vs base 11.2%  sig=no
-    "Doble techo": -3.0,                # n=130 res=66  hit 62.1% vs base 65.1%  sig=no
-    "Cuña ascendente rota": -4.5,       # n=189 res=172 hit 11.0% vs base 15.5%  sig=no (z=-1.89)
-    "Cuña descendente rota": -5.1,      # n=165 res=147 hit 10.9% vs base 16.0%  sig=SI
-    "Triangulo descendente rota": -6.2, # n=36  res=31  hit  3.2% vs base  9.4%  sig=SI
-    "HCH invertido": -10.9,             # n=63  res=26  hit 38.5% vs base 49.4%  sig=no
-    "Triple techo": -11.5,              # n=21  res=11  hit 54.5% vs base 66.1%  sig=no
-    "Bandera bajista": -23.4,           # n=20  res=10  hit 10.0% vs base 33.4%  sig=SI
-    "Hombro-cabeza-hombro": -29.1,      # n=48  res=26  hit 11.5% vs base 40.7%  sig=SI
+    "Bandera alcista": 17.0,            # n=293  res=195  hit 49.2% vs base 32.3%  sig=SI  IC[+9.9,+24.0]
+    "Triple suelo": 14.4,               # n=402  res=162  hit 77.2% vs base 62.7%  sig=SI  IC[+8.0,+20.9]
+    "Doble suelo": 9.8,                 # n=1167 res=653  hit 74.4% vs base 64.6%  sig=SI  IC[+6.4,+13.1]
+    "Triangulo ascendente rota": 2.6,   # n=309  res=265  hit 16.2% vs base 13.6%  sig=no
+    "HCH invertido": 1.4,               # n=448  res=205  hit 50.7% vs base 49.3%  sig=no
+    "Triple techo": 1.0,                # n=229  res=97   hit 66.0% vs base 65.0%  sig=no
+    "Cuña descendente rota": 0.3,       # n=495  res=436  hit 13.3% vs base 13.0%  sig=no
+    "Triangulo simetrico rota": -1.2,   # n=97   res=73   hit  5.5% vs base  6.7%  sig=no
+    "Cuña ascendente rota": -2.1,       # n=1987 res=1813 hit 12.9% vs base 14.9%  sig=SI  IC[-3.6,-0.5]
+    "Doble techo": -3.0,                # n=854  res=458  hit 61.6% vs base 64.6%  sig=no
+    "Triangulo descendente rota": -4.5, # n=139  res=107  hit  8.4% vs base 12.9%  sig=no
+    "Bandera bajista": -14.6,           # n=143  res=100  hit 18.0% vs base 32.6%  sig=SI  IC[-22.1,-7.1]
+    "Hombro-cabeza-hombro": -17.6,      # n=372  res=178  hit 30.3% vs base 48.0%  sig=SI  IC[-24.4,-10.9]
 }
 _EDGE_MIN_TARGET = 5.0    # edge minimo para publicar el objetivo medido
 # Solo se descarta lo fuertemente negativo CON muestra decente: el limite de 40
