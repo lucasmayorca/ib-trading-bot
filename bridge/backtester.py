@@ -62,6 +62,7 @@ def run_backtest(df, indicators_dict, stop_loss_pct=None,
     rsi_df = indicators_dict["rsi"]
 
     closes = df["close"].values.astype(float)
+    highs, lows, opens = _ohlc_arrays(df)
     hist_vals = macd_df["hist"].values.astype(float)
     rsi_vals = rsi_df["rsi"].values.astype(float)
     marron_vals = koncorde_df["marron"].values.astype(float)
@@ -98,7 +99,8 @@ def run_backtest(df, indicators_dict, stop_loss_pct=None,
 
         if macd_buy and rsi_buy and konc_buy:
             trade = _simulate_long(closes, i, stop_loss_pct,
-                                   take_profit_pct, max_hold_days, cost_pct)
+                                   take_profit_pct, max_hold_days, cost_pct,
+                                   highs=highs, lows=lows, opens=opens)
             if trade is not None:
                 trade["with_trend"] = (not math.isnan(sma_i)) and closes[i] > sma_i
                 buy_trades.append(trade)
@@ -111,7 +113,8 @@ def run_backtest(df, indicators_dict, stop_loss_pct=None,
 
         if macd_sell and rsi_sell and konc_sell:
             trade = _simulate_short(closes, i, stop_loss_pct,
-                                    take_profit_pct, max_hold_days, cost_pct)
+                                    take_profit_pct, max_hold_days, cost_pct,
+                                    highs=highs, lows=lows, opens=opens)
             if trade is not None:
                 trade["with_trend"] = (not math.isnan(sma_i)) and closes[i] < sma_i
                 sell_trades.append(trade)
@@ -119,6 +122,19 @@ def run_backtest(df, indicators_dict, stop_loss_pct=None,
                     blocked_until = trade["exit_idx"]
 
     return _compute_metrics(buy_trades, sell_trades)
+
+
+def _ohlc_arrays(df):
+    """high/low/open como arrays float, o None si la fuente no los trae.
+
+    Los dos paths de historicos (IB y el fallback de yfinance) devuelven OHLCV
+    completo, pero si faltara la columna el backtest cae al modo por cierres en
+    vez de romperse.
+    """
+    out = []
+    for col in ("high", "low", "open"):
+        out.append(df[col].values.astype(float) if col in df.columns else None)
+    return out[0], out[1], out[2]
 
 
 def _sma(closes, window):
@@ -131,9 +147,40 @@ def _sma(closes, window):
     return out
 
 
-def _simulate_long(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
+def _num(v):
+    """True si v es un numero usable (las barras traen NaN en huecos reales)."""
+    return v is not None and not math.isnan(v)
+
+
+def _simulate_long(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0,
+                   highs=None, lows=None, opens=None):
+    """
+    Simula trade long:
+      Entry: close[entry_idx]
+      Exit: primero de stop-loss, take-profit, o max_days
+
+    EJECUCION INTRADIA (2026-09): el bracket real de bot.py es un STP + un LMT
+    vivos durante toda la rueda, asi que los niveles se evaluan contra el
+    high/low de cada barra, no contra el cierre. Tres reglas que hacen que la
+    estadistica mida lo que el bot realmente ejecutaria:
+
+      1. GAP: si la barra ABRE pasada del nivel, el fill es en la APERTURA, no
+         en el nivel. Un STP es market una vez tocado: si el papel abre 5% abajo
+         con el stop en -3%, se sale en -5%. (Esto empeora los numeros, que es
+         justamente el punto: antes el gap se "llenaba" al cierre.)
+      2. AMBOS niveles tocados en la MISMA barra: se asume el STOP primero. Con
+         barras diarias no se puede saber el orden intrabar, y suponer el TP
+         seria contarse una ganancia que puede no haber ocurrido.
+      3. Tocado intrabar sin gap: el fill es EN el nivel (el STP/LMT ya estaban
+         cargados), no al cierre de esa rueda.
+
+    Sin highs/lows cae al modo por cierres (compatibilidad).
+    """
     n = len(closes)
-    if entry_idx >= n - 1:             # sin barra futura no hay trade medible
+    # Sin ninguna barra futura no hay trade que medir: devolverlo cerraba la
+    # entrada contra si misma y sumaba un perdedor fantasma (-coste) justo en
+    # el simbolo que acaba de dar señal, sesgando expectancy y win rate.
+    if entry_idx >= n - 1:
         return None
 
     entry = closes[entry_idx]
@@ -142,26 +189,53 @@ def _simulate_long(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
 
     sl = entry * (1 - sl_pct / 100)
     tp = entry * (1 + tp_pct / 100)
+    intraday = highs is not None and lows is not None
 
     for j in range(1, max_days + 1):
         idx = entry_idx + j
         if idx >= n:
+            # Fin de datos
             return _trade(entry, closes[n - 1], n - 1, long=True, cost_pct=cost_pct)
+
+        if intraday:
+            o = opens[idx] if opens is not None else None
+            hi, lo = highs[idx], lows[idx]
+            # 1. gap de apertura a traves de un nivel -> fill en la apertura
+            if _num(o):
+                if o <= sl:
+                    return _trade(entry, o, idx, long=True, cost_pct=cost_pct)
+                if o >= tp:
+                    return _trade(entry, o, idx, long=True, cost_pct=cost_pct)
+            hit_sl = _num(lo) and lo <= sl
+            hit_tp = _num(hi) and hi >= tp
+            # 2. ambos en la misma barra -> stop primero (conservador)
+            if hit_sl:
+                return _trade(entry, sl, idx, long=True, cost_pct=cost_pct)
+            if hit_tp:
+                return _trade(entry, tp, idx, long=True, cost_pct=cost_pct)
+            continue
 
         px = closes[idx]
         if math.isnan(px):
             continue
-
         if px <= sl:
             return _trade(entry, px, idx, long=True, cost_pct=cost_pct)
         if px >= tp:
             return _trade(entry, px, idx, long=True, cost_pct=cost_pct)
 
+    # Max hold alcanzado
     exit_idx = min(entry_idx + max_days, n - 1)
     return _trade(entry, closes[exit_idx], exit_idx, long=True, cost_pct=cost_pct)
 
 
-def _simulate_short(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
+def _simulate_short(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0,
+                    highs=None, lows=None, opens=None):
+    """
+    Simula trade short (espejo de _simulate_long, ver ahi las reglas intradia):
+      Entry short: close[entry_idx]
+      SL: precio sube sl_pct% (perdida)
+      TP: precio baja tp_pct% (ganancia)
+    """
     n = len(closes)
     if entry_idx >= n - 1:             # sin barra futura no hay trade medible
         return None
@@ -170,18 +244,34 @@ def _simulate_short(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
     if entry <= 0 or math.isnan(entry):
         return None
 
-    sl = entry * (1 + sl_pct / 100)
-    tp = entry * (1 - tp_pct / 100)
+    sl = entry * (1 + sl_pct / 100)    # precio sube = perdida
+    tp = entry * (1 - tp_pct / 100)    # precio baja = ganancia
+    intraday = highs is not None and lows is not None
 
     for j in range(1, max_days + 1):
         idx = entry_idx + j
         if idx >= n:
             return _trade(entry, closes[n - 1], n - 1, long=False, cost_pct=cost_pct)
 
+        if intraday:
+            o = opens[idx] if opens is not None else None
+            hi, lo = highs[idx], lows[idx]
+            if _num(o):
+                if o >= sl:            # gap en contra del corto
+                    return _trade(entry, o, idx, long=False, cost_pct=cost_pct)
+                if o <= tp:            # gap a favor
+                    return _trade(entry, o, idx, long=False, cost_pct=cost_pct)
+            hit_sl = _num(hi) and hi >= sl
+            hit_tp = _num(lo) and lo <= tp
+            if hit_sl:                 # stop primero si ambos en la misma barra
+                return _trade(entry, sl, idx, long=False, cost_pct=cost_pct)
+            if hit_tp:
+                return _trade(entry, tp, idx, long=False, cost_pct=cost_pct)
+            continue
+
         px = closes[idx]
         if math.isnan(px):
             continue
-
         if px >= sl:
             return _trade(entry, px, idx, long=False, cost_pct=cost_pct)
         if px <= tp:
@@ -189,7 +279,6 @@ def _simulate_short(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
 
     exit_idx = min(entry_idx + max_days, n - 1)
     return _trade(entry, closes[exit_idx], exit_idx, long=False, cost_pct=cost_pct)
-
 
 def _trade(entry, exit_px, exit_idx, long=True, cost_pct=0.0):
     if math.isnan(exit_px) or entry <= 0:

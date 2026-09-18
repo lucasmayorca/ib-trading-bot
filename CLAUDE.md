@@ -415,6 +415,17 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   Los tests sintéticos exigen techos separados ≥12 ruedas (dobles) y ciclos ~12 ruedas (triples).
 
 ## Backtest & Calibración (calidad de la estimación)
+- **Ejecución INTRADÍA (2026-09)**: SL y TP se evalúan contra el `high`/`low` de cada barra, no contra el
+  cierre, porque el bracket real de `bot.py` es un STP + un LMT vivos toda la rueda. Tres reglas en
+  `_simulate_long`/`_simulate_short` (espejo en `bridge/backtester.py`): (1) si la barra **abre** pasada del
+  nivel, el fill es en la **apertura** (un STP es market una vez tocado: gap de −5% con stop en −3% sale en
+  −5%); (2) si SL y TP se tocan en la **misma barra** se asume el **stop** (con barras diarias no se conoce el
+  orden intrabar, y suponer el TP sería contarse una ganancia que pudo no ocurrir); (3) tocado intrabar sin gap,
+  el fill es **en el nivel**, no al cierre. Sin `high`/`low` cae al modo por cierres.
+  **Impacto medido** (461 trades, 20 large caps, 5Y): 4,1% de los trades cambian de WIN/LOSS, 9,8% salen por
+  gap, y el retorno por trade sube en mediana +0,28 pp. Sube porque el modelo viejo **exageraba las pérdidas**:
+  dejaba correr al perdedor hasta el cierre (−11%, −12%) en vez de cortarlo en el stop. `avg_loss` pasó de
+  −4,82% a −3,43% y `avg_win` de 6,58% a 6,23% (el TP ahora llena en +8% exacto, no en un cierre que se pasó).
 - **`backtester.py` — confianza calibrada, no win-rate crudo**: el backtest usa
   **cooldown** (no abre un nuevo trade hasta cerrar el anterior → sin solapes que inflen
   la muestra), resta **coste round-trip** por trade (`BACKTEST_COST_PCT`), y calcula la
