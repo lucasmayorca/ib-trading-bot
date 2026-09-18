@@ -477,6 +477,17 @@ def _compute_payoff(legs, price_range, per_share=True):
     return points
 
 
+def _per_position(payoff_points):
+    """Pasa una curva de payoff de POR ACCION a POR POSICION (x100).
+
+    Lo que se exporta al dashboard tiene que estar en la misma unidad que
+    max_profit/max_loss/capital_required (todos por posicion): mezclarlas
+    hacia que el grafico dibujara la curva por accion mientras rotulaba sus
+    extremos con los valores por posicion ("Max +$305" sobre una curva cuyo
+    maximo es 3.05), y que el P&L al objetivo saliera 100 veces mas chico."""
+    return [{"price": p["price"], "pnl": round(p["pnl"] * 100, 2)} for p in payoff_points]
+
+
 def _find_breakevens(payoff_points):
     """Encuentra breakevens donde P&L cruza por 0."""
     bkevens = []
@@ -568,7 +579,7 @@ def _derive_metrics(legs, S, T, r, sigma):
 
     return {
         "net": net,
-        "payoff": payoff,
+        "payoff": _per_position(payoff),
         "max_profit": round(max_profit, 2),
         "max_loss": round(max_loss, 2),
         "breakevens": breakevens,
@@ -628,7 +639,7 @@ def _mixed_expiry_metrics(legs, S, r, sigma):
 
     return {
         "net": net,
-        "payoff": payoff,
+        "payoff": _per_position(payoff),
         "max_profit": round(max_profit, 2),
         "max_loss": round(max_loss, 2),
         "breakevens": breakevens,

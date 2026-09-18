@@ -77,6 +77,21 @@ _PORTFOLIO_MKT_REQ_BASE = 9500
 _PORTFOLIO_HIST_REQ_BASE = 10000
 _PORTFOLIO_ACCT_REQ_ID = 9900
 
+# Charts de posicion: contador bajo lock en vez de hash(symbol) % 400. Dos
+# requests concurrentes de simbolos distintos podian caer en el mismo req_id y
+# pisarse el buffer de historical_data, sirviendo velas del otro activo.
+_chart_req_lock = threading.Lock()
+_chart_req_id = {"n": _PORTFOLIO_HIST_REQ_BASE + 500}
+
+
+def _next_chart_req_id():
+    with _chart_req_lock:
+        _chart_req_id["n"] += 1
+        if _chart_req_id["n"] > _PORTFOLIO_HIST_REQ_BASE + 899:
+            _chart_req_id["n"] = _PORTFOLIO_HIST_REQ_BASE + 500
+        return _chart_req_id["n"]
+
+
 portfolio_lock = threading.Lock()
 portfolio_cache = {}        # resultado de analyze_portfolio()
 portfolio_cache_ts = 0.0    # timestamp del ultimo analisis
@@ -687,7 +702,7 @@ def fetch_chart_data(app, symbol, period="6M", fetch_historical_fn=None):
     if fetch_historical_fn is None:
         return None
 
-    req_id = _PORTFOLIO_HIST_REQ_BASE + 500 + (abs(hash(symbol)) % 400)
+    req_id = _next_chart_req_id()
     try:
         df = fetch_historical_fn(app, symbol, req_id, duration=duration)
     except TypeError:

@@ -197,9 +197,34 @@ etf_update_lock = threading.Lock()
 # mitad de pasada (o se lo reseteaba). Resultado: un mismo simbolo podia salir
 # analizado con barras de IB en un tab y con barras de yfinance en el otro
 # (cierres distintos -> MACD/RSI/backtest/score distintos para el mismo activo).
-_IB_HIST_FAILS = {"n": 0}          # loop de acciones (y usos puntuales)
+_IB_HIST_FAILS = {"n": 0}          # loop de acciones
 _IB_HIST_FAILS_ETF = {"n": 0}      # loop de ETFs
+# Pedidos on-demand desde endpoints (Mi Cartera, charts de posicion): tenian el
+# MISMO problema que acciones/ETFs pero con un tercer consumidor. Al usar el
+# breaker del loop de acciones, abrir Mi Cartera con TWS colgada lo cortaba a
+# mitad de pasada (mitad del ciclo con barras de IB, mitad con yfinance), y el
+# reset por ciclo de run_analysis borraba el corte recien decidido por el endpoint.
+_IB_HIST_FAILS_UI = {"n": 0}
 _IB_HIST_FAILS_MAX = 3
+
+
+# reqIds on-demand: un contador bajo lock en vez de hash(symbol) % rango. Los
+# rangos 8000-8998 (/api/bars) y 8500-8999 (deep analysis de cartera) se
+# solapaban en 499 ids, y como ambos corren en threads de Flask distintos y
+# escriben ib_app.historical_data[req_id], una colision servia las barras del
+# otro simbolo sin ningun error visible.
+_ondemand_req_lock = threading.Lock()
+_ondemand_req_id = {"n": 11000}
+_ONDEMAND_REQ_MIN = 11000
+_ONDEMAND_REQ_MAX = 12999
+
+
+def next_ondemand_req_id():
+    with _ondemand_req_lock:
+        _ondemand_req_id["n"] += 1
+        if _ondemand_req_id["n"] > _ONDEMAND_REQ_MAX:
+            _ondemand_req_id["n"] = _ONDEMAND_REQ_MIN
+        return _ondemand_req_id["n"]
 
 
 def _fetch_historical_yf(symbol, duration):
@@ -566,12 +591,31 @@ def _fetch_fundamentals(symbols):
             fundamentals_cache[sym] = {"data": {}, "ts": now}
 
 
+def _is_num(v):
+    """True si v es un numero usable (ni None ni NaN).
+
+    Las velas llegan con huecos reales: el bridge limpia NaN->None antes de
+    emitir y yfinance deja NaN en la barra parcial. Sin este filtro, _compute_atr
+    hacia `h - l` con None (TypeError que en el cloud colapsaba TODO el top3 a []),
+    y en local devolvia NaN, que pasaba el chequeo `atr <= 0` y se propagaba a
+    entry/stop/rr como null. Las funciones hermanas (_find_sr_levels,
+    _regression_channel, _compute_signal_markers) ya se defendian asi.
+    """
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and not math.isnan(v)
+
+
+def _bar_ok(b):
+    return isinstance(b, dict) and all(_is_num(b.get(k)) for k in ("high", "low", "close"))
+
+
 def _compute_atr(ohlc, period=14):
     """Average True Range from OHLC list-of-dicts."""
     if len(ohlc) < period + 1:
         return None
     trs = []
     for i in range(-period, 0):
+        if not _bar_ok(ohlc[i]) or not _bar_ok(ohlc[i - 1]):
+            continue
         h = ohlc[i]["high"]
         l = ohlc[i]["low"]
         pc = ohlc[i - 1]["close"]
@@ -582,7 +626,9 @@ def _compute_atr(ohlc, period=14):
 
 def _recent_swing(ohlc, lookback=20):
     """High/low from last N bars."""
-    recent = ohlc[-lookback:]
+    recent = [b for b in ohlc[-lookback:] if _bar_ok(b)]
+    if not recent:
+        return (None, None)
     return (max(b["high"] for b in recent),
             min(b["low"] for b in recent))
 
@@ -595,8 +641,14 @@ def _label_is_bearish(label):
     bias as the label shown to the user — a HOLD with signal_label
     "VENTA INMINENTE" must still be treated as bearish for entry/target/
     stop and backtest stat selection, or the numbers contradict the label.
+
+    OJO: "SOBREVENTA" contiene la subcadena "VENTA" pero es la lectura
+    ALCISTA (RSI < 35). Sin excluirla, ZONA DE SOBREVENTA salia con target
+    por debajo del precio, stats del lado sell y la UI en rojo.
+    Espejo en el JS: _labelIsBearish — mantener paridad.
     """
-    return "VENTA" in label or "SOBRECOMPRA" in label
+    label = label or ""
+    return ("VENTA" in label and "SOBREVENTA" not in label) or "SOBRECOMPRA" in label
 
 
 def _score_stock(sym, data, min_target_pct=None):
@@ -894,9 +946,13 @@ def _compute_price_levels(data):
     ohlc = (data.get("chart") or {}).get("ohlc", [])
 
     atr = _compute_atr(ohlc) if len(ohlc) >= 15 else None
-    if atr is None or atr <= 0:
+    # `not (atr > 0)` y no `atr <= 0`: NaN falla toda comparacion, asi que con
+    # `<=` se colaba y envenenaba entry/target/stop/rr con nulls
+    if atr is None or not (atr > 0):
         atr = price * 0.02  # fallback 2%
-    swing_h, swing_l = _recent_swing(ohlc) if len(ohlc) >= 5 else (price * 1.05, price * 0.95)
+    swing_h, swing_l = _recent_swing(ohlc) if len(ohlc) >= 5 else (None, None)
+    if swing_h is None or swing_l is None:
+        swing_h, swing_l = price * 1.05, price * 0.95
 
     # Collect MA values
     ma_vals = {}
@@ -1215,8 +1271,11 @@ def _generate_rationale(sym, data, levels=None):
     if dv > 0:
         parts.append(f"Liquidez: ${dv / 1e6:.0f}M volumen diario promedio")
 
-    # 7. Backtest summary
-    if sig == "BUY" or sig == "HOLD":
+    # 7. Backtest summary — por el LABEL, no por el signal crudo: una VENTA
+    # INMINENTE es HOLD y caia en la rama de compra, asi que el racional decia
+    # "10 señales de compra, win rate 70%" debajo de una tesis bajista (y de
+    # las tarjetas, que sí eligen el lado por el label).
+    if not is_bearish:
         cnt = bt.get("buy_count", 0)
         wr = bt.get("buy_win_rate", 0) or 0
         ar = bt.get("buy_avg_return")
@@ -1263,7 +1322,13 @@ def _generate_rationale(sym, data, levels=None):
         if apt and apt.get("mean"):
             upside = ((apt["mean"] - price) / price * 100) if price else 0
             direction = "potencial subida" if upside > 0 else "potencial baja"
-            parts.append(f"Analistas: target promedio ${apt['mean']:.2f} ({direction} {abs(upside):.1f}%), rango ${apt.get('low', '?')} — ${apt.get('high', '?')}")
+            # _fetch_fundamentals SIEMPRE crea low/high (con None si faltan), asi
+            # que el default de .get() nunca aplicaba: salia "rango $None — $None"
+            lo, hi = apt.get("low"), apt.get("high")
+            rango = (f", rango ${lo:.2f} — ${hi:.2f}"
+                     if lo is not None and hi is not None else "")
+            parts.append(f"Analistas: target promedio ${apt['mean']:.2f} "
+                         f"({direction} {abs(upside):.1f}%){rango}")
 
         # 10. Insider activity (90 days)
         ins = fund.get("insider_trades")
@@ -3106,11 +3171,13 @@ function renderPortfolio(d){
 
   // Summary cards
   let pnlCol=d.total_pnl>=0?'var(--buy)':'var(--sell)';
-  let pnlSign=d.total_pnl>=0?'+':'';
+  // El signo sale del VALOR: con '+' solo para positivos, una perdida se
+  // mostraba como "$5,428.84" (sin menos) porque el monto va con Math.abs.
+  let pnlSign=d.total_pnl>0?'+':(d.total_pnl<0?'-':'');
   let sumHtml='';
   sumHtml+='<div class="port-card"><div class="port-card-label">Valor Total</div><div class="port-card-value" style="color:var(--accent)">$'+fmtN(d.total_value)+'</div></div>';
   sumHtml+='<div class="port-card"><div class="port-card-label">Costo Total</div><div class="port-card-value" style="color:var(--muted)">$'+fmtN(d.total_cost)+'</div></div>';
-  sumHtml+='<div class="port-card"><div class="port-card-label">P&L No Realizado</div><div class="port-card-value" style="color:'+pnlCol+'">'+pnlSign+'$'+fmtN(Math.abs(d.total_pnl))+'</div><div class="port-card-sub" style="color:'+pnlCol+'">'+pnlSign+d.total_pnl_pct.toFixed(2)+'%</div></div>';
+  sumHtml+='<div class="port-card"><div class="port-card-label">P&L No Realizado</div><div class="port-card-value" style="color:'+pnlCol+'">'+pnlSign+'$'+fmtN(Math.abs(d.total_pnl))+'</div><div class="port-card-sub" style="color:'+pnlCol+'">'+(d.total_pnl_pct>0?'+':'')+d.total_pnl_pct.toFixed(2)+'%</div></div>';
   sumHtml+='<div class="port-card"><div class="port-card-label">Posiciones</div><div class="port-card-value" style="color:var(--text)">'+d.num_positions+'</div></div>';
   if(d.pending_orders&&d.pending_orders.length>0){
     sumHtml+='<div class="port-card"><div class="port-card-label">Ordenes Pendientes</div><div class="port-card-value" style="color:#b45309">'+d.pending_orders.length+'</div><div class="port-card-sub" style="color:var(--muted)">Cargadas en IB, sin ejecutar</div></div>';
@@ -3725,7 +3792,7 @@ function fsym(sym,r){
   let tip=(nm?nm+' — ':'')+(dv?'Volumen promedio en dólares (20d): '+dv:'');
   let t=tip?' title="'+tip.replace(/"/g,'&quot;')+'"':'';
   // 2ª línea: nombre de la empresa (si enrichment ya lo trajo); sino el $vol como antes
-  let sub=nm?('<small class="sym-name">'+nm+'</small>'):(dv?'<small>'+dv+' vol</small>':'');
+  let sub=nm?('<small class="sym-name">'+_mpEsc(nm)+'</small>'):(dv?'<small>'+dv+' vol</small>':'');
   return'<span class="sym-cell"'+t+'><b>'+sym+'</b>'+sub+'</span>';
 }
 function fpx(r){
@@ -3863,9 +3930,13 @@ function fshort(r){
 function fstr(val,sig,r){
   if(val==null||val===0)return'<span class="iv v-na">---</span>';
   let label=(r&&r.signal_label)||sig||'';
+  // Direccion por la regla unica: "SOBRECOMPRA" contiene "COMPRA" y
+  // "SOBREVENTA" contiene "VENTA", asi que testear substrings sueltas
+  // pintaba de verde una ZONA DE SOBRECOMPRA.
   let col='var(--hold)';
-  if(label.indexOf('COMPRA')>=0||label.indexOf('SOBREVENTA')>=0)col='var(--buy)';
-  else if(label.indexOf('VENTA')>=0||label.indexOf('SOBRECOMPRA')>=0)col='var(--sell)';
+  let U=label.toUpperCase();
+  if(_labelIsBearish(U))col='var(--sell)';
+  else if(U.indexOf('COMPRA')>=0||U.indexOf('SOBREVENTA')>=0)col='var(--buy)';
   let t='FUERZA DE SENAL: '+val.toFixed(2)+' / 5.1\n';
   t+='Mide cuantos indicadores confirman y con que intensidad.\n\n';
   if(r){
@@ -3925,7 +3996,11 @@ function trendSparkCell(r,nDays,label){
   let col=up?'#0b7a4b':'#c22436';
   let pct=((cl[n-1]-cl[0])/cl[0]*100);
   let area='2,'+H+' '+pts.join(' ')+' '+(W-2)+','+H;
-  return '<svg class="trend-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" title="'+(pct>=0?'+':'')+pct.toFixed(1)+'% en '+label+'">'+
+  // title NO es atributo valido en SVG (requiere un hijo <title>): como atributo
+  // del <svg> el tooltip no aparecia en ningun navegador.
+  let tip=(pct>=0?'+':'')+pct.toFixed(1)+'% en '+label;
+  return '<svg class="trend-spark" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+
+    '<title>'+_mpEsc(tip)+'</title>'+
     '<polygon points="'+area+'" fill="'+col+'" opacity="0.08"/>'+
     '<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+col+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>'+
     '</svg>';
@@ -3986,15 +4061,15 @@ function _getSortVal(r,col){
 
 function sortEntries(entries){
   return Object.keys(entries).sort((a,b)=>{
+    // El ticker es la CLAVE del dict: los entries de /api/data no traen campo
+    // "symbol", asi que _getSortVal devolvia '' para todos y el sort no hacia nada.
+    if(_sortCol==='sym')return _sortDir==='asc'?a.localeCompare(b):-a.localeCompare(b);
     let ra=entries[a],rb=entries[b];
     if(!ra&&!rb)return 0;if(!ra)return 1;if(!rb)return-1;
     let va=_getSortVal(ra,_sortCol);
     let vb=_getSortVal(rb,_sortCol);
     if(va==null&&vb==null)return 0;if(va==null)return 1;if(vb==null)return-1;
-    let cmp;
-    if(_sortCol==='sym')cmp=va.localeCompare(vb);
-    else cmp=va-vb;
-    return _sortDir==='asc'?cmp:-cmp;
+    return _sortDir==='asc'?(va-vb):-(va-vb);
   });
 }
 
@@ -4484,15 +4559,27 @@ function scRenderStack(cfg){
   let period=cfg.period;
   if(SC_INTRADAY[period]){
     let apiP=SC_INTRADAY[period],ck=cfg.symbol+'_'+apiP;
-    if(_scIntra[ck]){
-      let d=_scIntra[ck];
+    let hit=_scIntra[ck];
+    // TTL: sin el, las barras intradia quedaban congeladas en el primer fetch
+    // aunque la pestaña siguiera abierta todo el dia.
+    if(hit&&(Date.now()-hit.ts)>REFRESH_MS){hit=null;delete _scIntra[ck];}
+    if(hit){
+      let d=hit.data;
       _scReg[cfg.key]=scBuild(cfg.key,{ohlc:d.ohlc||[],mas:null,macd:d.macd||null,rsi:d.rsi||null,koncorde:d.koncorde||null,timeVis:true},cfg.decorate,cfg.heights);
     } else {
       let cEl=document.getElementById('sc_candle_'+cfg.key);if(cEl)cEl.innerHTML='<div class="sc-nodata">Cargando '+apiP+'…</div>';
       fetch('/api/bars/'+cfg.symbol+'/'+apiP).then(r=>r.json()).then(d=>{
-        _scIntra[ck]=d||{ohlc:[]};
-        if(!cfg.getPeriod||cfg.getPeriod()===period)scRenderStack(cfg);
-      }).catch(e=>console.error('sc intraday',e));
+        // no cachear respuestas sin velas (un fallo transitorio de /api/bars
+        // dejaba ese simbolo vacio de forma permanente hasta recargar)
+        if(d&&d.ohlc&&d.ohlc.length)_scIntra[ck]={ts:Date.now(),data:d};
+        if(!cfg.getPeriod||cfg.getPeriod()===period){
+          if(d&&d.ohlc&&d.ohlc.length)scRenderStack(cfg);
+          else if(cEl)cEl.innerHTML='<div class="sc-nodata">Sin datos intradia disponibles.</div>';
+        }
+      }).catch(e=>{
+        console.error('sc intraday',e);
+        if(cEl)cEl.innerHTML='<div class="sc-nodata">Error cargando barras intradia.</div>';
+      });
     }
   } else {
     let ch=cfg.chart;
@@ -4933,7 +5020,9 @@ function _t3Chips(top3){
 function renderTop3(top3){
   // Save which rec accordions are open before destroying
   let recOpenSet=new Set();
-  document.querySelectorAll('.rec-details[open]').forEach(d=>{let idx=d.dataset.idx;if(idx!=null)recOpenSet.add(parseInt(idx));});
+  // Acotado a #top3-section (igual que renderEtfTop3): sin el scope, la
+  // recomendacion ETF #N abierta auto-abria la de acciones #N.
+  document.querySelectorAll('#top3-section .rec-details[open]').forEach(d=>{let idx=d.dataset.idx;if(idx!=null)recOpenSet.add(parseInt(idx));});
   destroyAllRecCharts();
   _top3Data=top3||[];
   let sec=document.getElementById('top3-section');
@@ -5220,7 +5309,9 @@ function _renderStockList(data){
     let sorted=sortEntries(entries);
     if(_stockSearch)sorted=sorted.filter(sym=>_matchesSearch(sym,entries[sym],_stockSearch));
     let openSet=new Set();
-    document.querySelectorAll('details[open]').forEach(d=>{if(d.dataset.sym)openSet.add(d.dataset.sym);});
+    // Solo los abiertos de ESTA tabla: sin el scope, un simbolo expandido en
+    // Mi Cartera o en el escaner de ETFs auto-expandia su fila aca.
+    document.querySelectorAll('#stock-list details[open]').forEach(d=>{if(d.dataset.sym)openSet.add(d.dataset.sym);});
     for(let k in _charts)destroyDetailCharts(k);
 
     let html="";
@@ -5319,7 +5410,7 @@ function _renderStockList(data){
     if(!html&&total===0){
       html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando acciones... los datos se cargan incrementalmente.</div></div>';
     }else if(!html&&_stockSearch){
-      html='<div class="tab-loading"><div class="tab-loading-text">Sin resultados para "'+_stockSearch+'"</div></div>';
+      html='<div class="tab-loading"><div class="tab-loading-text">Sin resultados para "'+_mpEsc(_stockSearch)+'"</div></div>';
     }
     // Header visible solo cuando hay filas (evita el header flotando sobre el spinner)
     let _lh=document.getElementById('list-header');
@@ -5341,11 +5432,14 @@ function _renderStockList(data){
       sparkIdx++;
     }
 
-    document.querySelectorAll('details[open]').forEach(d=>{
+    // Acotado a #stock-list: sin el scope, el listener se enganchaba tambien a
+    // los <details> de ETFs, Mi Cartera y Top Recomendaciones, y cerrar una
+    // tarjeta de ahi con el mismo data-idx destruia el stack de esta tabla.
+    document.querySelectorAll('#stock-list details[open]').forEach(d=>{
       let i=parseInt(d.dataset.idx);
       renderDetailCharts(i,d.dataset.sym,_periods[i]||'1Y');
     });
-    document.querySelectorAll('details').forEach(d=>{
+    document.querySelectorAll('#stock-list details').forEach(d=>{
       d.addEventListener('toggle',function(){
         let i=parseInt(this.dataset.idx),s=this.dataset.sym;
         if(this.open)renderDetailCharts(i,s,_periods[i]||'1Y');else destroyDetailCharts(i);
@@ -5476,15 +5570,14 @@ function _getEtfSortVal(r,col){
 
 function sortEtfEntries(entries){
   return Object.keys(entries).sort((a,b)=>{
+    // idem sortEntries: el ticker es la clave, no un campo del entry
+    if(_etfSortCol==='sym')return _etfSortDir==='asc'?a.localeCompare(b):-a.localeCompare(b);
     let ra=entries[a],rb=entries[b];
     if(!ra&&!rb)return 0;if(!ra)return 1;if(!rb)return-1;
     let va=_getEtfSortVal(ra,_etfSortCol);
     let vb=_getEtfSortVal(rb,_etfSortCol);
     if(va==null&&vb==null)return 0;if(va==null)return 1;if(vb==null)return-1;
-    let cmp;
-    if(_etfSortCol==='sym')cmp=va.localeCompare(vb);
-    else cmp=va-vb;
-    return _etfSortDir==='asc'?cmp:-cmp;
+    return _etfSortDir==='asc'?(va-vb):-(va-vb);
   });
 }
 
@@ -5775,7 +5868,7 @@ function _renderEtfList(data){
     if(!html&&total===0){
       html='<div class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Analizando ETFs... los datos se cargan incrementalmente.</div></div>';
     }else if(!html&&_etfSearch){
-      html='<div class="tab-loading"><div class="tab-loading-text">Sin resultados para "'+_etfSearch+'"</div></div>';
+      html='<div class="tab-loading"><div class="tab-loading-text">Sin resultados para "'+_mpEsc(_etfSearch)+'"</div></div>';
     }
     // Header visible solo cuando hay filas (evita el header flotando sobre el spinner)
     let _elh=document.getElementById('etf-list-header');
@@ -5950,7 +6043,10 @@ function renderEtfTop3(top3){
 setInterval(function(){if(_activeTab==='etf'&&_etfLoaded)updateEtf();if(_activeTab==='etf'&&_mpLoaded)updateMarketPulse();},REFRESH_MS);
 
 // Auto-refresh portfolio every 5 min if active
-setInterval(function(){if(_activeTab==='portfolio'&&_portLoaded){_portLoaded=false;loadPortfolio();}},REFRESH_MS);
+// Sin tocar _portLoaded: ponerlo en false hacia que la condicion no volviera a
+// cumplirse nunca (solo switchTab lo restaura, y ahi esta gateado por !_portLoaded),
+// asi que quedandose en la pestaña la cartera se actualizaba una sola vez.
+setInterval(function(){if(_activeTab==='portfolio'&&_portLoaded){loadPortfolio();}},REFRESH_MS);
 
 // ══════════════════════════════════════════════════════════════
 //  OPTIONS LAB
@@ -6139,8 +6235,11 @@ function renderForecastBar(price,pl,isBear){
 }
 
 function _labelIsBearish(label){
-  // Espejo de _label_is_bearish (Python): VENTA* y SOBRECOMPRA son lecturas bajistas
-  return /VENTA|SOBRECOMPRA|BAJISTA|BEARISH/i.test(label||'');
+  // Espejo de _label_is_bearish (Python): VENTA* y SOBRECOMPRA son lecturas bajistas.
+  // OJO: "SOBREVENTA" contiene "VENTA" pero es la lectura ALCISTA (RSI < 35).
+  var L=(label||'').toUpperCase();
+  return (L.indexOf('VENTA')>=0&&L.indexOf('SOBREVENTA')<0)||L.indexOf('SOBRECOMPRA')>=0
+         ||L.indexOf('BAJISTA')>=0||L.indexOf('BEARISH')>=0;
 }
 
 function renderIVSection(d){
@@ -6695,7 +6794,9 @@ function renderOptionsLabMulti(opportunities){
 
     let pl=d.price_levels||{};
     let tgtPct=pl.target_pct||0;
-    let tgtDir=pl.target>(d.price||0)?'+':'';
+    // target_pct viene SIEMPRE como magnitud positiva (ver _compute_price_levels),
+    // asi que sin el '-' un objetivo bajista se leia como ganancia del 12%.
+    let tgtDir=pl.target<(d.price||0)?'-':'+';
     let tgtColor=pl.target>(d.price||0)?'#0b7a4b':'#c22436';
 
     html+='<div class="olab-multi-card" id="olab-multi-'+i+'">'+
@@ -6824,6 +6925,10 @@ function loadTradesHistory(){
   if(allBtn)allBtn.classList.add('active');
   fetch('/api/trades-history').then(r=>r.json()).then(data=>{
     _thData=data;
+    if(data.error){
+      document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">'+_mpEsc(data.error)+'</span>';
+      return;
+    }
     document.getElementById('th-loading').style.display='none';
     document.getElementById('th-content').style.display='';
     renderThSummary(data.summary);
@@ -6919,6 +7024,10 @@ function _thComputeSummary(trades){
 }
 
 function renderThSummary(s,filterLabel){
+  // {} es truthy: sin total_trades el render explotaba en s.weighted_return_pct
+  // .toFixed y, como el throw cae despues de ocultar el loading, el tab quedaba
+  // completamente en blanco (sin error ni CTA).
+  if(!s||s.total_trades===undefined)s=_thComputeSummary([]);
   if(!s)return;
   let el=document.getElementById('th-summary');
   let wrColor=s.win_rate>=60?'color:var(--buy)':s.win_rate>=40?'color:var(--hold)':'color:var(--sell)';
@@ -7103,12 +7212,16 @@ function toggleThTrade(idx){
       .then(r=>r.json())
       .then(chart=>{
         if(chart.error){
-          if(candleEl)candleEl.innerHTML='<div style="padding:20px;color:var(--muted);text-align:center">'+chart.error+'</div>';
+          // liberar el slot: con {loading:true} pegado, el guard de arriba
+          // impedia reintentar al colapsar y volver a expandir
+          delete _thCharts[idx];
+          if(candleEl)candleEl.innerHTML='<div style="padding:20px;color:var(--muted);text-align:center">'+_mpEsc(chart.error)+'</div>';
           return;
         }
         _renderThTradeChart(idx,trade,chart);
       }).catch(e=>{
-        if(candleEl)candleEl.innerHTML='<div style="padding:20px;color:var(--sell);text-align:center">Error: '+e.message+'</div>';
+        delete _thCharts[idx];
+        if(candleEl)candleEl.innerHTML='<div style="padding:20px;color:var(--sell);text-align:center">Error: '+_mpEsc(e.message)+'</div>';
       });
   }
 }
@@ -7183,11 +7296,15 @@ function _renderThTradeChart(idx,trade,chart){
       else lessons.push('Trade positivo pero modesto (+'+pnl_pct.toFixed(1)+'%).');
       if(dur<5)lessons.push('Trade muy rapido — buen timing de entrada y salida.');
       else if(dur>60)lessons.push('Posicion mantenida '+dur+' dias — paciencia recompensada.');
-    }else{
+    }else if(trade.result==='LOSS'){
       if(pnl_pct<-20)lessons.push('Perdida significativa ('+pnl_pct.toFixed(1)+'%). Revisar si el stop loss fue respetado.');
       else if(pnl_pct<-10)lessons.push('Perdida considerable ('+pnl_pct.toFixed(1)+'%). Evaluar si las señales de salida se activaron a tiempo.');
       else lessons.push('Perdida controlada ('+pnl_pct.toFixed(1)+'%).');
       if(trade.type!=='STK'&&pnl_pct<=-90)lessons.push('Opcion expiro sin valor — riesgo inherente de opciones.');
+    }else{
+      // BE: P&L exactamente 0. Narrarlo como "Perdida controlada (0.0%)"
+      // contradecia el badge "SIN P&L" de la misma tarjeta.
+      lessons.push('Trade cerrado sin P&L: salio plano, ni ganancia ni perdida.');
     }
     if(lessons.length>0){
       lesEl.innerHTML='<div class="th-lessons-box"><div class="th-les-label">Análisis del Trade</div><div class="th-les-text">'+lessons.join(' ')+'</div></div>';
@@ -7522,7 +7639,7 @@ def api_bars(symbol, period):
     if ib_app is not None and ib_app.isConnected():
         try:
             with intraday_lock:
-                req_id = 8000 + abs(hash(symbol + period)) % 999
+                req_id = next_ondemand_req_id()
                 contract = make_contract(symbol)
                 ib_app.historical_data[req_id] = []
                 ib_app.hist_done[req_id] = False
@@ -7533,8 +7650,11 @@ def api_bars(symbol, period):
                 start = time.time()
                 while not ib_app.hist_done.get(req_id, False) and time.time() - start < 30:
                     time.sleep(0.2)
+                # leer DENTRO del lock: afuera, otro request podia reiniciar el
+                # buffer de este req_id antes de que lo consumieramos
+                data = ib_app.historical_data.pop(req_id, [])
+                ib_app.hist_done.pop(req_id, None)
 
-            data = ib_app.historical_data.get(req_id, [])
             if data:
                 df = pd.DataFrame(data)
                 result["ohlc"] = _build_ohlc(df)
@@ -7553,7 +7673,11 @@ def api_bars(symbol, period):
         except Exception as e:
             print(f"  Error fetching {period} bars for {symbol} via yfinance: {e}")
 
-    intraday_cache[cache_key] = {"data": result, "ts": time.time()}
+    # Solo cachear exitos: guardar un {"ohlc": []} de un fallo transitorio
+    # dejaba ese simbolo sin panel intradia los 5 minutos del TTL aunque la
+    # fuente se recuperara al instante siguiente.
+    if result.get("ohlc"):
+        intraday_cache[cache_key] = {"data": result, "ts": time.time()}
     return Response(to_json(result), mimetype="application/json")
 
 
@@ -8249,8 +8373,9 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
     data = analysis_cache.get(sym)
     if data is None or (data.get("chart") or {}).get("ohlc") is None:
         try:
-            df = fetch_historical(ib_app, sym, 8500 + (abs(hash(sym)) % 500),
-                                   duration=config.BACKTEST_DURATION)
+            df = fetch_historical(ib_app, sym, next_ondemand_req_id(),
+                                   duration=config.BACKTEST_DURATION,
+                                   breaker=_IB_HIST_FAILS_UI)
             data = analyze_symbol(df)
         except Exception as e:
             print(f"  [Portfolio deep] Error analizando {sym}: {e}")
@@ -8402,11 +8527,25 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
     }
 
 
+def _fetch_historical_ui(app, symbol, req_id, duration=None):
+    """fetch_historical para pedidos de UI, con breaker PROPIO.
+
+    Sin esto, Mi Cartera compartia el contador de cortes del loop de acciones:
+    abrirla con TWS colgada cortaba el loop a mitad de pasada (mitad del ciclo
+    con barras de IB, mitad con yfinance) y el reset por ciclo de run_analysis
+    borraba el corte que el endpoint acababa de decidir.
+    """
+    kwargs = {"breaker": _IB_HIST_FAILS_UI}
+    if duration is not None:
+        kwargs["duration"] = duration
+    return fetch_historical(app, symbol, req_id, **kwargs)
+
+
 portfolio.register_portfolio_endpoint(
     flask_app,
     ib_app_ref=lambda: ib_app,
     analyze_symbol_fn=analyze_symbol,
-    fetch_historical_fn=fetch_historical,
+    fetch_historical_fn=_fetch_historical_ui,
     to_json_fn=to_json,
     build_position_analysis_fn=_build_position_deep_analysis,
 )
@@ -8662,7 +8801,18 @@ def _option_root(ticker):
 
 
 def _is_option_symbol(sym):
-    return len(sym.strip()) > 10 and ("C0" in sym or "P0" in sym)
+    """True solo si ademas PARSEA como opcion.
+
+    Antes bastaba con `len>10 and ("C0" or "P0")`, criterio mas laxo que el de
+    _parse_option_symbol: un fill como 'AAPL260417C00305000' (sin los espacios
+    separadores) entraba por aca, salia del parser con expiry/strike en None y
+    reventaba al formatear (`f"{strike:g}"` sobre None). Como el endpoint no
+    tiene try/except, UN fill malformado tumbaba el historial completo.
+    """
+    if len(sym.strip()) <= 10 or ("C0" not in sym and "P0" not in sym):
+        return False
+    _, expiry, opt_type, strike = _parse_option_symbol(sym)
+    return expiry is not None and opt_type in ("C", "P") and strike is not None
 
 
 def _group_spread_legs(trades_list):
@@ -9101,6 +9251,11 @@ def build_trades_history(trades_file=None):
                 "sell_fills": [{"date": f["date"], "qty": q, "price": f["avg_fill_price"]}
                                for q, f in (ep["closes"] if not is_short else ep["opens"])],
             })
+            # Un cierre PARCIAL deja posicion viva: sin esto, el remanente no
+            # figuraba en ningun lado (ni como trade ni como abierta) y volvia
+            # la sensacion de "faltan trades" que el panel vino a resolver.
+            if not ep["closed"]:
+                _note_open(sym, ep, tt, asset_class)
 
     # --- OPCIONES --------------------------------------------------------
     # Episodio por PATA (root, expiry, tipo, strike); luego se agrupan las
@@ -9210,15 +9365,19 @@ def build_trades_history(trades_file=None):
         if not subset:
             return None
         sw = [t for t in subset if t["result"] == "WIN"]
+        # Los BE van aparte: contarlos como LOSS y dejarlos en el denominador
+        # daba dos win rates distintos del mismo set (el general sí los excluye)
+        sl = [t for t in subset if t["result"] == "LOSS"]
         sd = [t["duration_days"] for t in subset if t["duration_days"] > 0]
         sp = sum(t["pnl"] for t in subset)
         sb = max(subset, key=lambda x: x["pnl"])
         sw2 = min(subset, key=lambda x: x["pnl"])
+        decided = len(sw) + len(sl)
         return {
             "total_trades": len(subset),
             "wins": len(sw),
-            "losses": len(subset) - len(sw),
-            "win_rate": round(len(sw) / len(subset) * 100, 1),
+            "losses": len(sl),
+            "win_rate": round(len(sw) / decided * 100, 1) if decided else 0.0,
             "breakeven": sum(1 for t in subset if t["result"] == "BE"),
             "total_pnl": round(sp, 2),
             "best_trade": {"symbol": sb["symbol"], "pnl": sb["pnl"], "pnl_pct": sb["pnl_pct"]},
