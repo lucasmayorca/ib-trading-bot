@@ -108,7 +108,7 @@ class PortfolioMixin:
         """Callback de IB: posicion con datos completos de mercado y P&L."""
         if not hasattr(self, "portfolio_positions"):
             self.portfolio_positions = []
-        self.portfolio_positions.append({
+        row = {
             "cuenta": accountName,
             "symbol": contract.symbol,
             "tipo": contract.secType,
@@ -121,7 +121,15 @@ class PortfolioMixin:
             "valor_mercado": float(marketValue),
             "pnl_no_realizado": float(unrealizedPNL),
             "pnl_realizado": float(realizedPNL),
-        })
+        }
+        # IB re-emite updatePortfolio mientras dure la suscripcion (cada tick de
+        # precio): appendear duplicaba la posicion y contaba su valor dos veces.
+        key = (contract.conId, accountName)
+        for i, prev in enumerate(self.portfolio_positions):
+            if (prev.get("con_id"), prev.get("cuenta")) == key:
+                self.portfolio_positions[i] = row
+                return
+        self.portfolio_positions.append(row)
 
     def updateAccountValue(self, key, val, currency, accountName):
         """Callback de IB: dato individual de la cuenta."""
@@ -1622,9 +1630,9 @@ def _compute_portfolio_metrics(positions, total_value):
         return fund.get(key)
 
     beta, cov_beta = _wavg(lambda p: _fund(p, "beta"))
-    # yfinance ya devuelve dividendYield como decimal (0.015 = 1.5%)
-    dy, cov_dy = _wavg(lambda p: (_fund(p, "dividend_yield") or 0) * 100
-                                    if _fund(p, "dividend_yield") is not None else None)
+    # yfinance devuelve dividendYield YA en porcentaje (KO -> 2.41 = 2.41%),
+    # igual que lo consumen la tesis y el JS: multiplicarlo daba "241%"
+    dy, cov_dy = _wavg(lambda p: _fund(p, "dividend_yield"))
     pe, cov_pe = _wavg(lambda p: _fund(p, "trailing_pe"))
 
     strength, _ = _wavg(lambda p: (p.get("analysis") or {}).get("strength"))

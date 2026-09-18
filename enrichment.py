@@ -96,7 +96,8 @@ def _compute_symbol_metrics(closes, volumes, spy_ret):
         if len(both) >= BETA_MIN_OBS:
             r_sym = both.iloc[:, 0].to_numpy()
             r_spy = both.iloc[:, 1].to_numpy()
-            var = float(np.var(r_spy))
+            # ddof=1 para que la varianza use el mismo denominador que np.cov
+            var = float(np.var(r_spy, ddof=1))
             if var > 0:
                 out["beta"] = _clean(float(np.cov(r_sym, r_spy)[0][1]) / var)
         if len(both) > RS_WINDOW:

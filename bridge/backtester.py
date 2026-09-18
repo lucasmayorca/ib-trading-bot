@@ -132,13 +132,16 @@ def _sma(closes, window):
 
 
 def _simulate_long(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
+    n = len(closes)
+    if entry_idx >= n - 1:             # sin barra futura no hay trade medible
+        return None
+
     entry = closes[entry_idx]
     if entry <= 0 or math.isnan(entry):
         return None
 
     sl = entry * (1 - sl_pct / 100)
     tp = entry * (1 + tp_pct / 100)
-    n = len(closes)
 
     for j in range(1, max_days + 1):
         idx = entry_idx + j
@@ -159,13 +162,16 @@ def _simulate_long(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
 
 
 def _simulate_short(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
+    n = len(closes)
+    if entry_idx >= n - 1:             # sin barra futura no hay trade medible
+        return None
+
     entry = closes[entry_idx]
     if entry <= 0 or math.isnan(entry):
         return None
 
     sl = entry * (1 + sl_pct / 100)
     tp = entry * (1 - tp_pct / 100)
-    n = len(closes)
 
     for j in range(1, max_days + 1):
         idx = entry_idx + j

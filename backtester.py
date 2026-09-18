@@ -260,13 +260,19 @@ def _simulate_long(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
       Entry: close[entry_idx]
       Exit: primero de stop-loss, take-profit, o max_days
     """
+    n = len(closes)
+    # Sin ninguna barra futura no hay trade que medir: devolverlo cerraba la
+    # entrada contra si misma y sumaba un perdedor fantasma (-coste) justo en
+    # el simbolo que acaba de dar señal, sesgando expectancy y win rate.
+    if entry_idx >= n - 1:
+        return None
+
     entry = closes[entry_idx]
     if entry <= 0 or math.isnan(entry):
         return None
 
     sl = entry * (1 - sl_pct / 100)
     tp = entry * (1 + tp_pct / 100)
-    n = len(closes)
 
     for j in range(1, max_days + 1):
         idx = entry_idx + j
@@ -295,13 +301,16 @@ def _simulate_short(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
       SL: precio sube sl_pct% (perdida)
       TP: precio baja tp_pct% (ganancia)
     """
+    n = len(closes)
+    if entry_idx >= n - 1:             # sin barra futura no hay trade medible
+        return None
+
     entry = closes[entry_idx]
     if entry <= 0 or math.isnan(entry):
         return None
 
     sl = entry * (1 + sl_pct / 100)    # precio sube = perdida
     tp = entry * (1 - tp_pct / 100)    # precio baja = ganancia
-    n = len(closes)
 
     for j in range(1, max_days + 1):
         idx = entry_idx + j

@@ -92,8 +92,9 @@ def _apply_edge_policy(cands):
     """Filtra/degrada figuras segun su edge MEDIDO (ver _EDGE).
 
     - edge >= +5  -> "validada": conserva objetivo medido y pesa en score
-    - -5 < edge < +5 -> "contexto": se muestra, SIN objetivo medido ni peso
-    - edge <= -5  -> se descarta (ruido demostrado)
+    - -12 < edge < +5 -> "contexto": se muestra, SIN objetivo medido ni peso
+    - edge <= -12 -> se descarta (ruido demostrado); ver _EDGE_MIN_SHOW: el
+      umbral es -12 y NO -5 a proposito
     Las figuras sin medicion (rupturas de nivel, divergencias, cruces, canal)
     no tienen objetivo y quedan como contexto por construccion. Los triangulos
     y cuñas EN FORMACION heredan el veredicto de su version rota: su objetivo
@@ -665,7 +666,10 @@ def _pat_divergence(piv_h, piv_l, rsi_series, n):
     """Divergencia RSI/precio entre los dos ultimos pivotes del lado activo."""
     if rsi_series is None:
         return None
-    rsi = np.asarray(_sanitize(rsi_series), float)
+    # CRUDA, sin sanear: _sanitize convierte el warmup del RSI (NaN de las
+    # primeras ~14 ruedas) en 0.0, y ese 0 fabricado "diverge" contra cualquier
+    # lectura real — en historiales cortos inventaba divergencias "0 → 45".
+    rsi = np.asarray([np.nan if v is None else float(v) for v in rsi_series], float)
 
     def _check(pivs, bearish):
         recent = [(i, p) for i, p in pivs if i >= n - 250]
@@ -1186,8 +1190,15 @@ def detect_candles(opens, highs, lows, closes, atr=None, lookback=10, max_out=2)
 # ══════════════════════════════════════════════════════════════
 
 def detect(highs, lows, closes, rsi=None, sma50=None, sma200=None,
-           include_cross=False, include_fallback=False, dates=None):
+           include_cross=False, include_fallback=False, dates=None,
+           apply_policy=True):
     """Corre todos los detectores y elige la figura dominante.
+
+    `apply_policy=False` devuelve la deteccion CRUDA (sin tiers, sin descartes
+    por edge y con los objetivos medidos intactos). Lo usa validate_history:
+    medir el edge sobre el resultado ya filtrado es circular — las figuras que
+    la politica suprime nunca volverian a medirse y sus edges quedarian
+    congelados aunque cambie el regimen de mercado.
 
     Returns {"pattern": dict|None, "candidates": [dicts], "fibonacci": dict|None,
              "structure": (dir, texto)}."""
@@ -1233,7 +1244,10 @@ def detect(highs, lows, closes, rsi=None, sma50=None, sma200=None,
         cands.append(_pat_channel_fallback(closes, struct_txt))
     # Politica de edge medido: descarta ruido demostrado y degrada a contexto
     # las figuras sin edge (les quita el objetivo medido)
-    cands = _apply_edge_policy(cands)
+    if apply_policy:
+        cands = _apply_edge_policy(cands)
+    else:
+        cands = sorted([dict(c) for c in cands if c], key=lambda x: -x["priority"])
     # ¿Esta cada figura en su punto de decision? (el consumidor decide si
     # filtra por esto — el pulso muestra contexto siempre, el escaner filtra)
     for c in cands:
@@ -1317,7 +1331,8 @@ def validate_history(highs, lows, closes, step=3, horizon=40, warmup=120):
     events = []
     last_seen = {}   # name -> (key_level, idx) para no contar el mismo evento 2 veces
     for i in range(warmup, n - horizon, step):
-        res = detect(highs[:i + 1], lows[:i + 1], closes[:i + 1])
+        # deteccion CRUDA: la politica de edge se mide aca, no se presupone
+        res = detect(highs[:i + 1], lows[:i + 1], closes[:i + 1], apply_policy=False)
         p = res["pattern"]
         if (not p or p.get("status") != "confirmada"
                 or not p.get("target") or not p.get("invalidation")):

@@ -87,7 +87,8 @@ def calculate_koncorde(df):
     xmf = calc_mfi(hlc3, volume, KONCORDE_MFI_PERIOD)
 
     basis = sma(tprice, KONCORDE_BB_PERIOD)
-    dev = tprice.rolling(window=KONCORDE_BB_PERIOD).std() * KONCORDE_BB_MULT
+    # ddof=0: stdev() de Pine es poblacional (espejo de indicators.py)
+    dev = tprice.rolling(window=KONCORDE_BB_PERIOD).std(ddof=0) * KONCORDE_BB_MULT
     upper, lower = basis + dev, basis - dev
     ob1 = (upper + lower) / 2.0
     ob2 = upper - lower

@@ -106,7 +106,10 @@ def calculate_koncorde(df):
 
     # Bollinger Bands Oscillator
     basis = sma(tprice, c.KONCORDE_BB_PERIOD)
-    dev = tprice.rolling(window=c.KONCORDE_BB_PERIOD).std() * c.KONCORDE_BB_MULT
+    # ddof=0: stdev() de Pine es poblacional. Con el default de pandas (ddof=1)
+    # las bandas salian ~2% mas anchas y el boll_osc ~2% mas chico que el
+    # indicador de referencia. Espejo en bridge/indicators.py — mantener paridad.
+    dev = tprice.rolling(window=c.KONCORDE_BB_PERIOD).std(ddof=0) * c.KONCORDE_BB_MULT
     upper = basis + dev
     lower = basis - dev
     ob1 = (upper + lower) / 2.0

@@ -30,6 +30,8 @@ class TradingBot(EWrapper, EClient):
         self.hist_done = {}
         self.positions = {}
         self.positions_done = False
+        self.open_orders = []
+        self.open_orders_done = False
 
     # === CONNECTION ===
     def nextValidId(self, orderId):
@@ -83,8 +85,20 @@ class TradingBot(EWrapper, EClient):
             print(f"  ORDEN {orderId} CANCELADA")
 
     def openOrder(self, orderId, contract, order, orderState):
+        self.open_orders.append({
+            "order_id": orderId,
+            "symbol": contract.symbol,
+            "sec_type": contract.secType,
+            "action": order.action,
+            "quantity": order.totalQuantity,
+            "parent_id": getattr(order, "parentId", 0) or 0,
+            "status": orderState.status,
+        })
         if orderState.status == "Filled":
             print(f"  Orden {orderId}: {order.action} {order.totalQuantity} {contract.symbol} - FILLED")
+
+    def openOrderEnd(self):
+        self.open_orders_done = True
 
 
 def connect_bot():
@@ -147,14 +161,43 @@ def get_current_positions(bot):
     return bot.positions
 
 
+def get_open_orders(bot):
+    """Órdenes abiertas en TWS (incluye hijas SL/TP de brackets)."""
+    bot.open_orders = []
+    bot.open_orders_done = False
+    bot.reqAllOpenOrders()
+
+    timeout = 10
+    start = time.time()
+    while not bot.open_orders_done and time.time() - start < timeout:
+        time.sleep(0.3)
+
+    return bot.open_orders
+
+
+def pending_entry_symbols(open_orders):
+    """Símbolos con una orden de ENTRADA cargada y sin fill.
+
+    Las hijas de un bracket nacen con parentId != 0 (ver create_bracket_order),
+    así que solo las órdenes padre cuentan como entrada pendiente.
+    """
+    return {
+        o["symbol"] for o in open_orders
+        if not o.get("parent_id") and o.get("status") not in ("Filled", "Cancelled", "ApiCancelled")
+    }
+
+
 def calculate_quantity(price, max_amount=None):
-    """Calcula cantidad de acciones a comprar segun presupuesto."""
+    """Calcula cantidad de acciones a comprar segun presupuesto.
+
+    Devuelve 0 si ni una accion entra en MAX_PER_TRADE: forzar 1 accion
+    excedia el tope de riesgo configurado en los papeles caros.
+    """
     if max_amount is None:
         max_amount = config.MAX_PER_TRADE
     if price <= 0:
         return 0
-    qty = int(max_amount / price)
-    return max(qty, 1)
+    return int(max_amount / price)
 
 
 def create_bracket_order(bot, action, quantity, price):
@@ -242,6 +285,8 @@ def display_signal(symbol, sig, price, position_info=None):
         tp = price * (1 + config.TAKE_PROFIT_PCT / 100)
         print(f"\n  Operacion sugerida:")
         print(f"    COMPRAR {qty} acciones x ${price:.2f} = ${total:.2f}")
+        if qty == 0:
+            print(f"    (sin operacion: 1 accion cuesta mas que el tope ${config.MAX_PER_TRADE:,})")
         print(f"    Stop-Loss: ${sl:.2f} (-{config.STOP_LOSS_PCT}%)")
         print(f"    Take-Profit: ${tp:.2f} (+{config.TAKE_PROFIT_PCT}%)")
     elif sig["signal"] == "SELL" and position_info:
@@ -263,7 +308,15 @@ def run_scan_cycle(bot):
     current_positions = get_current_positions(bot)
     open_pos_count = len([p for p in current_positions.values() if p["secType"] == "STK"])
 
+    # Entradas ya cargadas en TWS y sin fill: cuentan contra el cupo y bloquean
+    # un segundo bracket sobre el mismo simbolo en el ciclo siguiente
+    open_orders = get_open_orders(bot)
+    pending_entries = pending_entry_symbols(open_orders)
+    open_pos_count += len(pending_entries - set(current_positions))
+
     print(f"\nPosiciones abiertas: {open_pos_count}/{config.MAX_OPEN_POSITIONS}")
+    if pending_entries:
+        print(f"Entradas pendientes en TWS: {', '.join(sorted(pending_entries))}")
 
     # Obtener top acciones por volumen
     print(f"\nEscaneando top {config.SCAN_COUNT} acciones por volumen...")
@@ -298,7 +351,8 @@ def run_scan_cycle(bot):
         pos_info = current_positions.get(symbol)
 
         if sig["signal"] == "BUY":
-            if open_pos_count < config.MAX_OPEN_POSITIONS and not pos_info:
+            if (open_pos_count < config.MAX_OPEN_POSITIONS and not pos_info
+                    and symbol not in pending_entries and calculate_quantity(price) > 0):
                 actionable_signals.append((symbol, sig, price, pos_info))
         elif sig["signal"] == "SELL" and pos_info and pos_info["pos"] > 0:
             actionable_signals.append((symbol, sig, price, pos_info))
@@ -321,8 +375,8 @@ def run_scan_cycle(bot):
         print("  No hay senales accionables en este momento.")
         return
 
-    # Ordenar por score (mas fuerte primero)
-    actionable_signals.sort(key=lambda x: abs(x[1]["total_score"]), reverse=True)
+    # Ordenar por fuerza de senal (mas fuerte primero)
+    actionable_signals.sort(key=lambda x: x[1]["strength"], reverse=True)
 
     # Mostrar cada senal y pedir confirmacion
     for symbol, sig, price, pos_info in actionable_signals:
@@ -351,6 +405,9 @@ def execute_order(bot, symbol, sig, price, pos_info):
 
     if sig["signal"] == "BUY":
         qty = calculate_quantity(price)
+        if qty <= 0:
+            print(f"  {symbol} omitido: ni una accion entra en ${config.MAX_PER_TRADE:,}.")
+            return
         parent, tp, sl = create_bracket_order(bot, "BUY", qty, price)
         print(f"  Enviando orden BUY {qty} {symbol} @ ${price:.2f}...")
         bot.placeOrder(parent.orderId, contract, parent)
@@ -359,6 +416,14 @@ def execute_order(bot, symbol, sig, price, pos_info):
         print(f"  Orden enviada (ID: {parent.orderId}) con SL=${sl.auxPrice:.2f} TP=${tp.lmtPrice:.2f}")
 
     elif sig["signal"] == "SELL" and pos_info:
+        # El SL/TP del bracket que abrio la posicion sigue vivo en TWS y sus dos
+        # patas son SELL: si no se cancelan, al tocar el stop venden de nuevo
+        # sobre una posicion ya cerrada y dejan un corto no buscado.
+        for o in get_open_orders(bot):
+            if o["symbol"] == symbol and o.get("parent_id"):
+                print(f"  Cancelando orden hija {o['order_id']} ({o['action']} {o['quantity']})...")
+                bot.cancelOrder(o["order_id"], "")
+
         qty = int(abs(pos_info["pos"]))
         order = Order()
         order.orderId = bot.next_order_id
