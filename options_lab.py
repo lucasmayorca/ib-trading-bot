@@ -44,6 +44,16 @@ class OptionMarket:
             return None
         return min(self.dte_map.keys(), key=lambda d: abs(d - dte))
 
+    def resolve_key(self, dte):
+        """Clave de dte_map que se usa para este DTE objetivo.
+
+        dte_map esta indexado por DTE OBJETIVO (21/30/45...), no por el real.
+        Quien resuelve el vencimiento con real_dte(target) tiene que quedarse
+        con ESTA clave para buscar el precio: volver a llamar _nearest_dte con
+        el DTE ya real podia caer en otro bucket y valuar la pata en un
+        vencimiento distinto del que muestra."""
+        return self._nearest_dte(dte)
+
     def real_dte(self, dte):
         """Dias reales al vencimiento del contrato usado para este DTE objetivo."""
         d = self._nearest_dte(dte)
@@ -58,13 +68,14 @@ class OptionMarket:
             return None
         return self.dte_map[d].get("expiry")
 
-    def lookup(self, dte, right, strike):
+    def lookup(self, dte, right, strike, key=None):
         """Devuelve (strike_real, mid, half_spread, iv, bid, ask) del strike mas
         cercano, o None.
 
         Devuelve el strike realmente disponible para que el llamador snapee la pata
-        a el (premium y strike deben corresponder al MISMO contrato)."""
-        d = self._nearest_dte(dte)
+        a el (premium y strike deben corresponder al MISMO contrato). `key` fuerza
+        el bucket de vencimiento ya resuelto (ver resolve_key)."""
+        d = key if key in self.dte_map else self._nearest_dte(dte)
         if d is None:
             return None
         table = self.dte_map[d].get(right, {})
@@ -284,13 +295,16 @@ def implied_volatility(market_price, S, K, T, r, right, max_iter=50, tol=1e-6):
         d1 = bs_d1(S, K, T, r, sigma)
         vega_val = S * norm.pdf(d1) * math.sqrt(T)
         if abs(vega_val) < 1e-12:
-            break
+            return None          # sin vega no hay convergencia posible
         sigma -= diff / vega_val
         if sigma <= 0.001:
             sigma = 0.001
         if sigma > 5.0:
             sigma = 5.0
-    return sigma if 0.01 < sigma < 5.0 else None
+    # Agotadas las iteraciones NO convergio: devolver el ultimo sigma (que puede
+    # ser el guess inicial intacto) contradecia el contrato "None si no converge"
+    # y haria pasar un 0.30 inventado por una IV medida.
+    return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -311,7 +325,10 @@ def hv_series(closes, window=30):
         return []
     log_rets = np.diff(np.log(closes))
     hvs = []
-    for i in range(window, len(log_rets)):
+    # `len(log_rets) + 1` para que la ultima ventana incluya el ultimo retorno:
+    # con el rango anterior la HV actual nunca estaba en la serie contra la que
+    # se la percentila, sesgando el hv_rank de forma sistematica.
+    for i in range(window, len(log_rets) + 1):
         hv = float(np.std(log_rets[i - window:i]) * math.sqrt(252))
         hvs.append(hv)
     return hvs
@@ -398,6 +415,7 @@ class OptionLeg:
     bid: Optional[float] = None         # bid real del contrato (solo con cadena de mercado)
     ask: Optional[float] = None         # ask real del contrato (solo con cadena de mercado)
     iv: Optional[float] = None          # IV real del contrato (solo con cadena de mercado)
+    chain_key: Optional[int] = None     # clave de dte_map usada al resolver el vencimiento
 
     def net_premium(self):
         mult = -1 if self.action == "BUY" else 1
@@ -550,9 +568,11 @@ def _derive_metrics(legs, S, T, r, sigma):
 
     # Monte Carlo log-normal: PoP y valor esperado (EV)
     n_sims = 10000
-    np.random.seed(42)
+    # Generador LOCAL: np.random.seed() reseteaba el estado global de numpy en
+    # cada build de estrategia, afectando a cualquier otro consumidor del proceso.
+    _rng = np.random.default_rng(42)
     drift = (r - 0.5 * sigma ** 2) * T
-    diffusion = sigma * math.sqrt(T) * np.random.randn(n_sims)
+    diffusion = sigma * math.sqrt(T) * _rng.standard_normal(n_sims)
     final_prices = S * np.exp(drift + diffusion)
 
     pnl_sum = 0.0
@@ -627,9 +647,9 @@ def _mixed_expiry_metrics(legs, S, r, sigma):
     # Monte Carlo log-normal a T_short valuando igual que el payoff (2K sims:
     # cada una llama bs_price escalar por pata larga, 10K seria innecesariamente caro)
     n_sims = 2000
-    np.random.seed(42)
+    _rng = np.random.default_rng(42)     # generador local (ver _derive_metrics)
     drift = (r - 0.5 * sigma ** 2) * T_short
-    diffusion = sigma * math.sqrt(T_short) * np.random.randn(n_sims)
+    diffusion = sigma * math.sqrt(T_short) * _rng.standard_normal(n_sims)
     sim_pnls = [pnl_at_short_expiry(float(fp)) for fp in S * np.exp(drift + diffusion)]
     prob_profit = round(sum(1 for p in sim_pnls if p > 0) / n_sims * 100, 1)
     expected_value = (sum(sim_pnls) / n_sims) * 100
@@ -702,6 +722,7 @@ def _apply_market_pricing(strat, market, S, T, r, sigma):
     # (fecha de vencimiento) es el real de la cadena.
     for leg in strat.legs:
         target = leg.dte or strat.dte
+        leg.chain_key = market.resolve_key(target)
         real_dte = market.real_dte(target)
         if real_dte and real_dte > 0:
             leg.dte = int(real_dte)
@@ -718,12 +739,43 @@ def _apply_market_pricing(strat, market, S, T, r, sigma):
     for leg in strat.legs:
         # Cada pata busca precio en la cadena de SU vencimiento (calendar: la pata
         # larga se valua en su propio expiry, no en el corto)
-        res = market.lookup(leg.dte or strat.dte, leg.right, leg.strike)
+        res = market.lookup(leg.dte or strat.dte, leg.right, leg.strike, key=leg.chain_key)
         if res is None:
             return strat   # falta liquidez en alguna pata -> conservar teorico
         real_strike, mid, half_spread, iv_leg, bid, ask = res
         reals.append((leg, real_strike, mid, iv_leg, bid, ask))
         total_half_spread += half_spread * leg.qty
+
+    # El snap no puede COLAPSAR la estructura: en cadenas de paso ancho (strikes
+    # cada $10 sobre un subyacente de ~$100) dos patas distintas pueden caer en
+    # el mismo strike real. Un bull call 100/105 se vuelve BUY C100 + SELL C100:
+    # payoff 0 en todo el rango, pero max_loss=0 dispara risk_reward=99 y la
+    # "estrategia" (que solo paga spread) entra al top. Un iron condor puede
+    # perder un ala entera y quedar como otra cosa. Si pasa, pricing teorico.
+    snapped = [(leg.right, rs) for leg, rs, _, _, _, _ in reals]
+    if len(set(snapped)) != len(snapped):
+        return strat
+    # y el orden relativo de strikes por tipo tiene que conservarse
+    for right in ("C", "P"):
+        before = [leg.strike for leg, *_ in reals if leg.right == right]
+        after = [rs for leg, rs, *_ in reals if leg.right == right]
+        if [i for i, _ in sorted(enumerate(before), key=lambda t: t[1])] != \
+           [i for i, _ in sorted(enumerate(after), key=lambda t: t[1])]:
+            return strat
+
+    # La descripcion cita los strikes TEORICOS y nunca se regeneraba (solo el
+    # calendar): tras el snap el header decia "Vende Put $95/Call $105" mientras
+    # la tabla de patas y la orden para el broker mostraban otros. Como todas las
+    # descripciones formatean el strike como ${x:.0f}, se sustituye por texto —
+    # solo si los redondeos de origen son unicos (si no, no se toca).
+    _orig = [(leg.strike, rs) for leg, rs, _, _, _, _ in reals]
+    _keys = [f"${o:.0f}" for o, _ in _orig]
+    if strat.description and len(set(_keys)) == len(_keys):
+        desc = strat.description
+        for (o, nw), k in zip(_orig, _keys):
+            if abs(o - nw) >= 0.005:
+                desc = desc.replace(k, f"${nw:.0f}")
+        strat.description = desc
 
     # Todas las patas tienen precio real: aplicar (snapear strike al contrato real
     # para que premium y strike correspondan al mismo contrato)
@@ -1385,7 +1437,11 @@ def _score_strategy(strat, signal_type, iv_regime, backtest_outcomes):
                 if bias == "bullish" and o.get("avg_return", 0) > 0:
                     score += wr * 10
                 elif bias == "bearish" and o.get("avg_return", 0) < 0:
-                    score += wr * 10
+                    # (1 - wr): win_rate es la fraccion de retornos POSITIVOS, asi
+                    # que escalar por wr premiaba a la evidencia bajista MAS DEBIL
+                    # (historia con avg -6% y wr 20% puntuaba menos que una de -0.2%
+                    # con wr 49%).
+                    score += (1 - wr) * 10
                 elif bias == "neutral":
                     score += 5 + wr * 5
                 break
