@@ -240,7 +240,9 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   `display:none` y `update()`/`updateEtf()` los muestran solo cuando `total>0` — sin header
   flotando sobre el spinner. `.tab-loading` es una tarjeta (surface + borde + min-height) usada
   por todos los tabs.
-- Counters bar breaks down by signal_label: Compra, Venta, Compra Inminente, Venta Inminente, Virando a Compra/Venta, Zona Extrema, Neutral (only shown if count > 0)
+- **La barra de contadores por signal_label ya NO existe** (se retiró del DOM). Su cálculo quedó vivo como
+  código muerto en `_renderStockList`/`_renderEtfList` hasta 2026-09; de esos contadores solo sobrevive `total`,
+  que decide si se muestra el header de la tabla.
 - Thesis includes: signal label + direction, indicator status (MACD hist, RSI level, Koncorde vs media), moving averages (SMA200/50/20 + golden/death cross), institutional flow (Koncorde azul), target with consistent direction, fundamentals
 - Portfolio "Composicion por Tipo" and "Distribucion por Sector" sections removed
 - **Theme: "Cobalto Suizo" (light)** — white surfaces on warm-grey bg (#f4f4f1), cobalt accent (#2456e6),

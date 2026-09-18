@@ -5201,22 +5201,9 @@ function _renderStockList(data){
     document.getElementById("next-update").textContent=next.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
 
     let entries=data.results;
-    let buy=0,sell=0,buyNear=0,sellNear=0,turnBuy=0,turnSell=0,zone=0,neutral=0,nodata=0,total=Object.keys(entries).length;
-    for(let s in entries){
-      let r=entries[s];
-      if(!r){nodata++;continue;}
-      if(r.signal==='BUY')buy++;
-      else if(r.signal==='SELL')sell++;
-      else{
-        let l=r.signal_label||'';
-        if(l.includes('INMINENTE')&&l.includes('COMPRA'))buyNear++;
-        else if(l.includes('INMINENTE')&&l.includes('VENTA'))sellNear++;
-        else if(l.includes('VIRANDO')&&l.includes('COMPRA'))turnBuy++;
-        else if(l.includes('VIRANDO')&&l.includes('VENTA'))turnSell++;
-        else if(l.includes('SOBREVENTA')||l.includes('SOBRECOMPRA'))zone++;
-        else neutral++;
-      }
-    }
+    // (la barra de contadores por label se retiro del DOM; solo queda `total`,
+    // que decide si se muestra el header de la tabla)
+    let total=Object.keys(entries).length;
 
     renderTop3(data.top3);
 
@@ -5456,7 +5443,9 @@ function _getEtfSortVal(r,col){
   switch(col){
     case 'sym':return r.symbol||'';
     case 'price':return r.price||0;
-    case 'signal':return r.signal==='BUY'?2:(r.signal==='SELL'?1:0);
+    // Mismos 7 niveles que _getSortVal: con BUY/SELL/otro, INMINENTE, VIRANDO
+    // y NEUTRAL caian todos en el mismo bucket y ordenar por Señal no separaba nada
+    case 'signal':{let l=r.signal_label||'';if(r.signal==='BUY')return l.includes('FUERTE')?7:6;if(r.signal==='SELL')return l.includes('FUERTE')?5:4;if(l.includes('INMINENTE'))return 3;if(l.includes('VIRANDO'))return 2;return 1;}
     case 'strength':return r.strength||0;
     case 'sma200':return mas.sma200_val!=null&&r.price?((r.price-mas.sma200_val)/mas.sma200_val*100):null;
     case 'sma100':return mas.sma100_val!=null&&r.price?((r.price-mas.sma100_val)/mas.sma100_val*100):null;
@@ -5663,23 +5652,13 @@ function updateEtf(){
 }
 function _renderEtfList(data){
   {
+    // preservar el scroll como hace _renderStockList: sin esto la tabla de ETFs
+    // saltaba al tope en cada refresco de 5 min
+    let scrollY=window.scrollY;
     let entries=data.results;
-    let buy=0,sell=0,buyNear=0,sellNear=0,turnBuy=0,turnSell=0,zone=0,neutral=0,nodata=0,total=Object.keys(entries).length;
-    for(let s in entries){
-      let r=entries[s];
-      if(!r){nodata++;continue;}
-      if(r.signal==='BUY')buy++;
-      else if(r.signal==='SELL')sell++;
-      else{
-        let l=r.signal_label||'';
-        if(l.includes('INMINENTE')&&l.includes('COMPRA'))buyNear++;
-        else if(l.includes('INMINENTE')&&l.includes('VENTA'))sellNear++;
-        else if(l.includes('VIRANDO')&&l.includes('COMPRA'))turnBuy++;
-        else if(l.includes('VIRANDO')&&l.includes('VENTA'))turnSell++;
-        else if(l.includes('SOBREVENTA')||l.includes('SOBRECOMPRA'))zone++;
-        else neutral++;
-      }
-    }
+    // (la barra de contadores por label se retiro del DOM; solo queda `total`,
+    // que decide si se muestra el header de la tabla)
+    let total=Object.keys(entries).length;
 
     // Top 3 ETF recommendations
     renderEtfTop3(data.top3);
@@ -5803,6 +5782,7 @@ function _renderEtfList(data){
         if(this.open)renderEtfDetailCharts(i,s,_etfPeriods[i]||'1Y');else destroyEtfDetailCharts(i);
       });
     });
+    requestAnimationFrame(()=>{window.scrollTo(0,scrollY);});
     _syncNames();
   }
 }
@@ -7375,6 +7355,23 @@ def api_etf_data():
 
 intraday_lock = threading.Lock()
 intraday_cache = {}  # {(symbol, period): {"data": ..., "ts": float}}
+_INTRADAY_CACHE_MAX = 400
+
+
+def _purge_intraday_cache(ttl):
+    """Descarta entradas vencidas y acota el tamaño del cache.
+
+    /api/bars/<symbol>/<period> acepta cualquier simbolo, y cada entrada guarda
+    OHLC + 4 series de indicadores: sin purga, un cliente puede hacerlo crecer
+    sin techo pidiendo tickers arbitrarios.
+    """
+    now = time.time()
+    for k in [k for k, v in intraday_cache.items() if now - v.get("ts", 0) > ttl]:
+        intraday_cache.pop(k, None)
+    if len(intraday_cache) > _INTRADAY_CACHE_MAX:
+        for k in sorted(intraday_cache, key=lambda k: intraday_cache[k].get("ts", 0)
+                        )[:len(intraday_cache) - _INTRADAY_CACHE_MAX]:
+            intraday_cache.pop(k, None)
 
 
 def _build_ohlc(df):
@@ -7602,6 +7599,7 @@ def api_bars(symbol, period):
     # fuente se recuperara al instante siguiente.
     if result.get("ohlc"):
         intraday_cache[cache_key] = {"data": result, "ts": time.time()}
+        _purge_intraday_cache(300)
     return Response(to_json(result), mimetype="application/json")
 
 

@@ -259,6 +259,13 @@ def _simulate_long(closes, entry_idx, sl_pct, tp_pct, max_days, cost_pct=0.0):
     Simula trade long:
       Entry: close[entry_idx]
       Exit: primero de stop-loss, take-profit, o max_days
+
+    LIMITACION CONOCIDA (no es un bug, pero conviene tenerla presente al leer la
+    confianza): SL y TP se evaluan SOLO sobre cierres, mientras que el bracket
+    real de bot.py dispara intradia. Un stop tocado durante la rueda que cierra
+    por encima no cuenta aca, y un gap se "llena" al cierre en vez de en el
+    nivel. O sea: la estadistica mide una ejecucion algo distinta de la real —
+    los `high`/`low` estan en el df si alguna vez se quiere afinar.
     """
     n = len(closes)
     # Sin ninguna barra futura no hay trade que medir: devolverlo cerraba la

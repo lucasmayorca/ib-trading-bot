@@ -40,9 +40,10 @@ KONCORDE_STOCH_SMOOTH = 3
 KONCORDE_MEDIA_PERIOD = 21
 
 # === SENALES ===
-# Score minimo para generar senal (cada indicador aporta 0-1, total max 3)
-SIGNAL_MIN_SCORE_BUY = 2.0
-SIGNAL_MIN_SCORE_SELL = 2.0
+# (No hay umbral de score configurable: signals.py exige 3/3 condiciones para
+#  BUY/SELL. SIGNAL_MIN_SCORE_BUY/SELL existieron aca pero ningun modulo los
+#  leia — se quitaron en 2026-09 para que config.py no prometa una perilla
+#  que no mueve nada.)
 
 # Objetivo minimo (% de movimiento al target) para MOSTRAR una oportunidad en las
 # recomendaciones. No fuerza el objetivo (eso lo estima _compute_price_levels por
