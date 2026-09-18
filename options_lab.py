@@ -445,6 +445,7 @@ class Strategy:
     complexity: int = 1         # 1-3
     expected_value: float = 0.0     # EV en $ (media del Monte Carlo, neto de spread)
     market_priced: bool = False     # True si las patas se valuaron con precios reales de mercado
+    covered: bool = False           # incluye 100 acciones subyacentes (covered call / protective put)
     spread_cost: float = 0.0        # coste estimado de cruzar el spread bid/ask ($ por posicion)
     expiry: str = ""                # vencimiento principal YYYY-MM-DD (pata mas corta en calendar)
     expiry_estimated: bool = False  # True si la fecha es estimada (sin cadena real: viernes ~DTE)
@@ -472,12 +473,18 @@ def _strike_step(price):
         return 5.0
 
 
-def _compute_payoff(legs, price_range, per_share=True):
+def _compute_payoff(legs, price_range, per_share=True, stock_basis=None):
     """Calcula P&L para un rango de precios al vencimiento.
+
+    `stock_basis` modela las 100 acciones subyacentes de las estrategias
+    CUBIERTAS (covered call, protective put): sin ellas, la covered call era un
+    call desnudo con perdida ilimitada AL ALZA (imposible estando cubierta) y la
+    protective put —marcada bullish— rendia su maximo si la accion colapsaba.
+
     Returns list of {price, pnl}."""
     points = []
     for S in price_range:
-        pnl = 0.0
+        pnl = (S - stock_basis) if stock_basis is not None else 0.0
         for leg in legs:
             if leg.right == "C":
                 intrinsic = max(S - leg.strike, 0)
@@ -549,17 +556,20 @@ def _prob_between(S, lo, hi, T, sigma, r=0.05):
 #  STRATEGY BUILDERS
 # ══════════════════════════════════════════════════════════════
 
-def _derive_metrics(legs, S, T, r, sigma):
+def _derive_metrics(legs, S, T, r, sigma, covered=False):
     """Calcula payoff, PoP, EV, breakevens, capital y griegas a partir de los
     premiums YA asignados en cada pata. Reutilizado por _build_strategy (precios
-    teoricos) y por _apply_market_pricing (precios reales de mercado)."""
+    teoricos) y por _apply_market_pricing (precios reales de mercado).
+
+    `covered=True` agrega las 100 acciones subyacentes (covered call, protective
+    put): cambia payoff, PoP, EV y el capital, que pasa a incluir la compra."""
     # Net premium (positivo = credito, negativo = debito)
     net = sum(leg.net_premium() for leg in legs) / 100  # per-share
 
     # Payoff
     step = _strike_step(S)
     price_range = np.arange(S * 0.7, S * 1.3, step * 0.2)
-    payoff = _compute_payoff(legs, price_range)
+    payoff = _compute_payoff(legs, price_range, stock_basis=(S if covered else None))
 
     pnls = [p["pnl"] for p in payoff]
     max_profit = max(pnls) * 100
@@ -578,7 +588,7 @@ def _derive_metrics(legs, S, T, r, sigma):
     pnl_sum = 0.0
     profitable = 0
     for fp in final_prices:
-        pnl = 0.0
+        pnl = (fp - S) if covered else 0.0   # pata de acciones (ver _compute_payoff)
         for leg in legs:
             if leg.right == "C":
                 intrinsic = max(fp - leg.strike, 0)
@@ -595,7 +605,11 @@ def _derive_metrics(legs, S, T, r, sigma):
     expected_value = (pnl_sum / n_sims) * 100   # EV en $ por posicion (1 contrato)
 
     risk_reward = round(abs(max_profit / max_loss), 2) if max_loss != 0 else 99.0
-    capital = abs(max_loss) if max_loss < 0 else abs(net * 100)
+    if covered:
+        # capital real: las 100 acciones menos el credito cobrado (o mas el debito)
+        capital = S * 100 - net * 100
+    else:
+        capital = abs(max_loss) if max_loss < 0 else abs(net * 100)
 
     return {
         "net": net,
@@ -673,15 +687,18 @@ def _mixed_expiry_metrics(legs, S, r, sigma):
 
 
 def _build_strategy(name, name_es, legs, S, T, r, sigma, bias, dte,
-                    description="", complexity=1, iv_edge=""):
-    """Construye Strategy completa con payoff, greeks, breakevens, etc."""
+                    description="", complexity=1, iv_edge="", covered=False):
+    """Construye Strategy completa con payoff, greeks, breakevens, etc.
+
+    `covered=True` incluye las 100 acciones subyacentes en las metricas
+    (covered call / protective put)."""
     # Calcular premiums y greeks teoricos (Black-Scholes) para cada pata
     for leg in legs:
         leg.dte = dte
         leg.premium = bs_price(S, leg.strike, T, r, sigma, leg.right)
         leg.greeks_data = greeks(S, leg.strike, T, r, sigma, leg.right)
 
-    m = _derive_metrics(legs, S, T, r, sigma)
+    m = _derive_metrics(legs, S, T, r, sigma, covered=covered)
 
     strat = Strategy(
         name=name,
@@ -696,6 +713,7 @@ def _build_strategy(name, name_es, legs, S, T, r, sigma, bias, dte,
         prob_profit=m["prob_profit"],
         risk_reward=m["risk_reward"],
         capital_required=m["capital"],
+        covered=covered,
         net_premium=m["net_premium"],
         greeks_agg=m["greeks_agg"],
         payoff_points=m["payoff"],
@@ -793,7 +811,7 @@ def _apply_market_pricing(strat, market, S, T, r, sigma):
     if len({leg.dte for leg in strat.legs}) > 1:
         m = _mixed_expiry_metrics(strat.legs, S, r, sigma)
     else:
-        m = _derive_metrics(strat.legs, S, T, r, sigma)
+        m = _derive_metrics(strat.legs, S, T, r, sigma, covered=strat.covered)
     spread_cost = round(total_half_spread * 100, 2)   # $ por posicion (round trip aprox una via)
 
     strat.max_profit = m["max_profit"]
@@ -1118,6 +1136,17 @@ def calendar_spread(S, T_short, T_long, r, sigma, dte_short, dte_long):
     # Prob profit: price stays near K
     prob_profit = round(_prob_between(S, K * 0.97, K * 1.03, T_short, sigma) * 100, 1)
 
+    # EV por Monte Carlo sobre el MISMO payoff (interpolado): sin esto el
+    # calendar teorico quedaba con expected_value=0 —la UI mostraba "Valor Esp.
+    # $+0"— y se llevaba 0 de los 15 puntos de EV del score mientras el resto de
+    # las estrategias teoricas si lo tenian: sesgo sistematico en su contra.
+    _rng = np.random.default_rng(42)
+    sims = S * np.exp((r - 0.5 * sigma ** 2) * T_short
+                      + sigma * math.sqrt(T_short) * _rng.standard_normal(2000))
+    px = [p["price"] for p in payoff]
+    py = [p["pnl"] for p in payoff]
+    expected_value = float(np.mean(np.interp(sims, px, py))) * 100
+
     return Strategy(
         name="Calendar Spread",
         name_es="Calendar Spread",
@@ -1129,11 +1158,12 @@ def calendar_spread(S, T_short, T_long, r, sigma, dte_short, dte_long):
         max_loss=round(max_loss, 2),
         breakevens=breakevens,
         prob_profit=prob_profit,
-        risk_reward=round(abs(max_profit / max_loss), 2) if max_loss != 0 else 0,
+        risk_reward=round(abs(max_profit / max_loss), 2) if max_loss != 0 else 99.0,
+        expected_value=round(expected_value, 2),
         capital_required=round(capital, 2),
         net_premium=round(net, 2),
         greeks_agg=greeks_agg,
-        payoff_points=payoff,
+        payoff_points=_per_position(payoff),
         complexity=3,
         iv_edge="Excelente para capturar IV alta en corto plazo vs IV baja largo plazo",
     )
@@ -1146,8 +1176,9 @@ def protective_put(S, T, r, sigma, dte, otm_pct=0.05):
     strat = _build_strategy(
         "Protective Put", "Put Protectora",
         legs, S, T, r, sigma, "bullish", dte,
-        f"Comprar Put ${K:.0f} como seguro. Protege cartera con piso en ${K:.0f}.",
+        f"Comprar Put ${K:.0f} como seguro sobre 100 acciones. Piso en ${K:.0f}.",
         complexity=1,
+        covered=True,
     )
     strat.description += " Requiere tener las acciones."
     return strat
@@ -1160,9 +1191,10 @@ def covered_call(S, T, r, sigma, dte, otm_pct=0.04):
     strat = _build_strategy(
         "Covered Call", "Call Cubierta",
         legs, S, T, r, sigma, "neutral", dte,
-        f"Vender Call ${K:.0f} contra acciones. Cobra prima, limita subida. Income strategy.",
+        f"Vender Call ${K:.0f} contra 100 acciones. Cobra prima, limita la subida.",
         complexity=1,
         iv_edge="Mejor con IV alta (cobra mas prima)",
+        covered=True,
     )
     return strat
 
