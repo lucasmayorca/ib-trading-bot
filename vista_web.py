@@ -6128,6 +6128,8 @@ function renderForecastBar(price,pl,isBear){
   return html;
 }
 
+// Moneda con el signo ANTES del simbolo: '$'+_n(-450) daba "$-450"
+function _money(v,dec){v=v||0;return (v<0?'-$':'$')+_n(Math.abs(v),dec===undefined?0:dec);}
 function _labelIsBearish(label){
   // Espejo de _label_is_bearish (Python): VENTA* y SOBRECOMPRA son lecturas bajistas.
   // OJO: "SOBREVENTA" contiene "VENTA" pero es la lectura ALCISTA (RSI < 35).
@@ -6283,7 +6285,7 @@ function renderStrategies(d){
         '</div>'+
         '<div class="olab-strat-metrics">'+
           '<div class="olab-strat-metric"><div class="val" style="color:'+mpColor+'">$'+((s.max_profit||0)>=0?'+':'')+_n(s.max_profit,0)+'</div><div class="lbl">Max Profit</div></div>'+
-          '<div class="olab-strat-metric"><div class="val" style="color:'+mlColor+'">$'+_n(s.max_loss,0)+'</div><div class="lbl">Max Loss</div></div>'+
+          '<div class="olab-strat-metric"><div class="val" style="color:'+mlColor+'">'+_money(s.max_loss)+'</div><div class="lbl">Max Loss</div></div>'+
           '<div class="olab-strat-metric"><div class="val">'+_n(s.prob_profit,0)+'%</div><div class="lbl">Prob. Profit</div></div>'+
           (ev!=null?'<div class="olab-strat-metric"><div class="val" style="color:'+evColor+'">$'+(ev>=0?'+':'')+_n(ev,0)+'</div><div class="lbl">Valor Esp.</div></div>':'')+
           '<div class="olab-strat-metric"><div class="val">'+_n(s.risk_reward,1)+'x</div><div class="lbl">R/R</div></div>'+
@@ -6604,7 +6606,7 @@ function drawPayoffChart(idx){
   ctx.fillStyle='#0b7a4b';
   ctx.fillText('Max +$'+_n(strat.max_profit,0),4,y(maxP)+12);
   ctx.fillStyle='#c22436';
-  ctx.fillText('Max $'+_n(strat.max_loss,0),4,y(minP)-4);
+  ctx.fillText('Max '+_money(strat.max_loss),4,y(minP)-4);
 }
 
 // Evolucion historica del precio del paquete (todas las patas juntas, ver
@@ -6787,7 +6789,7 @@ function toggleOlabMulti(idx,sym){
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle)">'+s.name+' <span style="color:var(--muted)">'+(s.expiry?(s.expiry_estimated?'&asymp;':'')+olabFmtExp(s.expiry)+' &middot; ':'')+s.dte+'d</span></td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:center"><span class="olab-bias '+biasCls+'">'+biasLbl+'</span></td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#0b7a4b">$'+_n(s.max_profit,0)+'</td>'+
-        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#c22436">$'+_n(s.max_loss,0)+'</td>'+
+        '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;color:#c22436">'+_money(s.max_loss)+'</td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right">'+_n(s.prob_profit,0)+'%</td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right">'+_n(s.risk_reward,1)+'x</td>'+
         '<td style="padding:5px 8px;border-bottom:1px solid var(--border-subtle);text-align:right;font-weight:700">'+_n(s.score,0)+'</td>'+
@@ -9274,10 +9276,15 @@ def build_trades_history(trades_file=None):
         expira sin valor pesa -100% igual que una accion de $80k que hace
         +10%, y el panel mostraba "-40.5%" al lado de un P&L de +$184k.
         """
-        cap = sum(t["invested"] for t in subset if t["invested"] > 0)
+        # Numerador y denominador sobre EL MISMO subconjunto: sumar el P&L de
+        # todos pero el capital solo de los que tienen invested>0 mezclaba
+        # trades sin base de capital (posible en el path `estimated`) en el
+        # numerador y no en el divisor.
+        con_capital = [t for t in subset if t["invested"] > 0]
+        cap = sum(t["invested"] for t in con_capital)
         if cap <= 0:
             return 0.0
-        return round(sum(t["pnl"] for t in subset) / cap * 100, 2)
+        return round(sum(t["pnl"] for t in con_capital) / cap * 100, 2)
     total_pnl = sum(t["pnl"] for t in completed_trades)
     best = max(completed_trades, key=lambda x: x["pnl"]) if completed_trades else None
     worst = min(completed_trades, key=lambda x: x["pnl"]) if completed_trades else None
