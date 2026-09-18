@@ -3801,11 +3801,19 @@ function fpx(r){
   let o=r.chart?r.chart.ohlc:null;
   if(o&&o.length>=2){
     let prev=o[o.length-2].close,last=o[o.length-1].close;
-    if(prev){
-      let d=(last-prev)/prev*100;
+    // El precio grande puede ser la cotizacion EN VIVO (get_rt_price pisa
+    // sig["price"] con TWS conectada), mientras que ohlc solo tiene cierres
+    // confirmados (_drop_partial_bar saca la vela de hoy). Comparar los dos
+    // ultimos cierres mostraba la variacion COMPLETA DE AYER al lado de un
+    // precio de ahora: dos numeros de dias distintos en la misma celda.
+    let live=(last!=null&&Math.abs(r.price-last)>1e-9);
+    let base=live?last:prev;
+    let ref=live?r.price:last;
+    if(base){
+      let d=(ref-base)/base*100;
       let col=d>=0?'var(--buy)':'var(--sell)';
       sub='<small style="color:'+col+'">'+(d>=0?'+':'')+d.toFixed(2)+'%</small>';
-      t+=' · '+(d>=0?'+':'')+d.toFixed(2)+'% vs cierre anterior';
+      t+=' · '+(d>=0?'+':'')+d.toFixed(2)+'% vs '+(live?'ultimo cierre confirmado':'cierre anterior');
     }
   }
   return'<span class="px-cell" title="'+t+'"><b>$'+r.price.toFixed(2)+'</b>'+sub+'</span>';
@@ -7323,130 +7331,140 @@ def index():
 
 @flask_app.route("/api/data")
 def api_data():
+    # El lock cubre SOLO el snapshot del cache. Antes envolvia tambien
+    # compute_top3 (que dispara _fetch_fundamentals: varias requests HTTP
+    # por simbolo al vencer el TTL) y la serializacion de ~100 simbolos con
+    # 5 años de series: run_analysis, que necesita el lock milisegundos por
+    # simbolo, quedaba frenado decenas de segundos en cada request.
     with update_lock:
-        results = {}
-        for sym, sig in analysis_cache.items():
-            if sig is None:
-                results[sym] = None
-                continue
+        snapshot = dict(analysis_cache)
+        lu = last_update_time
+    results = {}
+    for sym, sig in snapshot.items():
+        if sig is None:
+            results[sym] = None
+            continue
 
-            rt_price, mkt = get_rt_price(sym)
-            price = rt_price if rt_price else sig.get("price", 0)
+        rt_price, mkt = get_rt_price(sym)
+        price = rt_price if rt_price else sig.get("price", 0)
 
-            entry = {
-                "signal": sig["signal"],
-                "signal_label": sig.get("signal_label", sig["signal"]),
-                "strength": float(sig.get("strength", 0)),
-                "conditions_met": int(sig.get("conditions_met", 0)),
-                "macd_ok": bool(sig.get("macd_ok", False)),
-                "rsi_ok": bool(sig.get("rsi_ok", False)),
-                "konc_ok": bool(sig.get("konc_ok", False)),
-                "macd_detail": sig.get("macd_detail", ""),
-                "rsi_detail": sig.get("rsi_detail", ""),
-                "konc_detail": sig.get("konc_detail", ""),
-                "price": float(price),
-                "dollar_vol": float(sig.get("dollar_vol", 0)),
-                "values": sig.get("values", {}),
-                "chart": sig.get("chart"),
-                "pattern": sig.get("pattern"),
-                "fib": sig.get("fib"),
-                "candles": sig.get("candles"),
-            }
+        entry = {
+            "signal": sig["signal"],
+            "signal_label": sig.get("signal_label", sig["signal"]),
+            "strength": float(sig.get("strength", 0)),
+            "conditions_met": int(sig.get("conditions_met", 0)),
+            "macd_ok": bool(sig.get("macd_ok", False)),
+            "rsi_ok": bool(sig.get("rsi_ok", False)),
+            "konc_ok": bool(sig.get("konc_ok", False)),
+            "macd_detail": sig.get("macd_detail", ""),
+            "rsi_detail": sig.get("rsi_detail", ""),
+            "konc_detail": sig.get("konc_detail", ""),
+            "price": float(price),
+            "dollar_vol": float(sig.get("dollar_vol", 0)),
+            "values": sig.get("values", {}),
+            "chart": sig.get("chart"),
+            "pattern": sig.get("pattern"),
+            "fib": sig.get("fib"),
+            "candles": sig.get("candles"),
+        }
 
-            # Backtest metrics
-            bt = sig.get("backtest", {})
-            entry["confidence"] = bt.get("confidence", 0)
-            entry["buy_avg_return"] = bt.get("buy_avg_return")
-            entry["sell_avg_return"] = bt.get("sell_avg_return")
-            entry["buy_count"] = bt.get("buy_count", 0)
-            entry["sell_count"] = bt.get("sell_count", 0)
+        # Backtest metrics
+        bt = sig.get("backtest", {})
+        entry["confidence"] = bt.get("confidence", 0)
+        entry["buy_avg_return"] = bt.get("buy_avg_return")
+        entry["sell_avg_return"] = bt.get("sell_avg_return")
+        entry["buy_count"] = bt.get("buy_count", 0)
+        entry["sell_count"] = bt.get("sell_count", 0)
 
-            # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
-            entry["ext"] = enrichment.get_ext(sym)
+        # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
+        entry["ext"] = enrichment.get_ext(sym)
 
-            bid = mkt.get("delayed_bid") or mkt.get("bid")
-            ask = mkt.get("delayed_ask") or mkt.get("ask")
-            vol = mkt.get("delayed_volume") or mkt.get("volume")
-            if bid: entry["bid"] = float(bid)
-            if ask: entry["ask"] = float(ask)
-            if vol: entry["volume"] = float(vol)
+        bid = mkt.get("delayed_bid") or mkt.get("bid")
+        ask = mkt.get("delayed_ask") or mkt.get("ask")
+        vol = mkt.get("delayed_volume") or mkt.get("volume")
+        if bid: entry["bid"] = float(bid)
+        if ask: entry["ask"] = float(ask)
+        if vol: entry["volume"] = float(vol)
 
-            results[sym] = entry
+        results[sym] = entry
 
-        top3 = compute_top3(analysis_cache)
+    top3 = compute_top3(snapshot)
 
-        return Response(to_json({
-            "results": results,
-            "last_update": last_update_time,
-            "signals_as_of": next((s.get("as_of") for s in analysis_cache.values()
-                                   if s and s.get("as_of")), ""),
-            "port": config.IB_PORT,
-            "top3": top3,
-        }), mimetype="application/json")
+    return Response(to_json({
+        "results": results,
+        "last_update": lu,
+        "signals_as_of": next((s.get("as_of") for s in snapshot.values()
+                               if s and s.get("as_of")), ""),
+        "port": config.IB_PORT,
+        "top3": top3,
+    }), mimetype="application/json")
 
 
 @flask_app.route("/api/etf-data")
 def api_etf_data():
+    # idem api_data: el lock cubre solo el snapshot, no la red ni la serializacion
     with etf_update_lock:
-        results = {}
-        for sym, sig in etf_analysis_cache.items():
-            if sig is None:
-                results[sym] = None
-                continue
+        snapshot = dict(etf_analysis_cache)
+        lu = etf_last_update_time
+    results = {}
+    for sym, sig in snapshot.items():
+        if sig is None:
+            results[sym] = None
+            continue
 
-            rt_price, mkt = get_etf_rt_price(sym)
-            price = rt_price if rt_price else sig.get("price", 0)
+        rt_price, mkt = get_etf_rt_price(sym)
+        price = rt_price if rt_price else sig.get("price", 0)
 
-            entry = {
-                "signal": sig["signal"],
-                "signal_label": sig.get("signal_label", sig["signal"]),
-                "strength": float(sig.get("strength", 0)),
-                "conditions_met": int(sig.get("conditions_met", 0)),
-                "macd_ok": bool(sig.get("macd_ok", False)),
-                "rsi_ok": bool(sig.get("rsi_ok", False)),
-                "konc_ok": bool(sig.get("konc_ok", False)),
-                "macd_detail": sig.get("macd_detail", ""),
-                "rsi_detail": sig.get("rsi_detail", ""),
-                "konc_detail": sig.get("konc_detail", ""),
-                "price": float(price),
-                "dollar_vol": float(sig.get("dollar_vol", 0)),
-                "values": sig.get("values", {}),
-                "chart": sig.get("chart"),
-                "pattern": sig.get("pattern"),
-                "fib": sig.get("fib"),
-                "candles": sig.get("candles"),
-            }
+        entry = {
+            "signal": sig["signal"],
+            "signal_label": sig.get("signal_label", sig["signal"]),
+            "strength": float(sig.get("strength", 0)),
+            "conditions_met": int(sig.get("conditions_met", 0)),
+            "macd_ok": bool(sig.get("macd_ok", False)),
+            "rsi_ok": bool(sig.get("rsi_ok", False)),
+            "konc_ok": bool(sig.get("konc_ok", False)),
+            "macd_detail": sig.get("macd_detail", ""),
+            "rsi_detail": sig.get("rsi_detail", ""),
+            "konc_detail": sig.get("konc_detail", ""),
+            "price": float(price),
+            "dollar_vol": float(sig.get("dollar_vol", 0)),
+            "values": sig.get("values", {}),
+            "chart": sig.get("chart"),
+            "pattern": sig.get("pattern"),
+            "fib": sig.get("fib"),
+            "candles": sig.get("candles"),
+        }
 
-            bt = sig.get("backtest", {})
-            entry["confidence"] = bt.get("confidence", 0)
-            entry["buy_avg_return"] = bt.get("buy_avg_return")
-            entry["sell_avg_return"] = bt.get("sell_avg_return")
-            entry["buy_count"] = bt.get("buy_count", 0)
-            entry["sell_count"] = bt.get("sell_count", 0)
+        bt = sig.get("backtest", {})
+        entry["confidence"] = bt.get("confidence", 0)
+        entry["buy_avg_return"] = bt.get("buy_avg_return")
+        entry["sell_avg_return"] = bt.get("sell_avg_return")
+        entry["buy_count"] = bt.get("buy_count", 0)
+        entry["sell_count"] = bt.get("sell_count", 0)
 
-            # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
-            entry["ext"] = enrichment.get_ext(sym)
+        # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
+        entry["ext"] = enrichment.get_ext(sym)
 
-            bid = mkt.get("delayed_bid") or mkt.get("bid")
-            ask = mkt.get("delayed_ask") or mkt.get("ask")
-            vol = mkt.get("delayed_volume") or mkt.get("volume")
-            if bid: entry["bid"] = float(bid)
-            if ask: entry["ask"] = float(ask)
-            if vol: entry["volume"] = float(vol)
+        bid = mkt.get("delayed_bid") or mkt.get("bid")
+        ask = mkt.get("delayed_ask") or mkt.get("ask")
+        vol = mkt.get("delayed_volume") or mkt.get("volume")
+        if bid: entry["bid"] = float(bid)
+        if ask: entry["ask"] = float(ask)
+        if vol: entry["volume"] = float(vol)
 
-            results[sym] = entry
+        results[sym] = entry
 
-        etf_top3 = compute_top3(etf_analysis_cache,
-                                min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None))
+    etf_top3 = compute_top3(snapshot,
+                            min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None))
 
-        return Response(to_json({
-            "results": results,
-            "last_update": etf_last_update_time,
-            "signals_as_of": next((s.get("as_of") for s in etf_analysis_cache.values()
-                                   if s and s.get("as_of")), ""),
-            "port": config.IB_PORT,
-            "top3": etf_top3,
-        }), mimetype="application/json")
+    return Response(to_json({
+        "results": results,
+        "last_update": lu,
+        "signals_as_of": next((s.get("as_of") for s in snapshot.values()
+                               if s and s.get("as_of")), ""),
+        "port": config.IB_PORT,
+        "top3": etf_top3,
+    }), mimetype="application/json")
 
 
 intraday_lock = threading.Lock()

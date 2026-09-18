@@ -283,11 +283,16 @@ def _pat_double_triple(highs, lows, closes, piv_h, piv_l, atr):
         # separacion minima entre toques y span total <= ~1 año (mas que eso
         # es un rango lateral, no un doble techo)
         group = [g for g in group if last_i - g[0] <= 250]
+        # Podar de ATRAS hacia adelante: la recencia de la figura se valida con
+        # el ultimo pivote, asi que ese es el que no se puede descartar. Podando
+        # hacia adelante (toques en 100/125/140 -> se caia el 140) la figura se
+        # reportaba como viva pero sus toques, nivel y span eran de swings
+        # hasta ~19 ruedas mas viejos que el que justificaba esa recencia.
         pruned = []
-        for g in group:
-            if not pruned or (g[0] - pruned[-1][0]) >= 20:
+        for g in reversed(group):
+            if not pruned or (pruned[-1][0] - g[0]) >= 20:
                 pruned.append(g)
-        group = pruned
+        group = list(reversed(pruned))
         if len(group) < 2:
             return None
         triple = len(group) >= 3
@@ -833,14 +838,22 @@ def _zigzag(highs, lows, min_swing, window=5):
 def fibonacci(highs, lows, closes, atr, lookback=250, dates=None):
     """Retrocesos y extensiones del SWING DOMINANTE reciente.
 
-    Regla (simple, deterministica y auditable a ojo en el chart): el fib se
-    traza entre el MAXIMO y el MINIMO del grafico reciente, en el orden en que
-    ocurrieron. La ventana arranca en `lookback` (~1 año, la vista por defecto)
-    y se AGRANDA mientras alguno de los dos extremos caiga pegado al borde
-    izquierdo: si el maximo esta en el borde, el impulso real empezo antes y
-    recortarlo ahi anclaria a mitad de una tendencia (bug TEAM/USO/SLV — el
-    zigzag fragmentaba el movimiento y elegia un tramo interno, dejando afuera
-    el techo que se ve a simple vista).
+    Regla (deterministica y auditable a ojo en el chart), en dos pasos:
+
+    1) TERMINAL: el maximo o el minimo de las ultimas `lookback` ruedas — el que
+       cierre el swing mas grande. Debe estar a <=150 ruedas para que el
+       retroceso siga VIVO.
+    2) ORIGEN: desde el terminal se camina hacia atras sobre TODO el historico
+       (5 años, SIN tope) hasta que el precio opero mas alla de ese nivel; el
+       origen es el extremo opuesto de ese tramo. Asi el ancla superior es un
+       techo estructural real, no un punto a mitad de la caida.
+
+    OJO — no volver a las iteraciones descartadas: ventana fija de 180 ruedas
+    (anclaba a mitad de la caida, TEAM $242), zigzag de pivotes mayores
+    (fragmentaba el impulso: USO $102->$142 ignorando $154.08), ventana
+    auto-expansiva por "extremo pegado al borde" (CPRT anclaba $50.11 en vez de
+    su techo real $64.38, 433 ruedas atras) y tope de 500 ruedas en la busqueda
+    del origen (TEAM anclaba $326 en vez de $483.13).
 
     Devuelve None si el swing no es relevante (< max(4·ATR, 8% del precio)), si
     el extremo final ya es viejo (>150 ruedas: el retroceso dejo de mandar) o
