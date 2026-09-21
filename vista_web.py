@@ -769,15 +769,22 @@ def audit_universe(cache, universe, label=""):
             problems.append(
                 f"{len(orphans)} simbolo(s) en el cache fuera del universo "
                 f"escaneado: {', '.join(orphans[:10])}")
-    ref = max((_analysis_as_of(d) for d in cache.values() if d), default="")
-    if ref:
+    # OJO: el corte es el MISMO que usa universe_items, no "distinto del cierre
+    # de referencia". Una pasada que cruza las 16:00 ET deja medio universo con
+    # el cierre de ayer de forma legitima: auditar contra la referencia exacta
+    # haria sonar la alarma todos los dias a la misma hora, y una alarma que
+    # grita siempre es una alarma que nadie mira. Se reporta solo lo que de
+    # hecho queda fuera del ranking — la ventana blanda la cubre el badge
+    # `as_of` de la tarjeta.
+    cutoff = _stale_as_of_cutoff(cache)
+    if cutoff:
         old_syms = sorted(
             f"{sym}@{_analysis_as_of(d)}"
-            for sym, d in cache.items() if d and _analysis_as_of(d) and _analysis_as_of(d) < ref)
+            for sym, d in cache.items() if _is_stale_analysis(d, cutoff))
         if old_syms:
             problems.append(
-                f"{len(old_syms)} analisis anteriores al cierre de referencia "
-                f"{ref}: {', '.join(old_syms[:10])}")
+                f"{len(old_syms)} analisis vencidos (anteriores al {cutoff}): "
+                f"{', '.join(old_syms[:10])}")
     if problems:
         tag = f"[AUDIT{':' + label if label else ''}]"
         for p in problems:

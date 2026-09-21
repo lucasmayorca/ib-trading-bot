@@ -88,9 +88,16 @@ def test_universe_items_ignora_los_aun_no_analizados():
 def test_audit_detecta_huerfano_y_foto_vieja():
     cache = {"SPY": mk_analysis("2026-09-18"), "USO": mk_analysis("2026-09-11")}
     problemas = vw.audit_universe(cache, ["SPY"])
-    assert len(problemas) == 2                       # huerfano + fecha vieja
+    assert len(problemas) == 2                       # huerfano + fecha vencida
     assert "USO" in problemas[0] and "USO" in problemas[1]
     assert vw.audit_universe({"SPY": mk_analysis("2026-09-18")}, ["SPY"]) == []
+
+
+def test_audit_no_grita_por_la_pasada_que_cruza_el_cierre():
+    """Una alarma que suena todos los dias a las 16:00 ET es una alarma que
+    nadie mira: el corte de la auditoria es el mismo que el del ranking."""
+    cache = {"A": mk_analysis("2026-09-18"), "B": mk_analysis("2026-09-17")}
+    assert vw.audit_universe(cache, ["A", "B"]) == []
 
 
 # ── 3. Direccion del label (trampa de subcadenas) ────────────────────
