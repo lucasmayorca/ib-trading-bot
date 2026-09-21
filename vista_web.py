@@ -16,7 +16,7 @@ from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -661,6 +661,58 @@ def _label_is_bearish(label):
     """
     label = label or ""
     return ("VENTA" in label and "SOBREVENTA" not in label) or "SOBRECOMPRA" in label
+
+
+def _analysis_as_of(sig):
+    """Fecha (YYYY-MM-DD) del cierre confirmado sobre el que corrio el analisis.
+
+    `analyze_symbol` la deja en `as_of`; el bridge del cloud no manda ese campo,
+    asi que se deriva de la ultima barra del chart — que es exactamente el mismo
+    cierre confirmado. Devuelve "" si no hay forma de saberlo.
+    """
+    if not sig:
+        return ""
+    a = sig.get("as_of")
+    if a:
+        return str(a)[:10]
+    ohlc = ((sig.get("chart") or {}).get("ohlc") or [])
+    if ohlc:
+        t = ohlc[-1].get("time")
+        if t:
+            return str(t)[:10]
+    return ""
+
+
+def _stale_as_of_cutoff(cache):
+    """Fecha limite: los analisis anteriores a esta ya no son comparables.
+
+    El cache esta indexado por simbolo y NO se purga solo: un simbolo que sale
+    del universo escaneado (un ETF que dejo de analizarse en el loop de
+    acciones, una tenencia cerrada que ya no se mergea en la watchlist) o que
+    falla su analisis conserva su ULTIMO snapshot bueno indefinidamente. Como
+    compute_top3 recorre el CACHE y no la watchlist que dibuja la tabla, esa
+    foto congelada seguia compitiendo en Top Recomendaciones — mismo precio,
+    misma señal y el mismo score, dia tras dia, sin aparecer en la tabla.
+
+    Devuelve "" (sin filtro) si ningun analisis trae fecha.
+    """
+    ref = max((_analysis_as_of(d) for d in cache.values() if d), default="")
+    if len(ref) != 10:
+        return ""
+    try:
+        cutoff = datetime.strptime(ref, "%Y-%m-%d") - timedelta(
+            days=getattr(config, "MAX_ANALYSIS_STALENESS_DAYS", 5))
+    except ValueError:
+        return ""
+    return cutoff.strftime("%Y-%m-%d")
+
+
+def _is_stale_analysis(data, cutoff):
+    """True si el analisis es anterior al corte (ver _stale_as_of_cutoff)."""
+    if not cutoff:
+        return False
+    a = _analysis_as_of(data)
+    return bool(a) and a < cutoff
 
 
 def _score_stock(sym, data, min_target_pct=None):
@@ -1774,9 +1826,15 @@ def compute_top3(cache, min_target_pct=None):
     via config.TOP_RECOMMENDATIONS; el nombre historico 'top3' se conserva).
     `min_target_pct` permite un piso de objetivo distinto (p.ej. ETFs usan 7%)."""
     top_n = getattr(config, "TOP_RECOMMENDATIONS", 3)
+    # Solo compiten los analisis del cierre mas reciente presente en el cache:
+    # un snapshot congelado (simbolo fuera del universo, analisis que fallo) no
+    # se puede recomendar como si fuera de hoy. Ver _stale_as_of_cutoff.
+    cutoff = _stale_as_of_cutoff(cache)
     scored = []
     for sym, data in cache.items():
         if data is None:
+            continue
+        if _is_stale_analysis(data, cutoff):
             continue
         score = _score_stock(sym, data, min_target_pct)
         if score is not None:
@@ -1791,6 +1849,8 @@ def compute_top3(cache, min_target_pct=None):
                 continue
             if any(s == sym for s, _, _ in scored):
                 continue  # already scored
+            if _is_stale_analysis(data, cutoff):
+                continue
             ohlc = (data.get("chart") or {}).get("ohlc", [])
             if len(ohlc) < 20:
                 continue
@@ -7281,8 +7341,8 @@ def api_data():
     return Response(to_json({
         "results": results,
         "last_update": lu,
-        "signals_as_of": next((s.get("as_of") for s in snapshot.values()
-                               if s and s.get("as_of")), ""),
+        "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
+                             default=""),
         "port": config.IB_PORT,
         "top3": top3,
     }), mimetype="application/json")
@@ -7348,8 +7408,8 @@ def api_etf_data():
     return Response(to_json({
         "results": results,
         "last_update": lu,
-        "signals_as_of": next((s.get("as_of") for s in snapshot.values()
-                               if s and s.get("as_of")), ""),
+        "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
+                             default=""),
         "port": config.IB_PORT,
         "top3": etf_top3,
     }), mimetype="application/json")

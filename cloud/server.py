@@ -393,13 +393,46 @@ def handle_disconnect():
         print(f"[BRIDGE] User {user_id} disconnected (sid={request.sid})")
 
 
+def _signals_as_of(analysis):
+    """Cierre confirmado mas reciente del lote (pie de pagina "Señales al
+    cierre del ..."). El bridge no manda `as_of`, asi que sale de la ultima
+    barra del chart via vista_web._analysis_as_of."""
+    from vista_web import _analysis_as_of
+    return max((_analysis_as_of(s) for s in analysis.values() if s), default="")
+
+
+def _prune_analysis(store, key, symbols):
+    """Descarta del store los analisis de simbolos que ya no se escanean.
+
+    El store se llena simbolo a simbolo y nunca se vaciaba: cuando uno salia
+    del universo del bridge (un ETF en cartera que split_held mando al escaner
+    de ETFs, una tenencia cerrada que dejo de mergearse en la watchlist) su
+    ultimo analisis quedaba adentro para siempre. La tabla no lo mostraba
+    —itera la lista de simbolos— pero compute_top3 recorre el dict entero, asi
+    que la foto congelada seguia rankeando en Top Recomendaciones con el mismo
+    precio y el mismo score durante dias. Con la lista vacia no se purga nada
+    (un ciclo fallido no debe vaciar el dashboard)."""
+    if not symbols:
+        return
+    keep = set(symbols)
+    analysis = store.get(key) or {}
+    dropped = [s for s in analysis if s not in keep]
+    for sym in dropped:
+        analysis.pop(sym, None)
+    if dropped:
+        print(f"[PRUNE] {key}: {len(dropped)} fuera del universo: "
+              f"{', '.join(sorted(dropped)[:10])}", flush=True)
+
+
 @socketio.on("stock_list")
 def handle_stock_list(data):
     user_id = bridge_sessions.get(request.sid)
     if not user_id:
         return
     store = get_user_store(user_id)
-    store["stocks"] = data.get("symbols", [])
+    symbols = data.get("symbols", [])
+    store["stocks"] = symbols
+    _prune_analysis(store, "analysis", symbols)
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
 
 
@@ -443,7 +476,9 @@ def handle_etf_stock_list(data):
     if not user_id:
         return
     store = get_user_store(user_id)
-    store["etf_stocks"] = data.get("symbols", [])
+    symbols = data.get("symbols", [])
+    store["etf_stocks"] = symbols
+    _prune_analysis(store, "etf_analysis", symbols)
 
 
 @socketio.on("etf_analysis_batch")
@@ -575,6 +610,7 @@ def api_data():
             "results": results,
             "top3": top3,
             "last_update": store.get("last_update", ""),
+            "signals_as_of": _signals_as_of(analysis),
             "bridge_connected": store.get("connected", False),
         }),
         mimetype="application/json",
@@ -638,6 +674,7 @@ def api_etf_data():
             "results": results,
             "top3": etf_top3,
             "last_update": store.get("last_update", ""),
+            "signals_as_of": _signals_as_of(etf_analysis),
             "bridge_connected": store.get("connected", False),
         }),
         mimetype="application/json",
@@ -855,7 +892,12 @@ def api_portfolio():
 
     store = get_user_store(request.user_id)
     raw_positions = store.get("portfolio_positions", [])
-    analysis = store.get("analysis", {})
+    # Mi Cartera reusa el analisis del escaner, y una tenencia puede vivir en
+    # CUALQUIERA de los dos universos: el bridge manda los ETFs en cartera al
+    # escaner de ETFs (split_held), asi que buscar solo en "analysis" dejaba a
+    # USO/SQQQ sin chart ni veredicto. Acciones primero, ETFs de respaldo.
+    analysis = dict(store.get("etf_analysis", {}))
+    analysis.update(store.get("analysis", {}))
     acct_vals = store.get("account_values", {})
     open_orders = store.get("open_orders", [])
     # Fills en vivo del bridge (para marcar en el chart las compras)

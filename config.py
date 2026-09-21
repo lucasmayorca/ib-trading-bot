@@ -66,6 +66,18 @@ TOP_RECOMMENDATIONS = 5
 # miden lo mismo que sus estadisticas. Poner en False para volver al modo vivo.
 SIGNALS_CONFIRMED_CLOSE_ONLY = True
 
+# Antiguedad maxima (dias corridos) de un analisis para que compita en Top
+# Recomendaciones. El cache de analisis esta indexado POR SIMBOLO y no se purga
+# solo: un simbolo que sale del universo escaneado (un ETF que dejo de
+# analizarse en el loop de acciones, una tenencia que se cerro) o que falla su
+# analisis se queda con su ULTIMO snapshot bueno para siempre. Como el ranking
+# recorre el cache entero -- no la watchlist que dibuja la tabla -- esa foto
+# congelada seguia compitiendo (y ganando) con un score inmovil durante dias.
+# La tolerancia no es 0 porque una pasada que cruza las 16:00 ET deja parte del
+# universo con el cierre de ayer y parte con el de hoy; 5 dias absorbe eso mas
+# un fin de semana largo y sigue cortando cualquier congelamiento real.
+MAX_ANALYSIS_STALENESS_DAYS = 5
+
 # === RISK MANAGEMENT ===
 MAX_PER_TRADE = 5000     # USD maximo por operacion
 STOP_LOSS_PCT = 3.0      # Stop loss %

@@ -759,6 +759,24 @@ User's machine                          Railway (shared)
 
 ## Invariantes de la revisión 2026-09 (no reintroducir)
 Cada uno costó debugging real; los tres primeros son chequeos que conviene correr tras tocar esas áreas.
+- **El cache de análisis NO se purga solo — Top Recomendaciones recorre el CACHE, no la watchlist.**
+  `/api/data` y `/api/etf-data` arman la tabla iterando la lista de símbolos escaneados, pero
+  `compute_top3(cache)` itera el dict entero. Un símbolo que sale del universo (un ETF en cartera que
+  `split_held` mandó al escáner de ETFs, una tenencia cerrada que dejó de mergearse en la watchlist) o
+  cuyo análisis falla — el bridge hace `if result:` y **omite en silencio** los fallidos, el cloud mergea
+  por símbolo y nunca desaloja — se queda con su ÚLTIMO snapshot bueno para siempre: seguía saliendo #1
+  en Top Recomendaciones, sin aparecer en la tabla, con el mismo precio, la misma señal y el **mismo score
+  inmóvil durante días** (caso real: USO congelado en el cierre del 2026-09-11 — $154.90, VENTA FUERTE,
+  fuerza 4.3, score 55.6 — parecía hardcodeado y era una foto vieja). Dos defensas:
+  (1) `compute_top3` descarta los análisis anteriores a `_stale_as_of_cutoff(cache)` (el cierre más
+  reciente del cache menos `config.MAX_ANALYSIS_STALENESS_DAYS`=5; la tolerancia **no puede ser 0**: una
+  pasada que cruza las 16:00 ET deja medio universo con el cierre de ayer y medio con el de hoy, y un
+  corte estricto vaciaría el Top). `_analysis_as_of` deriva la fecha de `chart.ohlc[-1].time` cuando falta
+  `as_of` — **el bridge no manda `as_of`**. (2) El cloud purga `analysis`/`etf_analysis` contra la lista de
+  símbolos de cada ciclo (`_prune_analysis`, no purga si la lista viene vacía).
+  Corolario: **Mi Cartera del cloud busca en los DOS universos** (`etf_analysis` y `analysis`) — desde
+  `split_held` un ETF en cartera vive en el de ETFs, y buscar solo en `analysis` lo dejaba sin chart
+  (hasta ahora lo tapaba, justamente, la entrada congelada).
 - **Unidades de Options Lab**: `payoff_points[].pnl`, `max_profit`, `max_loss`, `capital_required` y
   `expected_value` van TODOS **por posición** (×100). `_compute_payoff` calcula por acción y `_per_position()`
   convierte al exportar — mezclarlas hacía que el gráfico dibujara la curva por acción bajo etiquetas por
