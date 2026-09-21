@@ -758,7 +758,9 @@ User's machine                          Railway (shared)
   curl -sL .../install-bridge.sh | bash` (a fresh `pip install --upgrade`), not just relaunching.
 
 ## Invariantes de la revisión 2026-09 (no reintroducir)
-Cada uno costó debugging real; los tres primeros son chequeos que conviene correr tras tocar esas áreas.
+Cada uno costó debugging real. **Los que son verificables viven en `tests/test_invariantes.py`** —
+`./venv/bin/python -m pytest tests/ -q`, corre en ~2s. Antes eran prosa acá y por eso nadie los corría:
+USO estuvo rankeando #1 con una foto del 2026-09-11 durante días. Si agregás un invariante, agregá el test.
 - **El cache de análisis NO se purga solo — Top Recomendaciones recorre el CACHE, no la watchlist.**
   `/api/data` y `/api/etf-data` arman la tabla iterando la lista de símbolos escaneados, pero
   `compute_top3(cache)` itera el dict entero. Un símbolo que sale del universo (un ETF en cartera que
@@ -777,6 +779,34 @@ Cada uno costó debugging real; los tres primeros son chequeos que conviene corr
   Corolario: **Mi Cartera del cloud busca en los DOS universos** (`etf_analysis` y `analysis`) — desde
   `split_held` un ETF en cartera vive en el de ETFs, y buscar solo en `analysis` lo dejaba sin chart
   (hasta ahora lo tapaba, justamente, la entrada congelada).
+- **Las 4 defensas contra la foto congelada (2026-09, "cómo prevenimos esto a futuro")**. El defecto de
+  fondo no era "el cache no se purga" sino que **dos lectores del mismo estado no coincidían sobre la
+  fuente de verdad**, y que el sistema **nunca dijo que el número era viejo** — lo cazó el usuario a ojo
+  después de días. Cada defensa se mide por si habría mostrado la staleness el día 1:
+  1. **`universe_items(cache, universe)` es la fuente de verdad ÚNICA** sobre qué símbolos están
+     vigentes: la tabla del escáner y `compute_top3` iteran lo mismo (local pasa `stock_list`/`etf_list`,
+     cloud `store["stocks"]`/`["etf_stocks"]`). Mientras coincidan nadie nota nada; en cuanto divergen,
+     una de las dos muestra fantasmas. Devuelve `(sym, data, stale_as_of)`: `data=None` si la foto está
+     vencida y `stale_as_of` con SU fecha, para poder decirlo en vez de callarlo. Salta los símbolos del
+     universo que aún no están en el cache (si no, el header de la tabla aparece sobre el spinner).
+  2. **Decir la fecha, no solo filtrarla.** Descartar en silencio tapa el caso de hoy pero deja invisible
+     la próxima foto congelada que caiga DENTRO de la tolerancia de 5 días. Cada recomendación viaja con
+     `as_of` y el JS (`_asOfBadge`) pinta un badge ámbar cuando difiere de `signals_as_of` del lote (más
+     un ⚠ en el chip colapsado); la fila "sin datos" dice "Último análisis: cierre del &lt;fecha&gt;".
+     El mapa `stale` viaja aparte de `results` A PROPÓSITO: `results[sym]` debe seguir siendo fila-o-null
+     o el `if(!r)` del render cae en la rama equivocada y explota.
+  3. **El bridge distingue "falló" de "salió del universo".** El viejo `if result:` las mezclaba y el
+     server no podía saber cuál era: en los dos casos se quedaba con el último análisis bueno. Ahora cada
+     `analysis_batch`/`etf_analysis_batch` lleva `failed: [syms]`; `_record_failures` los registra en
+     `store["failed"]` y los loguea. **No se borra su análisis**: un tropiezo puntual de IB no debe dejar
+     la fila en blanco — el filtro por antigüedad lo saca solo cuando su fecha se atrasa. ⚠ Esto es un
+     cambio en `bridge/` ⇒ **requiere reinstalar el bridge** (`rm -rf ~/.ib-bridge && curl -sL .../install-bridge.sh | bash`);
+     hasta entonces el server sigue funcionando, solo que sin el campo `failed`.
+  4. **`audit_universe(cache, universe, label)` evalúa los invariantes en runtime** y loguea `[AUDIT:...]`
+     cuando se violan (huérfanos en el cache, análisis anteriores al cierre de referencia). Se llama en
+     los 4 endpoints de scanner y se expone en `/api/debug` como `invariant_violations`/`invariants_ok`
+     + `failed_last_cycle`. El `/api/debug` viejo mostraba `len(stocks)` y `len(analysis)` por separado,
+     que es justo el dato que NO delata un huérfano: los dos números se ven sanos.
 - **Unidades de Options Lab**: `payoff_points[].pnl`, `max_profit`, `max_loss`, `capital_required` y
   `expected_value` van TODOS **por posición** (×100). `_compute_payoff` calcula por acción y `_per_position()`
   convierte al exportar — mezclarlas hacía que el gráfico dibujara la curva por acción bajo etiquetas por

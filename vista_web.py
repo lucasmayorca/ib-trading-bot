@@ -715,6 +715,76 @@ def _is_stale_analysis(data, cutoff):
     return bool(a) and a < cutoff
 
 
+def universe_items(cache, universe=None):
+    """Itera `(symbol, analysis, stale_as_of)` — FUENTE DE VERDAD UNICA sobre
+    que simbolos estan vigentes, compartida por los dos lectores del cache.
+
+    Que cada lector eligiera su propia fuente es la raiz del bug de USO: la
+    tabla del escaner itera la LISTA de simbolos escaneados y `compute_top3`
+    iteraba el DICT entero, asi que un simbolo que salia del universo
+    desaparecia de la tabla pero seguia rankeando #1 con su ultima foto buena.
+    Mientras las dos vistas coincidan nadie nota nada; en cuanto divergen, una
+    de las dos muestra fantasmas. Con este helper no pueden divergir.
+
+    `universe` es la watchlist del ciclo (local: `stock_list`; cloud:
+    `store["stocks"]`). Si es None se usan las claves del cache.
+
+    Devuelve por simbolo:
+      - `analysis` None si no hay dato (o si es una foto vencida), y
+      - `stale_as_of` = la fecha de esa foto vencida ("" cuando esta al dia),
+        para que quien muestre la fila pueda DECIR que el dato es viejo en vez
+        de callarlo. Filtrar en silencio tapa este caso pero deja invisible la
+        proxima foto congelada que caiga dentro de la tolerancia.
+    """
+    cutoff = _stale_as_of_cutoff(cache)
+    syms = list(universe) if universe else list(cache.keys())
+    seen = set()
+    for sym in syms:
+        if sym in seen or sym not in cache:
+            continue          # aun no analizado en este ciclo: no ocupa fila
+        seen.add(sym)
+        data = cache.get(sym)
+        if data is None:
+            yield sym, None, ""
+        elif _is_stale_analysis(data, cutoff):
+            yield sym, None, _analysis_as_of(data)
+        else:
+            yield sym, data, ""
+
+
+def audit_universe(cache, universe, label=""):
+    """Chequea los invariantes del cache y devuelve la lista de violaciones.
+
+    Los invariantes de esta zona vivian como prosa en CLAUDE.md ("chequeos que
+    conviene correr"), asi que nadie los corria: USO estuvo rankeando con una
+    foto del 2026-09-11 durante DIAS sin que el sistema dijera una palabra.
+    Esto los vuelve ejecutables y ruidosos:
+      1. toda clave del cache esta en el universo escaneado (sin huerfanos);
+      2. todo analisis es del mismo cierre de referencia (sin fotos viejas).
+    """
+    problems = []
+    if universe:
+        orphans = sorted(set(cache) - set(universe))
+        if orphans:
+            problems.append(
+                f"{len(orphans)} simbolo(s) en el cache fuera del universo "
+                f"escaneado: {', '.join(orphans[:10])}")
+    ref = max((_analysis_as_of(d) for d in cache.values() if d), default="")
+    if ref:
+        old_syms = sorted(
+            f"{sym}@{_analysis_as_of(d)}"
+            for sym, d in cache.items() if d and _analysis_as_of(d) and _analysis_as_of(d) < ref)
+        if old_syms:
+            problems.append(
+                f"{len(old_syms)} analisis anteriores al cierre de referencia "
+                f"{ref}: {', '.join(old_syms[:10])}")
+    if problems:
+        tag = f"[AUDIT{':' + label if label else ''}]"
+        for p in problems:
+            print(f"{tag} {p}", flush=True)
+    return problems
+
+
 def _score_stock(sym, data, min_target_pct=None):
     """Score a stock 0-100 for top-N ranking. Returns None if ineligible.
 
@@ -1821,21 +1891,17 @@ def _extract_chart_data(data, n_bars=90):
     return ohlc_slice, mas_sliced, start_idx
 
 
-def compute_top3(cache, min_target_pct=None):
+def compute_top3(cache, min_target_pct=None, universe=None):
     """Compute top N stock recommendations from analysis_cache (N configurable
     via config.TOP_RECOMMENDATIONS; el nombre historico 'top3' se conserva).
-    `min_target_pct` permite un piso de objetivo distinto (p.ej. ETFs usan 7%)."""
+    `min_target_pct` permite un piso de objetivo distinto (p.ej. ETFs usan 7%).
+    `universe` es la watchlist del ciclo: el ranking recorre EXACTAMENTE los
+    mismos simbolos que la tabla (via universe_items) — que cada uno eligiera
+    su fuente es como USO llego a ser #1 sin figurar en la tabla."""
     top_n = getattr(config, "TOP_RECOMMENDATIONS", 3)
-    # Solo compiten los analisis del cierre mas reciente presente en el cache:
-    # un snapshot congelado (simbolo fuera del universo, analisis que fallo) no
-    # se puede recomendar como si fuera de hoy. Ver _stale_as_of_cutoff.
-    cutoff = _stale_as_of_cutoff(cache)
+    vigentes = [(sym, data) for sym, data, _ in universe_items(cache, universe) if data]
     scored = []
-    for sym, data in cache.items():
-        if data is None:
-            continue
-        if _is_stale_analysis(data, cutoff):
-            continue
+    for sym, data in vigentes:
         score = _score_stock(sym, data, min_target_pct)
         if score is not None:
             scored.append((sym, data, score))
@@ -1844,13 +1910,9 @@ def compute_top3(cache, min_target_pct=None):
 
     # If fewer than N eligible, relax filter: include best HOLDs with score > 0
     if len(scored) < top_n:
-        for sym, data in cache.items():
-            if data is None:
-                continue
+        for sym, data in vigentes:
             if any(s == sym for s, _, _ in scored):
                 continue  # already scored
-            if _is_stale_analysis(data, cutoff):
-                continue
             ohlc = (data.get("chart") or {}).get("ohlc", [])
             if len(ohlc) < 20:
                 continue
@@ -1945,6 +2007,11 @@ def compute_top3(cache, min_target_pct=None):
             "expected_move_pct": levels.get("expected_move_pct", None),
             "horizon": levels.get("horizon_weeks", ""),
             "thesis": thesis,
+            # Cierre confirmado sobre el que corre ESTA recomendacion. El JS
+            # muestra un badge solo cuando difiere del cierre de referencia:
+            # filtrar en silencio tapa la foto congelada de hoy pero deja
+            # invisible la proxima que caiga dentro de la tolerancia.
+            "as_of": _analysis_as_of(data),
             "pattern": data.get("pattern"),
             "fib": data.get("fib"),
             "candles": data.get("candles"),
@@ -2203,6 +2270,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-details[open] .rec-arrow{transform:rotate(90deg)}
 .rec-rank-badge{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;font-weight:900;font-size:14px;background:rgba(36,86,230,.12);color:var(--accent);flex-shrink:0}
 .rec-sym{font-size:17px;font-weight:900;color:var(--text);letter-spacing:-.5px}
+.rec-stale{font-size:10px;font-weight:800;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:4px;padding:1px 5px;margin-left:6px;white-space:nowrap;cursor:help}
 .rec-name{font-size:12px;color:var(--muted);font-weight:600;max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
 @media(max-width:900px){.rec-name{display:none}}
 .rec-price{font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600;color:#3a3f48}
@@ -4599,6 +4667,7 @@ function setPeriod(idx,sym,period){
 // ─── TOP 3 ACCORDION — Chart Management ───
 let _recDetailCharts={};
 let _top3Data=[];
+let _top3AsOfRef='';
 let _recPeriods={};   // {idx: '3M'}
 
 function destroyRecDetailCharts(idx){
@@ -4983,15 +5052,28 @@ function recObjetivo(r){
   let bear=sl.indexOf('VENTA')>=0||sl.indexOf('SOBRECOMPRA')>=0||r.signal==='SELL';
   return {txt:(bear?'-':'+')+Math.abs(r.target_pct).toFixed(0)+'%',col:bear?'var(--sell)':'var(--buy)'};
 }
-function _t3Chips(top3){
+// Badge "datos del <fecha>" en una recomendacion cuyo cierre NO es el de
+// referencia del lote. Filtrar en silencio las fotos vencidas tapa el caso de
+// hoy pero deja invisible la proxima que caiga dentro de la tolerancia: si un
+// numero es viejo, la tarjeta tiene que DECIRLO. Vacio cuando esta al dia.
+function _asOfBadge(recAsOf,ref){
+  if(!recAsOf||!ref||recAsOf===ref)return '';
+  let d=recAsOf.split('-');
+  let txt=d.length===3?(d[2]+'-'+d[1]):recAsOf;
+  return '<span class="rec-stale" title="Este analisis es del cierre del '+recAsOf+
+    ', no del '+ref+' que mide el resto del lote. Puede ser una foto vieja: revisar antes de operar.">&#9888; '+txt+'</span>';
+}
+function _t3Chips(top3,asOfRef){
   let chips='';
   for(let i=0;i<top3.length;i++){
     let r=top3[i];let o=recObjetivo(r);
-    chips+='<span class="t3-chip"><b>#'+(i+1)+'</b>'+r.symbol+(o?'<span class="obj" style="color:'+o.col+'">'+o.txt+'</span>':'')+'</span>';
+    let stale=_asOfBadge(r.as_of,asOfRef)?' &#9888;':'';
+    chips+='<span class="t3-chip"><b>#'+(i+1)+'</b>'+r.symbol+stale+(o?'<span class="obj" style="color:'+o.col+'">'+o.txt+'</span>':'')+'</span>';
   }
   return chips;
 }
-function renderTop3(top3){
+function renderTop3(top3,asOfRef){
+  if(asOfRef!==undefined)_top3AsOfRef=asOfRef||'';
   // Save which rec accordions are open before destroying
   let recOpenSet=new Set();
   // Acotado a #top3-section (igual que renderEtfTop3): sin el scope, la
@@ -5007,7 +5089,7 @@ function renderTop3(top3){
   let periods=['ALL','5Y','1Y','3M','1M','1W','1D'];
   let caret='<span class="t3-caret'+(_top3Collapsed?'':' open')+'">&#9660;</span>';
   let html='<div class="top3-title t3-clickable" onclick="toggleTop3Sec()" title="Mostrar/ocultar recomendaciones">Top Recomendaciones <span class="t3-count">('+top3.length+')</span>'+caret+
-    (_top3Collapsed?'<span class="t3-chips">'+_t3Chips(top3)+'</span>':'')+'</div>';
+    (_top3Collapsed?'<span class="t3-chips">'+_t3Chips(top3,_top3AsOfRef)+'</span>':'')+'</div>';
   // Comprimida: solo la barra con chips (mas espacio para la tabla)
   if(_top3Collapsed){sec.innerHTML=html;_recFirstRender=false;return;}
   for(let i=0;i<top3.length;i++){
@@ -5029,6 +5111,7 @@ function renderTop3(top3){
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge">#'+(i+1)+'</span>';
     html+='<span class="rec-sym">'+r.symbol+'</span>';
+    html+=_asOfBadge(r.as_of,_top3AsOfRef);
     let _coName=(r.fundamentals&&r.fundamentals.name)?r.fundamentals.name:'';
     if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
     html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
@@ -5265,7 +5348,7 @@ function _renderStockList(data){
     // que decide si se muestra el header de la tabla)
     let total=Object.keys(entries).length;
 
-    renderTop3(data.top3);
+    renderTop3(data.top3,data.signals_as_of);
 
     let sorted=sortEntries(entries);
     if(_stockSearch)sorted=sorted.filter(sym=>_matchesSearch(sym,entries[sym],_stockSearch));
@@ -5288,7 +5371,10 @@ function _renderStockList(data){
           na+na+na+na+na+na+na+na+
           '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+na+
           '</div></summary>'+
-          '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
+          '<div class="detail-body" style="color:var(--dim)">'+
+          ((data.stale&&data.stale[sym])?('Ultimo analisis: cierre del '+data.stale[sym]+
+            ' — descartado por vencido, no se usa para señales ni recomendaciones.'):'Sin datos historicos')+
+          '</div></details>';
         idx++;continue;
       }
 
@@ -5721,7 +5807,7 @@ function _renderEtfList(data){
     let total=Object.keys(entries).length;
 
     // Top 3 ETF recommendations
-    renderEtfTop3(data.top3);
+    renderEtfTop3(data.top3,data.signals_as_of);
 
     let sorted=sortEtfEntries(entries);
     if(_etfSearch)sorted=sorted.filter(sym=>_matchesSearch(sym,entries[sym],_etfSearch));
@@ -5742,7 +5828,10 @@ function _renderEtfList(data){
           na+na+na+na+na+na+na+na+
           '<span class="cond cond-0">--</span>'+na+na+na+na+na+na+na+na+na+na+
           '</div></summary>'+
-          '<div class="detail-body" style="color:var(--dim)">Sin datos historicos</div></details>';
+          '<div class="detail-body" style="color:var(--dim)">'+
+          ((data.stale&&data.stale[sym])?('Ultimo analisis: cierre del '+data.stale[sym]+
+            ' — descartado por vencido, no se usa para señales ni recomendaciones.'):'Sin datos historicos')+
+          '</div></details>';
         idx++;continue;
       }
 
@@ -5848,6 +5937,7 @@ function _renderEtfList(data){
 }
 
 let _etfTop3Data=[];
+let _etfTop3AsOfRef='';
 let _etfRecPeriods={};
 let _etfRecDetailCharts={};
 let _etfRecFirstRender=true;
@@ -5880,7 +5970,8 @@ function setEtfRecPeriod(idx,period){
   renderEtfRecDetailCharts(idx,rec,period);
 }
 
-function renderEtfTop3(top3){
+function renderEtfTop3(top3,asOfRef){
+  if(asOfRef!==undefined)_etfTop3AsOfRef=asOfRef||'';
   let recOpenSet=new Set();
   document.querySelectorAll('#etf-top3-section .rec-details[open]').forEach(d=>{let idx=d.dataset.idx;if(idx!=null)recOpenSet.add(parseInt(idx));});
   destroyAllEtfRecCharts();
@@ -5893,7 +5984,7 @@ function renderEtfTop3(top3){
   let periods=['ALL','5Y','1Y','3M','1M','1W','1D'];
   let caret='<span class="t3-caret'+(_etfTop3Collapsed?'':' open')+'">&#9660;</span>';
   let html='<div class="top3-title t3-clickable" onclick="toggleEtfTop3Sec()" title="Mostrar/ocultar recomendaciones">Top ETF Recomendaciones <span class="t3-count">('+top3.length+')</span>'+caret+
-    (_etfTop3Collapsed?'<span class="t3-chips">'+_t3Chips(top3)+'</span>':'')+'</div>';
+    (_etfTop3Collapsed?'<span class="t3-chips">'+_t3Chips(top3,_etfTop3AsOfRef)+'</span>':'')+'</div>';
   if(_etfTop3Collapsed){sec.innerHTML=html;return;}
   for(let i=0;i<top3.length;i++){
     let r=top3[i];
@@ -5912,6 +6003,7 @@ function renderEtfTop3(top3){
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge">#'+(i+1)+'</span>';
     html+='<span class="rec-sym">'+r.symbol+'</span>';
+    html+=_asOfBadge(r.as_of,_etfTop3AsOfRef);
     let _coName=(r.fundamentals&&r.fundamentals.name)?r.fundamentals.name:'';
     if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
     html+='<span class="rec-price">$'+r.price.toFixed(2)+'</span>';
@@ -7287,10 +7379,14 @@ def api_data():
     with update_lock:
         snapshot = dict(analysis_cache)
         lu = last_update_time
-    results = {}
-    for sym, sig in snapshot.items():
+    results, stale_map = {}, {}
+    # Misma fuente de verdad que compute_top3 (universe_items): la tabla y el
+    # ranking no pueden discrepar sobre que simbolos estan vigentes.
+    for sym, sig, stale in universe_items(snapshot, stock_list):
         if sig is None:
             results[sym] = None
+            if stale:
+                stale_map[sym] = stale
             continue
 
         rt_price, mkt = get_rt_price(sym)
@@ -7336,10 +7432,12 @@ def api_data():
 
         results[sym] = entry
 
-    top3 = compute_top3(snapshot)
+    top3 = compute_top3(snapshot, universe=stock_list)
+    audit_universe(snapshot, stock_list, "acciones")
 
     return Response(to_json({
         "results": results,
+        "stale": stale_map,
         "last_update": lu,
         "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
                              default=""),
@@ -7354,10 +7452,13 @@ def api_etf_data():
     with etf_update_lock:
         snapshot = dict(etf_analysis_cache)
         lu = etf_last_update_time
-    results = {}
-    for sym, sig in snapshot.items():
+    results, stale_map = {}, {}
+    # Misma fuente de verdad que compute_top3 — ver universe_items.
+    for sym, sig, stale in universe_items(snapshot, etf_list):
         if sig is None:
             results[sym] = None
+            if stale:
+                stale_map[sym] = stale
             continue
 
         rt_price, mkt = get_etf_rt_price(sym)
@@ -7403,10 +7504,13 @@ def api_etf_data():
         results[sym] = entry
 
     etf_top3 = compute_top3(snapshot,
-                            min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None))
+                            min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None),
+                            universe=etf_list)
+    audit_universe(snapshot, etf_list, "etfs")
 
     return Response(to_json({
         "results": results,
+        "stale": stale_map,
         "last_update": lu,
         "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
                              default=""),

@@ -86,6 +86,11 @@ def get_user_store(user_id):
                 "open_orders": [],
                 "executions": [],
                 "live_trades": [],
+                # {symbol: "HH:MM:SS"} de los simbolos que el bridge INTENTO y
+                # no pudo analizar. Antes se omitian en silencio y el server no
+                # podia distinguir "fallo este ciclo" de "salio del universo":
+                # en los dos casos se quedaba con el ultimo analisis bueno.
+                "failed": {},
                 "last_update": None,
             }
         return user_data[user_id]
@@ -393,6 +398,28 @@ def handle_disconnect():
         print(f"[BRIDGE] User {user_id} disconnected (sid={request.sid})")
 
 
+def _record_failures(store, failed, tag=""):
+    """Anota los simbolos que el bridge intento y no pudo analizar.
+
+    NO se borra su ultimo analisis: un tropiezo puntual de IB no tiene por que
+    dejar la fila en blanco. Lo que cambia es que ahora queda REGISTRADO y
+    logueado — antes el fallo era mudo, el analisis viejo se seguia sirviendo
+    como si fuera de hoy y solo se notaba a ojo, dias despues. El filtro por
+    antiguedad lo saca solo cuando su fecha se atrasa lo suficiente.
+    """
+    reg = store.setdefault("failed", {})
+    now = datetime.now().strftime("%H:%M:%S")
+    for sym in failed:
+        reg[sym] = now
+    for sym in list(reg):
+        if sym in (store.get("analysis") or {}) or sym in (store.get("etf_analysis") or {}):
+            continue
+        reg.pop(sym, None)      # ya no esta en ningun universo: nada que avisar
+    if failed:
+        print(f"[{tag or 'BATCH'}] {len(failed)} sin analisis: "
+              f"{', '.join(list(failed)[:10])}", flush=True)
+
+
 def _signals_as_of(analysis):
     """Cierre confirmado mas reciente del lote (pie de pagina "Señales al
     cierre del ..."). El bridge no manda `as_of`, asi que sale de la ultima
@@ -466,6 +493,7 @@ def handle_analysis_batch(data):
     from patterns import attach_to_analysis
     for symbol, result in results.items():
         store["analysis"][symbol] = attach_to_analysis(result)
+    _record_failures(store, data.get("failed") or [], "ANALYSIS_BATCH")
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
     schedule_persist(user_id)
 
@@ -492,6 +520,7 @@ def handle_etf_analysis_batch(data):
     from patterns import attach_to_analysis
     for symbol, result in results.items():
         store["etf_analysis"][symbol] = attach_to_analysis(result)
+    _record_failures(store, data.get("failed") or [], "ETF_BATCH")
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
     schedule_persist(user_id)
 
@@ -557,16 +586,18 @@ def index():
 @app.route("/api/data")
 @login_required
 def api_data():
-    from vista_web import compute_top3
+    from vista_web import compute_top3, universe_items, audit_universe
 
     store = get_user_store(request.user_id)
     analysis = store.get("analysis", {})
 
-    results = {}
-    for symbol in store.get("stocks", []):
-        sig = analysis.get(symbol)
+    results, stale_map = {}, {}
+    # Misma fuente de verdad que compute_top3 — ver vista_web.universe_items.
+    for symbol, sig, stale in universe_items(analysis, store.get("stocks", [])):
         if not sig:
             results[symbol] = None
+            if stale:
+                stale_map[symbol] = stale
             continue
 
         bt = sig.get("backtest", {}) or {}
@@ -600,14 +631,16 @@ def api_data():
         }
 
     try:
-        top3 = compute_top3(analysis)
+        top3 = compute_top3(analysis, universe=store.get("stocks", []))
     except Exception as e:
         print(f"[TOP3] Error: {e}", flush=True)
         top3 = []
+    audit_universe(analysis, store.get("stocks", []), "acciones")
 
     return Response(
         to_json({
             "results": results,
+            "stale": stale_map,
             "top3": top3,
             "last_update": store.get("last_update", ""),
             "signals_as_of": _signals_as_of(analysis),
@@ -620,16 +653,18 @@ def api_data():
 @app.route("/api/etf-data")
 @login_required
 def api_etf_data():
-    from vista_web import compute_top3
+    from vista_web import compute_top3, universe_items, audit_universe
 
     store = get_user_store(request.user_id)
     etf_analysis = store.get("etf_analysis", {})
 
-    results = {}
-    for symbol in store.get("etf_stocks", []):
-        sig = etf_analysis.get(symbol)
+    results, stale_map = {}, {}
+    # Misma fuente de verdad que compute_top3 — ver vista_web.universe_items.
+    for symbol, sig, stale in universe_items(etf_analysis, store.get("etf_stocks", [])):
         if not sig:
             results[symbol] = None
+            if stale:
+                stale_map[symbol] = stale
             continue
 
         bt = sig.get("backtest", {}) or {}
@@ -664,14 +699,17 @@ def api_etf_data():
 
     try:
         etf_top3 = compute_top3(etf_analysis,
-                                min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None))
+                                min_target_pct=getattr(config, "MIN_OPPORTUNITY_TARGET_PCT_ETF", None),
+                                universe=store.get("etf_stocks", []))
     except Exception as e:
         print(f"[ETF TOP3] Error: {e}", flush=True)
         etf_top3 = []
+    audit_universe(etf_analysis, store.get("etf_stocks", []), "etfs")
 
     return Response(
         to_json({
             "results": results,
+            "stale": stale_map,
             "top3": etf_top3,
             "last_update": store.get("last_update", ""),
             "signals_as_of": _signals_as_of(etf_analysis),
@@ -1118,10 +1156,24 @@ def api_debug():
         for uid in bridge_sessions.values() if uid == request.user_id
     ]
 
+    # Los invariantes del cache, evaluados — no solo conteos. La version vieja
+    # mostraba len(stocks) y len(analysis) por separado, que es exactamente el
+    # dato que NO delata un huerfano: los dos numeros se ven sanos mientras un
+    # simbolo fuera del universo sigue rankeando con una foto vieja.
+    from vista_web import audit_universe, _analysis_as_of
+    etf_analysis = store.get("etf_analysis", {})
+    audit = (audit_universe(analysis, stocks, "acciones")
+             + audit_universe(etf_analysis, store.get("etf_stocks", []), "etfs"))
+
     return jsonify({
         "current_user_id": request.user_id,
         "current_user_email": request.user_email,
         "bridge_connected": store.get("connected", False),
+        "invariant_violations": audit,
+        "invariants_ok": not audit,
+        "signals_as_of": _signals_as_of(analysis),
+        "etf_signals_as_of": _signals_as_of(etf_analysis),
+        "failed_last_cycle": store.get("failed", {}),
         "stocks_sent_by_bridge": len(stocks),
         "stocks_list": stocks[:10],  # First 10
         "analysis_received": len(analysis),

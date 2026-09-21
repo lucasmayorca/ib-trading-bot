@@ -708,6 +708,14 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
                 results = {}
                 full_results = {}
+                # Simbolos que se INTENTARON y fallaron. Omitirlos en silencio
+                # (el viejo `if result:` a secas) le hacia creer al servidor que
+                # nunca se pidieron: dejaba el ultimo analisis bueno en el store
+                # y lo seguia rankeando como si fuera de hoy. "Fallo este ciclo"
+                # y "ya no esta en el universo" son cosas distintas y el
+                # servidor necesita poder distinguirlas.
+                failed = []
+                failed_all = []
                 success_count = 0
                 for i, symbol in enumerate(stocks):
                     req_id = 1000 + i
@@ -717,17 +725,29 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                         full_results[symbol] = result
                         success_count += 1
                         log(f"  ✓ {symbol}: {result.get('signal', 'NEUTRAL')} (strength={result.get('strength', 0):.1f})", G)
+                    else:
+                        failed.append(symbol)
+                        failed_all.append(symbol)
                     time.sleep(0.5)
 
                     if (i + 1) % 10 == 0:
-                        if results:
-                            log(f"  Enviando {len(results)} análisis al servidor...", C)
-                            safe_emit(sio, "analysis_batch", clean({"results": results}), server_url, authenticated)
+                        if results or failed:
+                            log(f"  Enviando {len(results)} análisis al servidor"
+                                + (f" ({len(failed)} fallidos)" if failed else "") + "...", C)
+                            safe_emit(sio, "analysis_batch",
+                                      clean({"results": results, "failed": failed}),
+                                      server_url, authenticated)
                         results = {}
+                        failed = []
 
-                if results:
+                if results or failed:
                     log(f"  Enviando {len(results)} análisis finales al servidor...", C)
-                    safe_emit(sio, "analysis_batch", clean({"results": results}), server_url, authenticated)
+                    safe_emit(sio, "analysis_batch",
+                              clean({"results": results, "failed": failed}),
+                              server_url, authenticated)
+                if failed_all:
+                    log(f"  {len(failed_all)} acciones sin analisis este ciclo: "
+                        f"{', '.join(failed_all[:10])}", Y)
 
                 # Retain the complete cycle for re-emit on reconnect.
                 ib_app.last_analysis = full_results
@@ -745,6 +765,8 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
 
                 etf_results = {}
                 etf_full = {}
+                etf_failed = []        # ver `failed` del scan de acciones
+                etf_failed_all = []
                 etf_success = 0
                 for i, symbol in enumerate(etfs):
                     req_id = 3000 + i
@@ -753,17 +775,29 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                         etf_results[symbol] = result
                         etf_full[symbol] = result
                         etf_success += 1
+                    else:
+                        etf_failed.append(symbol)
+                        etf_failed_all.append(symbol)
                     time.sleep(0.5)
 
                     if (i + 1) % 10 == 0:
-                        if etf_results:
-                            log(f"  Enviando {len(etf_results)} análisis ETF al servidor...", C)
-                            safe_emit(sio, "etf_analysis_batch", clean({"results": etf_results}), server_url, authenticated)
+                        if etf_results or etf_failed:
+                            log(f"  Enviando {len(etf_results)} análisis ETF al servidor"
+                                + (f" ({len(etf_failed)} fallidos)" if etf_failed else "") + "...", C)
+                            safe_emit(sio, "etf_analysis_batch",
+                                      clean({"results": etf_results, "failed": etf_failed}),
+                                      server_url, authenticated)
                         etf_results = {}
+                        etf_failed = []
 
-                if etf_results:
+                if etf_results or etf_failed:
                     log(f"  Enviando {len(etf_results)} análisis ETF finales al servidor...", C)
-                    safe_emit(sio, "etf_analysis_batch", clean({"results": etf_results}), server_url, authenticated)
+                    safe_emit(sio, "etf_analysis_batch",
+                              clean({"results": etf_results, "failed": etf_failed}),
+                              server_url, authenticated)
+                if etf_failed_all:
+                    log(f"  {len(etf_failed_all)} ETFs sin analisis este ciclo: "
+                        f"{', '.join(etf_failed_all[:10])}", Y)
 
                 # Retain the complete cycle for re-emit on reconnect.
                 ib_app.last_etf_analysis = etf_full
