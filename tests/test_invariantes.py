@@ -165,3 +165,90 @@ def test_covered_call_lleva_la_pata_de_acciones():
                              for l in d.get("legs", []))
         assert tiene_acciones or d.get("covered"), (
             f"{d.get('name')}: falta la pata de 100 acciones")
+
+
+# ── 4. Refresco intradia por EPOCA ───────────────────────────────────
+# El analisis corria sobre el cierre de AYER toda la jornada (no captaba ruedas
+# volatiles); re-evaluarlo en cada ciclo de 5 min lo hacia parpadear. La epoca
+# es el punto medio: barra viva, congelada hasta el proximo salto de hora.
+
+from datetime import datetime  # noqa: E402
+
+
+def test_epoca_avanza_una_vez_por_hora_durante_la_rueda():
+    """Dentro de la misma hora la epoca no cambia (no se recalcula nada);
+    al cruzar la hora en punto, si."""
+    e1 = vw.signal_epoch(datetime(2026, 9, 23, 10, 5), minutes=60)
+    e2 = vw.signal_epoch(datetime(2026, 9, 23, 10, 55), minutes=60)
+    e3 = vw.signal_epoch(datetime(2026, 9, 23, 11, 0), minutes=60)
+    assert e1 == e2 and e1 != e3
+
+
+def test_fuera_del_horario_una_sola_epoca():
+    """Post-cierre, pre-market del dia siguiente y fin de semana comparten la
+    epoca de la ultima rueda cerrada: sin datos nuevos no se re-analiza."""
+    post = vw.signal_epoch(datetime(2026, 9, 25, 16, 1), minutes=60)   # viernes
+    noche = vw.signal_epoch(datetime(2026, 9, 25, 22, 0), minutes=60)
+    sabado = vw.signal_epoch(datetime(2026, 9, 26, 12, 0), minutes=60)
+    domingo = vw.signal_epoch(datetime(2026, 9, 27, 12, 0), minutes=60)
+    lunes_pre = vw.signal_epoch(datetime(2026, 9, 28, 8, 0), minutes=60)
+    assert post == noche == sabado == domingo == lunes_pre == "2026-09-25#cierre"
+
+
+def test_el_cierre_dispara_un_ultimo_analisis():
+    """La epoca post-cierre difiere de la ultima intradia: hay exactamente UNA
+    pasada mas despues de las 16:00 para tomar el cierre definitivo."""
+    ultima_intra = vw.signal_epoch(datetime(2026, 9, 23, 15, 59), minutes=60)
+    post = vw.signal_epoch(datetime(2026, 9, 23, 16, 1), minutes=60)
+    assert ultima_intra != post
+
+
+def test_sin_refresco_intradia_no_hay_gate():
+    """Con el refresco en 0 la epoca es vacia y NADA se considera fresco: el
+    loop vuelve al comportamiento viejo (recalcula en cada pasada)."""
+    assert vw.signal_epoch(datetime(2026, 9, 23, 10, 5), minutes=0) == ""
+    assert not vw._analysis_is_fresh({"epoch": ""}, "")
+
+
+def test_analisis_fallido_se_reintenta_enseguida():
+    """Un None (analisis que fallo) nunca es fresco: se reintenta en la pasada
+    siguiente en vez de quedar congelado una hora."""
+    assert not vw._analysis_is_fresh(None, "2026-09-23#010")
+    assert vw._analysis_is_fresh({"epoch": "2026-09-23#010"}, "2026-09-23#010")
+    assert not vw._analysis_is_fresh({"epoch": "2026-09-23#009"}, "2026-09-23#010")
+
+
+def test_barra_viva_entra_al_analisis_y_nan_nunca():
+    """Con refresco intradia la vela de hoy SE MANTIENE (sin ella el analisis
+    miraba el cierre de ayer). Una ultima barra con cierre NaN se descarta
+    siempre: yfinance la devuelve antes de la apertura y envenena todo."""
+    import pandas as pd
+    hoy = datetime(2026, 9, 23, 11, 0)
+    df = pd.DataFrame({"date": ["2026-09-22", "2026-09-23"],
+                       "open": [10.0, 11.0], "high": [11.0, 12.0],
+                       "low": [9.0, 10.0], "close": [10.5, 11.5],
+                       "volume": [1e6, 1e6]})
+    assert len(vw._drop_partial_bar(df, now_et=hoy)) == 2      # intradia activo
+    df_nan = df.copy()
+    df_nan.loc[1, "close"] = float("nan")
+    assert len(vw._drop_partial_bar(df_nan, now_et=hoy)) == 1
+
+
+def test_bridge_en_paridad_con_el_local():
+    """El bridge es self-contained y duplica signal_epoch: si las dos copias se
+    desincronizan, el cloud re-analiza en momentos distintos que el local."""
+    import bridge.main as bm
+    assert bm.SIGNALS_INTRADAY_REFRESH_MINUTES == vw._intraday_minutes()
+    for t in (datetime(2026, 9, 23, 9, 35), datetime(2026, 9, 23, 10, 55),
+              datetime(2026, 9, 23, 16, 1), datetime(2026, 9, 26, 12, 0)):
+        assert vw.signal_epoch(t) == bm.signal_epoch(t), t
+
+
+def test_pie_de_pagina_distingue_rueda_en_curso_de_cierre():
+    """El pie decia siempre "cierre del X". Con la barra viva hay que decir que
+    la señal corre sobre una vela en formacion, y a que hora se refresco."""
+    vivo = {"A": dict(mk_analysis("2026-09-23"), live_bar=True,
+                      epoch="2026-09-23#011")}
+    cerrado = {"A": dict(mk_analysis("2026-09-22"), live_bar=False)}
+    assert vw.signals_label(vivo) == "rueda en curso, 11:00 ET"
+    assert vw.signals_label(cerrado) == "cierre del 2026-09-22"

@@ -39,6 +39,10 @@ EMA_PERIOD = 9
 SCAN_INTERVAL = 300
 PORTFOLIO_INTERVAL = 30
 IB_CLIENT_ID = 50
+# Espejo de config.SIGNALS_INTRADAY_REFRESH_MINUTES (el bridge es self-contained
+# y no importa config.py). Cada cuantos minutos se re-evalua la señal durante la
+# rueda; 0 = solo cierres confirmados. MANTENER EN PARIDAD con config.py.
+SIGNALS_INTRADAY_REFRESH_MINUTES = 60
 
 # ══════════════════════════════════════════════════════════════
 #  ANSI COLORS
@@ -358,22 +362,73 @@ def _format_bar_date(raw_date):
     return s  # already YYYY-MM-DD or similar
 
 
+_MKT_OPEN_MIN = 9 * 60 + 30
+_MKT_CLOSE_MIN = 16 * 60
+
+
+def _now_et():
+    """Hora actual en America/New_York."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        from datetime import timedelta, timezone
+        _utc = datetime.now(timezone.utc)
+        return _utc - timedelta(hours=4 if 3 <= _utc.month <= 11 else 5)
+
+
+def _last_session_day(now_et):
+    """Fecha de la ultima rueda CERRADA (espejo de vista_web._last_session_day)."""
+    from datetime import timedelta
+    d = now_et.date()
+    if not (now_et.weekday() < 5
+            and (now_et.hour * 60 + now_et.minute) >= _MKT_CLOSE_MIN):
+        d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
+def signal_epoch(now_et=None):
+    """Sello del ciclo de analisis — espejo de vista_web.signal_epoch, MANTENER
+    PARIDAD. Con la rueda abierta avanza cada SIGNALS_INTRADAY_REFRESH_MINUTES
+    alineado al reloj; fuera del horario, una sola epoca por rueda cerrada."""
+    minutes = max(0, int(SIGNALS_INTRADAY_REFRESH_MINUTES or 0))
+    if minutes <= 0:
+        return ""
+    now_et = now_et or _now_et()
+    mins = now_et.hour * 60 + now_et.minute
+    if now_et.weekday() < 5 and _MKT_OPEN_MIN <= mins < _MKT_CLOSE_MIN:
+        return f"{now_et.date().isoformat()}#{mins // minutes:03d}"
+    return f"{_last_session_day(now_et)}#cierre"
+
+
+def _analysis_is_fresh(sig, epoch):
+    """True si ese analisis ya se calculo en esta epoca (no recalcular)."""
+    return bool(epoch) and bool(sig) and sig.get("epoch") == epoch
+
+
 def _drop_partial_bar(df):
-    """Descarta la barra diaria EN CURSO: señales solo sobre cierres
-    confirmados (espejo de vista_web._drop_partial_bar — mantener paridad).
-    Sin esto, las condiciones de giro (hist[-1] vs [-2], marron, RSI) se
-    re-evaluan cada ciclo sobre una barra a medio formar y las
-    recomendaciones del cloud parpadean intradia. Regla: si la ultima barra
-    es de HOY (America/New_York) y aun no son las 16:00 ET, se descarta."""
+    """Decide si la barra del dia EN CURSO entra al analisis — espejo de
+    vista_web._drop_partial_bar, MANTENER PARIDAD.
+
+    Con SIGNALS_INTRADAY_REFRESH_MINUTES > 0 la barra viva se mantiene (el
+    analisis mira el precio de hoy); lo que evita el parpadeo es la epoca de
+    `signal_epoch`, que congela el resultado hasta el proximo salto de hora.
+    Con 0 vuelve el modo viejo: se descarta la vela de hoy hasta las 16:00 ET.
+    En ambos modos se descarta una ultima barra con cierre NaN."""
     if df is None or len(df) < 2:
         return df
     try:
-        try:
-            from zoneinfo import ZoneInfo
-            now_et = datetime.now(ZoneInfo("America/New_York"))
-        except Exception:
-            from datetime import timedelta, timezone
-            now_et = datetime.now(timezone.utc) - timedelta(hours=5)  # aprox ET
+        last_close = df["close"].iloc[-1]
+        if last_close is None or last_close != last_close:   # NaN
+            return df.iloc[:-1]
+    except Exception:
+        pass
+    if max(0, int(SIGNALS_INTRADAY_REFRESH_MINUTES or 0)) > 0:
+        return df
+    try:
+        now_et = _now_et()
         if now_et.hour >= 16:
             return df
         last_raw = str(df["date"].iloc[-1]).strip().split()[0].replace("-", "")[:8]
@@ -411,6 +466,13 @@ def analyze_stock(ib_app, symbol, req_id):
 
         price = float(df["close"].iloc[-1])
         close = df["close"]
+        # Sello temporal del analisis: `as_of` es la fecha de la ultima barra
+        # usada, `epoch` la ventana horaria (el loop la usa para no recalcular)
+        # y `live_bar` avisa que esa vela todavia se esta formando.
+        _now = _now_et()
+        _as_of = _format_bar_date(df["date"].iloc[-1])
+        _live = bool(_as_of == _now.date().isoformat() and _now.weekday() < 5
+                     and (_now.hour * 60 + _now.minute) < _MKT_CLOSE_MIN)
 
         avg_vol = df["volume"].iloc[-20:].mean()
         dv = float(price * avg_vol)
@@ -469,6 +531,9 @@ def analyze_stock(ib_app, symbol, req_id):
             "symbol": symbol,
             "price": price,
             "dollar_vol": dollar_vol,
+            "as_of": _as_of,
+            "epoch": signal_epoch(_now),
+            "live_bar": _live,
             "signal": signal_result.get("signal", "NEUTRAL"),
             "signal_label": signal_result.get("signal_label", "NEUTRAL"),
             "strength": signal_result.get("strength", 0),
@@ -717,7 +782,20 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 failed = []
                 failed_all = []
                 success_count = 0
+                epoch = signal_epoch()
+                prev = ib_app.last_analysis or {}
+                reused = 0
                 for i, symbol in enumerate(stocks):
+                    # Gate por epoca: dentro de la misma hora (o fuera del
+                    # horario de mercado) el analisis anterior sigue vigente.
+                    # No se re-emite — el server ya lo tiene — pero se conserva
+                    # en full_results para que last_analysis siga completo de
+                    # cara al re-emit por reconexion.
+                    if _analysis_is_fresh(prev.get(symbol), epoch):
+                        full_results[symbol] = prev[symbol]
+                        success_count += 1
+                        reused += 1
+                        continue
                     req_id = 1000 + i
                     result = analyze_stock(ib_app, symbol, req_id)
                     if result:
@@ -753,7 +831,9 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 ib_app.last_analysis = full_results
                 ib_app.last_stock_list = list(stocks)
 
-                log(f"Escaneo completado: {success_count}/{len(stocks)} acciones analizadas", G if success_count > 0 else Y)
+                log(f"Escaneo completado: {success_count}/{len(stocks)} acciones"
+                    + (f" ({reused} ya vigentes en esta hora)" if reused else " analizadas"),
+                    G if success_count > 0 else Y)
 
                 # --- ETF scan ---
                 etfs = get_etf_list()
@@ -768,7 +848,14 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 etf_failed = []        # ver `failed` del scan de acciones
                 etf_failed_all = []
                 etf_success = 0
+                etf_prev = ib_app.last_etf_analysis or {}
+                etf_reused = 0
                 for i, symbol in enumerate(etfs):
+                    if _analysis_is_fresh(etf_prev.get(symbol), epoch):
+                        etf_full[symbol] = etf_prev[symbol]   # ver gate de acciones
+                        etf_success += 1
+                        etf_reused += 1
+                        continue
                     req_id = 3000 + i
                     result = analyze_stock(ib_app, symbol, req_id)
                     if result:
@@ -803,7 +890,9 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                 ib_app.last_etf_analysis = etf_full
                 ib_app.last_etf_list = list(etfs)
 
-                log(f"ETF scan completado: {etf_success}/{len(etfs)} ETFs analizados", G if etf_success > 0 else Y)
+                log(f"ETF scan completado: {etf_success}/{len(etfs)} ETFs"
+                    + (f" ({etf_reused} ya vigentes en esta hora)" if etf_reused else " analizados"),
+                    G if etf_success > 0 else Y)
 
                 _refresh_portfolio(ib_app, log)
 

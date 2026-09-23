@@ -283,35 +283,109 @@ def fetch_historical(app, symbol, req_id, duration=None, breaker=None):
     return df
 
 
-def _drop_partial_bar(df, now_et=None):
-    """Descarta la barra diaria EN CURSO para que indicadores y señales se
-    calculen SOLO sobre cierres confirmados (config.SIGNALS_CONFIRMED_CLOSE_ONLY).
+def _now_et(now_et=None):
+    """Hora actual en America/New_York (inyectable para tests)."""
+    if now_et is not None:
+        return now_et
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        # Sin zoneinfo: EDT (UTC-4) de marzo a noviembre, EST (UTC-5) el resto.
+        # Con el -5 fijo el reloj corria 1h atrasado en verano y entre las 16:00
+        # y 17:00 ET descartaba un cierre YA confirmado.
+        from datetime import timedelta, timezone
+        _utc = datetime.now(timezone.utc)
+        return _utc - timedelta(hours=4 if 3 <= _utc.month <= 11 else 5)
 
-    Con la barra parcial adentro, las condiciones de giro del sistema
-    (hist[-1] vs hist[-2], marron vs media, RSI) se re-evaluan cada ciclo de
-    5 min sobre un valor que todavia se esta moviendo → señales y
-    recomendaciones parpadean intradia. Regla: si la ultima barra es de HOY
+
+def _intraday_minutes():
+    """Cada cuantos minutos se re-evalua la señal intradia (0 = solo cierres)."""
+    try:
+        return max(0, int(getattr(config, "SIGNALS_INTRADAY_REFRESH_MINUTES", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+_MKT_OPEN_MIN = 9 * 60 + 30
+_MKT_CLOSE_MIN = 16 * 60
+
+
+def _last_session_day(now_et):
+    """Fecha (YYYY-MM-DD) de la ultima rueda CERRADA. Fuera del horario de
+    mercado el analisis no tiene datos nuevos que mirar, asi que todas esas
+    horas comparten epoca y no re-disparan nada."""
+    from datetime import timedelta
+    d = now_et.date()
+    if not (now_et.weekday() < 5
+            and (now_et.hour * 60 + now_et.minute) >= _MKT_CLOSE_MIN):
+        d -= timedelta(days=1)          # la rueda de hoy no cerro (o no hubo)
+    while d.weekday() >= 5:             # sabado/domingo -> viernes
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
+def signal_epoch(now_et=None, minutes=None):
+    """Sello del ciclo de analisis. Mientras no cambia, el analisis cacheado
+    de un simbolo sigue vigente y el loop NO lo recalcula.
+
+    Con la rueda abierta la epoca avanza cada `minutes` alineada al RELOJ
+    (10:00, 11:00, ... ET) — asi "se actualiza cada hora" es literal y
+    predecible. Fuera del horario (pre-market, post-cierre, fin de semana)
+    todas las horas comparten la epoca de la ultima rueda cerrada: se
+    re-analiza UNA vez despues de las 16:00 (para tomar el cierre definitivo)
+    y despues nada hasta la apertura siguiente.
+
+    Devuelve "" cuando el refresco intradia esta apagado: sin epoca no hay
+    gate y el loop se comporta como antes (recalcula en cada pasada).
+    """
+    minutes = _intraday_minutes() if minutes is None else minutes
+    if minutes <= 0:
+        return ""
+    now_et = _now_et(now_et)
+    mins = now_et.hour * 60 + now_et.minute
+    if now_et.weekday() < 5 and _MKT_OPEN_MIN <= mins < _MKT_CLOSE_MIN:
+        return f"{now_et.date().isoformat()}#{mins // minutes:03d}"
+    return f"{_last_session_day(now_et)}#cierre"
+
+
+def _analysis_is_fresh(sig, epoch):
+    """True si `sig` ya se calculo en esta epoca (no hay que recalcularlo).
+
+    Un analisis fallido (None) nunca es fresco: se reintenta en la pasada
+    siguiente en vez de esperar una hora."""
+    return bool(epoch) and bool(sig) and sig.get("epoch") == epoch
+
+
+def _drop_partial_bar(df, now_et=None):
+    """Decide si la barra del dia EN CURSO entra al analisis.
+
+    Con `SIGNALS_INTRADAY_REFRESH_MINUTES > 0` la barra viva SE MANTIENE: el
+    analisis mira el precio de hoy para poder aprovechar ruedas volatiles. Lo
+    que evita el parpadeo no es descartar la barra sino la epoca de
+    `signal_epoch()`, que congela el resultado hasta el proximo salto de hora.
+
+    Con el refresco en 0 vuelve el modo viejo: si la ultima barra es de HOY
     (America/New_York) y la sesion aun no cerro (antes de las 16:00 ET), se
-    descarta; despues del cierre la barra ya es definitiva y se mantiene.
+    descarta y las señales corren solo sobre cierres confirmados.
+
+    En ambos modos se descarta una ultima barra con cierre invalido (NaN): es
+    lo que devuelve yfinance a veces antes de la apertura, y dejarla adentro
+    envenena indicadores y precio con NaN.
 
     `now_et` es inyectable solo para tests."""
     if df is None or len(df) < 2:
         return df
-    if not getattr(config, "SIGNALS_CONFIRMED_CLOSE_ONLY", True):
+    try:
+        last_close = df["close"].iloc[-1]
+        if last_close is None or last_close != last_close:   # NaN
+            return df.iloc[:-1]
+    except Exception:
+        pass
+    if _intraday_minutes() > 0:
         return df
     try:
-        if now_et is None:
-            try:
-                from zoneinfo import ZoneInfo
-                now_et = datetime.now(ZoneInfo("America/New_York"))
-            except Exception:
-                # Sin zoneinfo: EDT (UTC-4) de marzo a noviembre, EST (UTC-5) el
-                # resto. Con el -5 fijo el reloj corria 1h atrasado en verano y
-                # entre las 16:00 y 17:00 ET descartaba un cierre YA confirmado.
-                from datetime import timedelta, timezone
-                _utc = datetime.now(timezone.utc)
-                _off = 4 if 3 <= _utc.month <= 11 else 5
-                now_et = _utc - timedelta(hours=_off)
+        now_et = _now_et(now_et)
         if now_et.hour >= 16:
             return df
         last_raw = str(df["date"].iloc[-1]).strip().split()[0].replace("-", "")[:8]
@@ -330,9 +404,20 @@ def analyze_symbol(df):
         ind = indicators.calculate_all(df)
         sig = signals.generate_signal(ind)
         sig["price"] = float(df["close"].iloc[-1])
-        # Fecha del ultimo cierre confirmado sobre el que se calculo la señal
+        # Fecha de la ultima barra sobre la que se calculo la señal (cierre
+        # confirmado, o la rueda en curso si el refresco intradia esta activo)
         _d = str(df["date"].iloc[-1]).strip().split()[0].replace("-", "")[:8]
         sig["as_of"] = f"{_d[:4]}-{_d[4:6]}-{_d[6:8]}" if len(_d) == 8 and _d.isdigit() else str(df["date"].iloc[-1])
+        # Epoca del analisis: el loop la usa para no recalcular dentro de la
+        # misma hora. `live_bar` avisa que la ultima vela todavia se esta
+        # formando — la señal puede revertir antes del cierre y el backtest
+        # (que solo ve barras cerradas) nunca midio ese estado.
+        _now = _now_et()
+        sig["epoch"] = signal_epoch(_now)
+        sig["live_bar"] = bool(
+            sig["as_of"] == _now.date().isoformat()
+            and _now.weekday() < 5
+            and (_now.hour * 60 + _now.minute) < _MKT_CLOSE_MIN)
 
         # Backtesting (usa indicadores pre-computados sobre todo el DataFrame)
         bt = backtester.run_backtest(df, indicators_dict=ind)
@@ -427,8 +512,19 @@ def get_rt_price(symbol):
 def run_analysis():
     global analysis_cache, last_update_time
     _IB_HIST_FAILS["n"] = 0  # reintentar IB al inicio de cada ciclo
+    epoch = signal_epoch()
     total = len(stock_list)
+    fresh = 0
     for i, symbol in enumerate(stock_list):
+        # Gate por epoca: dentro de la misma hora (o fuera del horario de
+        # mercado) el analisis cacheado sigue siendo el vigente. Sin esto la
+        # barra viva se re-evaluaria cada 5 min y las recomendaciones volverian
+        # a parpadear — ademas de gastar ~200 pedidos historicos por pasada.
+        with update_lock:
+            cached = analysis_cache.get(symbol)
+        if _analysis_is_fresh(cached, epoch):
+            fresh += 1
+            continue
         req_id = 2000 + i
         print(f"  Analizando {symbol}... ({i + 1}/{total})")
         df = fetch_historical(ib_app, symbol, req_id,
@@ -440,7 +536,11 @@ def run_analysis():
             last_update_time = datetime.now().strftime("%H:%M:%S")
         time.sleep(1)
 
-    print(f"  Análisis completo: {last_update_time}")
+    if fresh == total and total:
+        print(f"  Sin cambios: los {total} análisis siguen vigentes ({epoch})")
+    else:
+        print(f"  Análisis completo: {last_update_time}"
+              + (f" ({fresh} ya vigentes)" if fresh else ""))
 
 
 def analysis_loop():
@@ -472,8 +572,15 @@ def get_etf_rt_price(symbol):
 def run_etf_analysis():
     global etf_analysis_cache, etf_last_update_time
     _IB_HIST_FAILS_ETF["n"] = 0  # reintentar IB al inicio de cada ciclo
+    epoch = signal_epoch()
     total = len(etf_list)
+    fresh = 0
     for i, symbol in enumerate(etf_list):
+        with etf_update_lock:          # ver gate por epoca en run_analysis()
+            cached = etf_analysis_cache.get(symbol)
+        if _analysis_is_fresh(cached, epoch):
+            fresh += 1
+            continue
         req_id = 3000 + i
         print(f"  [ETF] Analizando {symbol}... ({i + 1}/{total})")
         df = fetch_historical(ib_app, symbol, req_id,
@@ -485,7 +592,11 @@ def run_etf_analysis():
             etf_last_update_time = datetime.now().strftime("%H:%M:%S")
         time.sleep(1)
 
-    print(f"  [ETF] Análisis completo: {etf_last_update_time}")
+    if fresh == total and total:
+        print(f"  [ETF] Sin cambios: los {total} análisis siguen vigentes ({epoch})")
+    else:
+        print(f"  [ETF] Análisis completo: {etf_last_update_time}"
+              + (f" ({fresh} ya vigentes)" if fresh else ""))
 
 
 def etf_analysis_loop():
@@ -681,6 +792,29 @@ def _analysis_as_of(sig):
         if t:
             return str(t)[:10]
     return ""
+
+
+def signals_label(cache):
+    """Texto del pie: sobre QUE barra corren las señales del lote.
+
+    Con refresco intradia la respuesta ya no es solo una fecha ("cierre del
+    18-09"): durante la rueda el analisis mira la vela de HOY y se recalcula
+    cada hora, y eso hay que decirlo — una señal sobre una barra a medio formar
+    puede revertir antes del cierre."""
+    vals = [d for d in cache.values() if d]
+    if not vals:
+        return ""
+    ref = max((_analysis_as_of(d) for d in vals), default="")
+    live = [d for d in vals if d.get("live_bar")]
+    if not live:
+        return f"cierre del {ref}" if ref else ""
+    ep = max((str(d.get("epoch") or "") for d in live), default="")
+    bucket = ep.split("#")[-1] if "#" in ep else ""
+    mins = _intraday_minutes()
+    if bucket.isdigit() and mins > 0:
+        t = int(bucket) * mins
+        return f"rueda en curso, {t // 60:02d}:{t % 60:02d} ET"
+    return "rueda en curso"
 
 
 def _stale_as_of_cutoff(cache):
@@ -3066,7 +3200,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 </div>
 
 <div class="footer">
-  <span>Actualizado: <span id="last-update">--</span> &bull; Proximo: <span id="next-update">--</span><span id="signals-asof-wrap" style="display:none" title="Las señales y recomendaciones se calculan SOLO sobre cierres diarios confirmados: durante la sesion no parpadean con cada tick; se actualizan cuando cierra la rueda"> &bull; Señales al cierre del <span id="signals-asof">--</span></span></span>
+  <span>Actualizado: <span id="last-update">--</span> &bull; Proximo: <span id="next-update">--</span><span id="signals-asof-wrap" style="display:none" title="Durante la rueda el analisis mira la vela de HOY y se recalcula cada hora en punto (no con cada tick): capta jornadas volatiles sin que las recomendaciones parpadeen. Fuera del horario corre sobre el ultimo cierre confirmado."> &bull; Señales: <span id="signals-asof">--</span></span></span>
   <span id="footer-port"></span>
 </div>
 <script>
@@ -5343,8 +5477,9 @@ function _renderStockList(data){
     if(data.port)document.getElementById("port-info").textContent="Puerto: "+data.port+" ("+(data.port===7497?"PAPER":"LIVE")+")";
     document.getElementById("footer-port").textContent="Puerto: "+data.port;
     document.getElementById("last-update").textContent=data.last_update||"--";
-    if(data.signals_as_of){
-      document.getElementById("signals-asof").textContent=data.signals_as_of;
+    let _sigTxt=data.signals_label||(data.signals_as_of?('cierre del '+data.signals_as_of):'');
+    if(_sigTxt){
+      document.getElementById("signals-asof").textContent=_sigTxt;
       document.getElementById("signals-asof-wrap").style.display='';
     }
     let next=new Date(Date.now()+REFRESH_MS);
@@ -5723,7 +5858,7 @@ function _mpHeadInner(){
     '<span class="mp-px">$'+_n(d.price,2)+'</span>'+
     '<span class="mp-chg" style="color:'+chCol+'">'+(ch>=0?'+':'')+_n(ch,2)+'% <span style="font-weight:600;color:var(--muted)">'+when+'</span></span>'+
     '<span class="mp-chips">'+_mpChipsHTML(d)+'</span>'+
-    '<span class="mp-upd"'+(d.analysis_as_of?' title="Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) se calcula sobre cierres diarios confirmados"':'')+'>'+(live?'&#9679; sesion en vivo':'al cierre')+' &middot; act. '+_mpEsc((d.updated||'').slice(11,16))+' NY'+(d.analysis_as_of?' &middot; analisis al cierre del '+_mpEsc(d.analysis_as_of):'')+'</span>'+
+    '<span class="mp-upd"'+(d.analysis_as_of?' title="'+(d.analysis_live?'Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) mira la vela de HOY y se recalcula cada hora en punto':'Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) se calcula sobre el ultimo cierre confirmado')+'"':'')+'>'+(live?'&#9679; sesion en vivo':'al cierre')+' &middot; act. '+_mpEsc((d.updated||'').slice(11,16))+' NY'+(d.analysis_as_of?(d.analysis_live?' &middot; analisis de la rueda en curso':' &middot; analisis al cierre del '+_mpEsc(d.analysis_as_of)):'')+'</span>'+
   '</div>';
   let rows=[
     ['Momentum',d.momentum?_mpEsc(d.momentum.text):null],
@@ -7448,6 +7583,7 @@ def api_data():
         "last_update": lu,
         "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
                              default=""),
+        "signals_label": signals_label(snapshot),
         "port": config.IB_PORT,
         "top3": top3,
     }), mimetype="application/json")
@@ -7521,6 +7657,7 @@ def api_etf_data():
         "last_update": lu,
         "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
                              default=""),
+        "signals_label": signals_label(snapshot),
         "port": config.IB_PORT,
         "top3": etf_top3,
     }), mimetype="application/json")

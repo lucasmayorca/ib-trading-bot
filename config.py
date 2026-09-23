@@ -56,15 +56,27 @@ MIN_OPPORTUNITY_TARGET_PCT_ETF = 7.0    # ETFs
 # Cuantas recomendaciones "Top" mostrar en cada scanner (acciones y ETFs).
 TOP_RECOMMENDATIONS = 5
 
-# Señales SOLO sobre cierres diarios confirmados. Durante la sesion, la barra
-# del dia en curso esta a medio formar: las condiciones de giro del sistema
-# (hist[-1] vs hist[-2], marron vs media, RSI) se re-evaluaban cada 5 min sobre
-# un valor que seguia moviendose y las recomendaciones parpadeaban intradia.
-# El horizonte real del usuario es swing de semanas (mediana ~31 dias por trade,
-# medido de trades_imported.json): la señal se decide al cierre, no tick a tick.
-# Ademas el backtest solo ve barras cerradas — con esto las señales en vivo
-# miden lo mismo que sus estadisticas. Poner en False para volver al modo vivo.
-SIGNALS_CONFIRMED_CLOSE_ONLY = True
+# Cada cuantos MINUTOS se re-evaluan señales y recomendaciones durante la rueda.
+# 0 = modo viejo: solo cierres diarios confirmados (la barra del dia en curso se
+# descarta hasta las 16:00 ET).
+#
+# El problema que resuelve el valor 60: el analisis corria sobre el cierre de
+# AYER durante toda la jornada, asi que una rueda muy volatil no movia nada
+# hasta el dia siguiente. Pero re-evaluarlo en cada ciclo de 5 min tampoco sirve
+# — las condiciones de giro del sistema son comparaciones de ultima barra
+# (hist[-1] vs hist[-2], marron vs media, RSI) y con la barra a medio formar
+# parpadeaban: las recomendaciones entraban y salian del Top varias veces por
+# hora. El punto medio es una barra viva pero "congelada por hora": el analisis
+# ve el precio de hoy y se refresca en el reloj (10:00, 11:00, ... ET), sin
+# reaccionar a cada tick. Coherente con el horizonte swing del usuario (mediana
+# ~31 dias por trade, medido de trades_imported.json): el cortisimo plazo no
+# deberia cambiar la tesis, pero el analisis tiene que estar al dia.
+#
+# Contrapartida asumida: el backtest solo ve barras CERRADAS, asi que durante la
+# rueda la señal en vivo se calcula sobre una barra que sus estadisticas nunca
+# vieron (la ultima vela puede revertir antes del cierre). `live_bar=True` en
+# cada analisis marca exactamente cuando pasa eso.
+SIGNALS_INTRADAY_REFRESH_MINUTES = 60
 
 # Antiguedad maxima (dias corridos) de un analisis para que compita en Top
 # Recomendaciones. El cache de analisis esta indexado POR SIMBOLO y no se purga

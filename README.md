@@ -17,10 +17,13 @@ ejecutable (3/3), y expone estados granulares intermedios — `COMPRA/VENTA`,
 `COMPRA/VENTA INMINENTE` (2/3 con zonas coherentes), `VIRANDO A…`, `ZONA DE
 SOBRE(VENTA|COMPRA)`, `NEUTRAL`.
 
-**Señales sobre cierres confirmados.** Durante la sesión la vela del día está a
-medio formar: evaluar los giros ahí hace parpadear las recomendaciones cada 5
-minutos. Todo el análisis corre sobre **cierres diarios confirmados**, acorde a un
-horizonte swing (mediana ~31 días por trade).
+**Análisis en vivo, pero con reloj de hora.** Durante la sesión la vela del día
+está a medio formar: evaluar los giros ahí hace parpadear las recomendaciones
+cada 5 minutos; ignorarla deja el análisis clavado en el cierre de ayer toda la
+jornada. El sistema usa la vela viva y **recalcula una vez por hora en punto**
+(10:00, 11:00, … ET), así capta jornadas volátiles sin reaccionar a cada tick —
+acorde a un horizonte swing (mediana ~31 días por trade). Fuera del horario
+corre una sola vez al cierre.
 
 **Backtest calibrado, no win-rate crudo.** Cooldown para no solapar trades, coste
 round-trip por operación, y una confianza que es significancia estadística del

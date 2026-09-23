@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+import config
 import indicators
 import patterns
 import signals
@@ -101,14 +102,18 @@ def _download_intraday():
 
 
 def _drop_partial_bar(df, now_et=None):
-    """Descarta la barra diaria EN CURSO: el ANALISIS del pulso (indicadores,
-    señal, veredicto, figuras, S/R) se calcula solo sobre cierres confirmados
-    — espejo de vista_web._drop_partial_bar, mantener paridad. Sin esto, el
-    momentum ("MACD subiendo/cayendo"), las condiciones x/3 y el veredicto se
-    re-evaluaban cada 10 min sobre una barra a medio formar y parpadeaban
-    intradia. La lectura de la SESION (gap/RVOL) y el precio del header siguen
-    usando la barra viva a proposito — su funcion es leer la sesion en curso."""
+    """Decide si la barra del dia EN CURSO entra al ANALISIS del pulso
+    (indicadores, señal, veredicto, figuras, S/R) — espejo de
+    vista_web._drop_partial_bar, mantener paridad.
+
+    Con refresco intradia activo la barra viva se mantiene; lo que evita que el
+    momentum y el veredicto parpadeen cada 10 min es `_analysis_frame`, que
+    congela el DataFrame del analisis hasta el proximo salto de hora. La lectura
+    de la SESION (gap/RVOL) y el precio del header usan siempre la barra viva a
+    proposito — su funcion es leer la sesion en curso."""
     if df is None or len(df) < 2:
+        return df
+    if _intraday_minutes() > 0:
         return df
     try:
         if now_et is None:
@@ -120,6 +125,30 @@ def _drop_partial_bar(df, now_et=None):
     except Exception:
         pass
     return df
+
+
+def _intraday_minutes():
+    try:
+        return max(0, int(getattr(config, "SIGNALS_INTRADAY_REFRESH_MINUTES", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _analysis_frame(df_full):
+    """DataFrame sobre el que corre el ANALISIS, congelado por epoca.
+
+    El pulso se reconstruye cada 10 min (TTL) porque la lectura de sesion tiene
+    que estar fresca, pero el analisis no debe moverse dentro de la misma hora:
+    se cachea el frame de la epoca y se reusa hasta que `signal_epoch` avanza.
+    Asi el header late cada 10 min y el veredicto cada hora, como el escaner."""
+    from vista_web import signal_epoch
+    epoch = signal_epoch()
+    if epoch and _cache.get("an_epoch") == epoch and _cache.get("an_df") is not None:
+        return _cache["an_df"], epoch
+    df = _drop_partial_bar(df_full)
+    _cache["an_epoch"] = epoch
+    _cache["an_df"] = df
+    return df, epoch
 
 
 # ══════════════════════════════════════════════════════════════
@@ -517,9 +546,10 @@ def _build_pulse():
         return {"error": "yfinance no devolvio datos para SPY"}
     intra = _download_intraday()
 
-    # ANALISIS sobre cierres confirmados; la barra viva queda solo para el
-    # header (precio/Δ%) y la lectura de sesion (df_full)
-    df = _drop_partial_bar(df_full)
+    # ANALISIS sobre el frame congelado por epoca (barra viva si el refresco
+    # intradia esta activo); la barra viva alimenta ademas el header (precio/Δ%)
+    # y la lectura de sesion (df_full), que si se refrescan cada 10 min
+    df, _epoch = _analysis_frame(df_full)
 
     ind = indicators.calculate_all(df)
     sig = signals.generate_signal(ind)
@@ -616,6 +646,8 @@ def _build_pulse():
         "price": _r(live_close), "prev_close": _r(prev_close),
         "change_pct": _r(change_pct, 2),
         "analysis_as_of": df["date"].iloc[-1],
+        # True = el analisis corre sobre la vela de HOY, todavia en formacion
+        "analysis_live": bool(len(df) == len(df_full) and session.get("is_live")),
         "high_52w": _r(high_52w),
         "verdict": verdict,
         "system": {"signal": sig["signal"], "label": sig["signal_label"],

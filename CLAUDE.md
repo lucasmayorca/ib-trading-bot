@@ -106,22 +106,42 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   que el corte de circuito de un loop arrastraba al otro a yfinance a mitad de pasada (o se lo
   reseteaba) → un símbolo podía analizarse con barras de IB en un tab y de yfinance en el otro.
 - `SCAN_INTERVAL_SECONDS = 300` (5 min)
-- **`SIGNALS_CONFIRMED_CLOSE_ONLY = True` (2026-08)**: señales/recomendaciones SOLO sobre cierres
-  diarios confirmados. `_drop_partial_bar` (vista_web.py, espejo en `bridge/main.py` — paridad)
-  descarta la barra del día en curso si es de HOY (ET) y aún no son las 16:00 ET. Motivo: las
-  condiciones de giro del sistema son comparaciones de última barra (`hist[-1] > hist[-2]`, marrón
-  vs media, RSI) y con la barra parcial se re-evaluaban cada ciclo de 5 min sobre un valor en
-  movimiento → las recomendaciones parpadeaban intradía (entraban/salían del Top). El horizonte
-  real del usuario es swing de semanas (mediana **31 días** por trade, medido de
-  `trades_imported.json` — ver memoria `user_trading-horizon`); la señal se decide al cierre.
-  Además el backtest solo ve barras cerradas, así que ahora las señales en vivo miden lo mismo que
-  sus estadísticas. Efectos colaterales asumidos: el chart diario no muestra la vela de hoy durante
-  la sesión (los períodos 1D/1W intradía sí, van por `/api/bars`); `sig["price"]` es el último
-  cierre confirmado (el scanner igual pisa con `get_rt_price` si TWS está conectada, y Mi Cartera
-  usa `precio_actual` vivo de IB). El footer muestra "Señales al cierre del <fecha>"
-  (`signals_as_of` en `/api/data` y `/api/etf-data`, del campo `as_of` de cada análisis).
-  **OJO: `bot.py` (el bot que ejecuta órdenes) sigue usando la barra viva** — alinearlo cambia el
-  timing de ejecución real y quedó como decisión pendiente del usuario.
+- **`SIGNALS_INTRADAY_REFRESH_MINUTES = 60` (2026-09, reemplaza a `SIGNALS_CONFIRMED_CLOSE_ONLY`)**:
+  el análisis mira la vela de HOY y se recalcula **una vez por hora**, no en cada ciclo de 5 min.
+  Historia: primero se evaluaba con la barra viva en cada pasada → las condiciones de giro son
+  comparaciones de última barra (`hist[-1] > hist[-2]`, marrón vs media, RSI) y sobre una vela a
+  medio formar parpadeaban (las recomendaciones entraban y salían del Top varias veces por hora).
+  El parche de 2026-08 fue descartar la barra viva, pero eso dejó el análisis clavado en el cierre
+  de AYER durante toda la jornada: una rueda muy volátil no movía nada hasta el día siguiente.
+  Solución actual: **barra viva + época**. `signal_epoch()` (vista_web, espejo en `bridge/main.py`
+  — mantener paridad, hay test) devuelve `YYYY-MM-DD#HHH` alineado al RELOJ mientras la rueda está
+  abierta (10:00, 11:00, … ET) y `YYYY-MM-DD#cierre` fuera del horario. Los loops (`run_analysis`,
+  `run_etf_analysis` y los dos del bridge) saltean el símbolo cuyo análisis cacheado ya tiene la
+  época vigente, así que dentro de la hora nada se recalcula y el resultado no puede parpadear;
+  además ahorra ~200 pedidos históricos por pasada. Fuera del horario (pre-market, post-cierre, fin
+  de semana) todas las horas comparten la época de la última rueda cerrada: se re-analiza **una
+  sola vez** después de las 16:00 ET para tomar el cierre definitivo y después nada hasta la
+  apertura. Un análisis fallido (`None`) nunca es "fresco" → se reintenta en la pasada siguiente,
+  no en una hora. `SIGNALS_INTRADAY_REFRESH_MINUTES = 0` restaura el modo viejo (solo cierres
+  confirmados, sin gate). Cada análisis viaja con `epoch`, `as_of` (fecha de la barra usada) y
+  **`live_bar`** (la vela todavía se está formando).
+  **Contrapartida asumida y documentada**: el backtest solo ve barras CERRADAS, así que durante la
+  rueda la señal en vivo corre sobre una barra que sus estadísticas nunca midieron — la vela puede
+  revertir antes del cierre. Medido: las stats del backtest salen **idénticas** en los dos modos
+  (la última barra no puede abrir un trade que resuelva), lo que cambia es la señal de hoy. Ejemplo
+  real 2026-09-23 11:00 ET: AMD "VIRANDO A VENTA" (cierre de ayer) vs **VENTA FUERTE** (rueda en
+  curso); SPY y NVDA NEUTRAL vs VIRANDO A VENTA.
+  `_drop_partial_bar` ahora solo descarta la vela de hoy cuando el refresco está en 0 — pero en
+  **los dos modos** descarta una última barra con cierre NaN (yfinance la devuelve antes de la
+  apertura y envenena indicadores y precio).
+  El footer dice "Señales: rueda en curso, 11:00 ET" o "Señales: cierre del <fecha>"
+  (`signals_label` en `/api/data` y `/api/etf-data`; **`signals_as_of` sigue siendo la FECHA** —
+  es la referencia que compara `_asOfBadge`, no tocarla).
+  **OJO: `bot.py` (el bot que ejecuta órdenes) siempre usó la barra viva** — ahora el dashboard y
+  el bot miran lo mismo, pero el bot no tiene gate horario.
+  ⚠ El gate y la barra viva están también en `bridge/main.py` ⇒ **requiere reinstalar el bridge**
+  (`rm -rf ~/.ib-bridge && curl -sL .../install-bridge.sh | bash`); hasta entonces el cloud sigue
+  mostrando el cierre confirmado del día anterior.
 - `MAX_PER_TRADE = 5000` USD
 - `STOP_LOSS_PCT = 3.0`, `TAKE_PROFIT_PCT = 8.0`
 - `MAX_OPEN_POSITIONS = 10`
@@ -649,13 +669,16 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
 - Patrón `enrichment.py`: server-side puro vía yfinance (5y diario + 15m sesión), cache TTL
   10 min, cero dependencia de TWS/bridge → local y cloud idénticos. Reutiliza
   `indicators.calculate_all` + `signals.check_buy/sell_conditions` (paridad total de lecturas).
-- **Análisis al cierre confirmado (2026-08)**: `_build_pulse` separa `df_full` (barra viva) de
-  `df = _drop_partial_bar(df_full)` (espejo propio, fechas YYYY-MM-DD). Indicadores, señal,
-  momentum, condiciones x/3, veredicto, figuras, S/R y chart corren sobre `df` (cierres
-  confirmados — sin esto parpadeaban cada 10 min con la barra a medio formar); el precio/Δ% del
-  header (`price` = cotización viva), `_session_read(df_full, ...)` (gap/RVOL proyectado) y el
-  máximo 52w usan la barra viva A PROPÓSITO (leen la sesión, no son señal). El payload expone
-  `analysis_as_of` (fecha del último cierre analizado), mostrado en `.mp-upd`.
+- **Dos relojes: sesión cada 10 min, análisis cada hora (2026-08, ajustado 2026-09)**:
+  `_build_pulse` separa `df_full` (barra viva, se re-descarga con el TTL de 10 min) de
+  `df, _ = _analysis_frame(df_full)`, el frame del ANÁLISIS **congelado por época**: indicadores,
+  señal, momentum, condiciones x/3, veredicto, figuras, S/R y chart corren sobre ese frame y no se
+  mueven dentro de la misma hora (sin eso parpadeaban cada 10 min con la barra a medio formar).
+  Con `SIGNALS_INTRADAY_REFRESH_MINUTES > 0` ese frame incluye la vela de hoy; con 0 la descarta.
+  El precio/Δ% del header, `_session_read(df_full, ...)` (gap/RVOL proyectado) y el máximo 52w usan
+  la barra viva A PROPÓSITO y sí laten cada 10 min (leen la sesión, no son señal). El payload
+  expone `analysis_as_of` + `analysis_live`, mostrados en `.mp-upd` ("analisis de la rueda en
+  curso" vs "analisis al cierre del <fecha>").
 - **Endpoint `/api/spy-pulse`** (local y espejo cloud con `@login_required`). ¡OJO!:
   `/api/market-pulse` YA EXISTE y es OTRA cosa (quotes + sentimiento miedo/codicia del ticker
   del header/briefing) — no reutilizar ese nombre.

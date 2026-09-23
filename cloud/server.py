@@ -421,11 +421,21 @@ def _record_failures(store, failed, tag=""):
 
 
 def _signals_as_of(analysis):
-    """Cierre confirmado mas reciente del lote (pie de pagina "Señales al
-    cierre del ..."). El bridge no manda `as_of`, asi que sale de la ultima
-    barra del chart via vista_web._analysis_as_of."""
+    """Fecha de la barra mas reciente del lote — referencia para el badge de
+    analisis atrasado. Sale de `as_of` o, si el bridge es viejo y no lo manda,
+    de la ultima barra del chart (vista_web._analysis_as_of)."""
     from vista_web import _analysis_as_of
     return max((_analysis_as_of(s) for s in analysis.values() if s), default="")
+
+
+def _signals_label(analysis):
+    """Texto del pie: sobre que barra corren las señales (cierre confirmado o
+    rueda en curso + hora del ultimo refresco). Misma funcion que usa el local."""
+    from vista_web import signals_label
+    try:
+        return signals_label(analysis)
+    except Exception:
+        return ""
 
 
 def _prune_analysis(store, key, symbols):
@@ -644,6 +654,7 @@ def api_data():
             "top3": top3,
             "last_update": store.get("last_update", ""),
             "signals_as_of": _signals_as_of(analysis),
+            "signals_label": _signals_label(analysis),
             "bridge_connected": store.get("connected", False),
         }),
         mimetype="application/json",
@@ -713,6 +724,7 @@ def api_etf_data():
             "top3": etf_top3,
             "last_update": store.get("last_update", ""),
             "signals_as_of": _signals_as_of(etf_analysis),
+            "signals_label": _signals_label(etf_analysis),
             "bridge_connected": store.get("connected", False),
         }),
         mimetype="application/json",
@@ -1172,6 +1184,7 @@ def api_debug():
         "invariant_violations": audit,
         "invariants_ok": not audit,
         "signals_as_of": _signals_as_of(analysis),
+        "signals_label": _signals_label(analysis),
         "etf_signals_as_of": _signals_as_of(etf_analysis),
         "failed_last_cycle": store.get("failed", {}),
         "stocks_sent_by_bridge": len(stocks),
