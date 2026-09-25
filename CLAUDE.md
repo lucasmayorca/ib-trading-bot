@@ -486,6 +486,33 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   (10), señal activa (5), menos **penalización contra-tendencia** (hasta −15 si el precio va
   contra su SMA200). El fallback relajado en `compute_top3` usa la misma escala. Este 0-100 es
   el "Score" de las tarjetas de recomendación (con tooltip explicativo en el chip).
+- **El shrinkage tira al NEUTRAL de cada escala, no a cero (2026-09)**: `sample_w` multiplicaba
+  el componente ENTERO, así que un símbolo sin ninguna señal histórica (`n=0`) sacaba 0 de
+  expectancy y 0 de win_rate, **20 puntos menos** que uno con 12 trades y edge medido
+  exactamente nulo — el docstring prometía "shrunk toward neutral" y el código shrinkeaba hacia
+  lo peor. Ahora `s2 = 15 + (raw−15)·w` y `s5 = 5 + (raw−5)·w`; `s3` (profit factor) queda
+  multiplicativo **a propósito**: PF 1.0 ya ES 0 puntos, el neutral de esa escala coincide con
+  el cero. Consecuencia buscada: "no hay evidencia" ≠ "hay evidencia de que es malo" — un edge
+  medido negativo ahora rankea POR DEBAJO de uno desconocido, antes colapsaban juntos cerca de 0.
+  Con `sample_w=1` el score no cambia en nada.
+- **`win_rate_trend = None` NO es "no hay evidencia" (2026-09)**: si `n_side > 0` significa que
+  NINGÚN trade histórico de ese lado fue con-tendencia, o sea que el **100% de la muestra es
+  justo el caso que la penalización castiga** — y el código le daba la pena MÁS SUAVE (−10, sin
+  el +5 de profundización) al peor escenario. Caso real: CRWD con 15 ventas históricas, las 15
+  contra-tendencia. El reverso también es cierto: si la expectancy que ya sumó puntos se midió
+  ENTERA en este régimen, cobrar la pena completa es contar dos veces lo mismo. Resuelto con
+  `sell/buy_count_trend` (el backtester ya los exportaba, nadie los leía): la pena es un PRIOR
+  sobre lo no observado y se descuenta en la proporción en que la muestra ya cubre el régimen
+  (`pen *= 1 − 0.6·frac_counter·sample_w`), con **piso del 40%** — que el edge se haya medido
+  acá no borra que operar contra la SMA200 es estructuralmente más frágil. Barrido de 60 large
+  caps: los 9 elegibles suben (CRWD 48.1 → 54.1; los de muestra 100% contra-tendencia +6).
+- **La figura que contradice la tesis se DICE, no solo se penaliza (2026-09)**: `_score_stock`
+  ya restaba −3 por una figura confirmada en contra, pero `_generate_thesis`/`_generate_rationale`
+  imprimían su texto en seco — "Doble suelo confirmado, objetivo medido $277.31" dentro de una
+  VENTA INMINENTE con objetivo $202.44, sin explicar la contradicción. `_fig_frame(direction,
+  is_bearish)` (espejo de lo que la capa de VELAS ya hacía) devuelve el sufijo "a favor de la
+  tesis" / "OJO: va CONTRA la tesis". Espejo JS en `figChips` (⚠ en el chip + tooltip) —
+  mantener paridad.
 - **Confianza: "---" ≠ 0.** Con la confianza calibrada, **0 es un resultado real** (hubo señales
   históricas pero su edge no es estadísticamente significativo o es negativo) y se muestra como
   0 en rojo. `fconf(val, nSignals)` reserva "---" SOLO para `nSignals<=0` (ningún setup histórico

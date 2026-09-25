@@ -252,3 +252,77 @@ def test_pie_de_pagina_distingue_rueda_en_curso_de_cierre():
     cerrado = {"A": dict(mk_analysis("2026-09-22"), live_bar=False)}
     assert vw.signals_label(vivo) == "rueda en curso, 11:00 ET"
     assert vw.signals_label(cerrado) == "cierre del 2026-09-22"
+
+
+# ── 9. El score: shrinkage, contra-tendencia y figuras contradictorias ──
+
+def _score_of(**over):
+    """Analisis sintetico alcista con backtest manipulable, y su score."""
+    d = mk_analysis("2026-09-18", price=100.0, label="COMPRA FUERTE",
+                    signal="BUY", strength=5.1)
+    d["chart"]["mas"]["sma200_val"] = 70.0          # con-tendencia por defecto
+    d["backtest"] = {"confidence": 0, "buy_win_rate": 0.0,
+                     "buy_expectancy": 0.0, "buy_profit_factor": 1.0,
+                     "buy_count": 0, "buy_count_trend": 0,
+                     "buy_win_rate_trend": None}
+    d["backtest"].update(over.pop("backtest", {}))
+    d.update(over)
+    return vw._score_stock("TEST", d, min_target_pct=0)
+
+
+def test_sin_muestra_el_shrinkage_va_al_neutral_no_a_cero():
+    """Sin historia: expectancy y win rate valen su NEUTRAL (15 + 5), no 0.
+
+    Multiplicar el componente entero por sample_w castigaba al simbolo sin
+    historia 20 puntos mas que a uno con edge medido exactamente nulo. "Sin
+    evidencia" es la media, no lo peor.
+    """
+    sin_muestra = _score_of()                       # n=0 -> sample_w=0
+    # 25 (conviccion) + 0 (confianza) + 5 (señal activa) + 15 + 5 de neutral
+    assert sin_muestra == 50.0
+    # Un edge medido EXACTAMENTE nulo con muestra plena da lo mismo...
+    nulo = _score_of(backtest={"buy_count": 12, "buy_count_trend": 12,
+                               "buy_win_rate": 0.5, "buy_expectancy": 0.0,
+                               "buy_profit_factor": 1.0,
+                               "buy_win_rate_trend": 0.5})
+    assert nulo == sin_muestra
+    # ...y un edge medido NEGATIVO tiene que quedar por DEBAJO del desconocido.
+    malo = _score_of(backtest={"buy_count": 12, "buy_count_trend": 12,
+                               "buy_win_rate": 0.2, "buy_expectancy": -4.0,
+                               "buy_profit_factor": 1.0,
+                               "buy_win_rate_trend": 0.2})
+    assert malo < sin_muestra
+
+
+def test_muestra_toda_contra_tendencia_no_cobra_la_pena_entera():
+    """`win_rate_trend=None` con muestra NO es "no hay evidencia".
+
+    Caso CRWD: 15 ventas historicas, las 15 contra-tendencia. El codigo viejo
+    leia el None como el caso benigno y le daba la pena MAS SUAVE (-10) al peor
+    escenario. La expectancy que ya sumo puntos se midio EXACTAMENTE en este
+    regimen, asi que la pena (un prior sobre lo no observado) se descuenta.
+    """
+    bt = {"buy_count": 15, "buy_win_rate": 0.47, "buy_expectancy": 2.17,
+          "buy_profit_factor": 2.2}
+    def _sc(count_trend, wr_trend):
+        d = mk_analysis("2026-09-18", price=100.0, label="COMPRA FUERTE",
+                        signal="BUY", strength=5.1)
+        d["chart"]["mas"]["sma200_val"] = 130.0     # comprar BAJO la SMA200
+        d["backtest"] = dict(bt, confidence=0, buy_count_trend=count_trend,
+                             buy_win_rate_trend=wr_trend)
+        return vw._score_stock("TEST", d, min_target_pct=0)
+
+    toda_contra = _sc(0, None)                      # 15/15 contra-tendencia
+    toda_a_favor = _sc(15, 0.6)                     # el edge NO cubre este caso
+    assert toda_contra > toda_a_favor
+    # Piso del 40%: que el edge se haya medido aca no borra la pena.
+    assert toda_contra - toda_a_favor == 6.0        # pena de 4 vs pena de 10
+
+
+def test_figura_contra_la_tesis_se_dice_ademas_de_penalizarse():
+    """El score ya la penalizaba; la narrativa la imprimia en seco."""
+    assert "CONTRA la tesis" in vw._fig_frame("alcista", is_bearish=True)
+    assert "CONTRA la tesis" in vw._fig_frame("bajista", is_bearish=False)
+    assert "a favor" in vw._fig_frame("bajista", is_bearish=True)
+    assert "a favor" in vw._fig_frame("alcista", is_bearish=False)
+    assert vw._fig_frame(None, is_bearish=True) == ""

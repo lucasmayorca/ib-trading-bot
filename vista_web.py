@@ -774,6 +774,27 @@ def _label_is_bearish(label):
     return ("VENTA" in label and "SOBREVENTA" not in label) or "SOBRECOMPRA" in label
 
 
+def _fig_frame(direction, is_bearish):
+    """Encuadre de una figura tecnica contra la direccion de la tesis.
+
+    Espejo de lo que la capa de VELAS ya hacia: una figura cuya direccion
+    contradice el label no es un bug, es informacion — pero imprimirla en seco
+    dentro de una tesis que apunta al otro lado deja la contradiccion sin
+    explicar (caso real: "Doble suelo confirmado, objetivo medido $277.31"
+    dentro de una VENTA INMINENTE con objetivo $202.44). El score YA la
+    penaliza (-3 en `_score_stock`); la narrativa tambien tiene que decirlo.
+
+    Devuelve el sufijo a pegar al texto de la figura, o "" si no aplica.
+    Espejo en el JS: figChips — mantener paridad.
+    """
+    if direction not in ("alcista", "bajista"):
+        return ""
+    if (direction == "bajista") == bool(is_bearish):
+        return " — a favor de la tesis: refuerza el setup"
+    return (" — OJO: va CONTRA la tesis; su objetivo medido apunta al lado "
+            "opuesto y resta en el score")
+
+
 def _analysis_as_of(sig):
     """Fecha (YYYY-MM-DD) del cierre confirmado sobre el que corrio el analisis.
 
@@ -962,12 +983,14 @@ def _score_stock(sym, data, min_target_pct=None):
         expectancy = bt.get("sell_expectancy")
         pf = bt.get("sell_profit_factor")
         n_side = bt.get("sell_count", 0) or 0
+        n_trend = bt.get("sell_count_trend", 0) or 0
         wr_trend = bt.get("sell_win_rate_trend")
     else:
         wr = bt.get("buy_win_rate", 0) or 0
         expectancy = bt.get("buy_expectancy")
         pf = bt.get("buy_profit_factor")
         n_side = bt.get("buy_count", 0) or 0
+        n_trend = bt.get("buy_count_trend", 0) or 0
         wr_trend = bt.get("buy_win_rate_trend")
 
     # Small-sample shrinkage: with few historical trades, trust the edge less.
@@ -980,18 +1003,24 @@ def _score_stock(sym, data, min_target_pct=None):
     # Component 2: expectancy — the honest core (0-30), shrunk by sample size
     exp_val = float(expectancy) if expectancy is not None else 0.0
     exp_capped = max(-6.0, min(6.0, exp_val))          # ±6% per-trade caps the scale
-    s2 = ((exp_capped + 6.0) / 12.0) * 30 * sample_w    # 0.5*30 at zero edge, scaled
+    # El shrinkage tira hacia el NEUTRAL de la escala (15 = edge cero), NO hacia
+    # 0: multiplicar el componente entero castigaba al simbolo sin historia 15
+    # puntos MAS que a uno con edge medido exactamente nulo, y "sin evidencia"
+    # es la media, no lo peor. Con sample_w=1 el resultado es identico al viejo.
+    s2 = 15.0 + (((exp_capped + 6.0) / 12.0) * 30 - 15.0) * sample_w
 
     # Component 3: profit factor (0-15), shrunk by sample size
     pf_val = float(pf) if pf is not None else 1.0
     pf_norm = max(0.0, min(1.0, (pf_val - 1.0) / 1.5))  # PF 1.0->0, PF>=2.5->full
+    # Aca el shrinkage SI es multiplicativo: PF 1.0 (sin edge) ya ES 0 puntos,
+    # o sea el neutral de esta escala coincide con el cero.
     s3 = pf_norm * 15 * sample_w
 
     # Component 4: calibrated confidence / statistical robustness (0-15)
     s4 = min(confidence / 100, 1.0) * 15
 
-    # Component 5: win rate (0-10), shrunk by sample size
-    s5 = min(wr, 1.0) * 10 * sample_w
+    # Component 5: win rate (0-10), shrunk toward the 50% neutral (5 pts)
+    s5 = 5.0 + (min(wr, 1.0) * 10 - 5.0) * sample_w
 
     # Component 6: active order signal bonus (0 or 5)
     s6 = 5.0 if sig in ("BUY", "SELL") else 0.0
@@ -1012,6 +1041,22 @@ def _score_stock(sym, data, min_target_pct=None):
             pen = 10.0
             if wr_trend is not None and wr_trend < 0.5:
                 pen += 5.0
+            # `wr_trend is None` con muestra (n_side>0) NO significa "no hay
+            # evidencia": significa que NINGUN trade historico del lado fue
+            # con-tendencia, o sea que el 100% de la muestra es justo el caso
+            # que estamos penalizando. Tomarlo como el caso benigno le daba la
+            # pena MAS SUAVE al peor escenario (CRWD: 15 ventas, las 15
+            # contra-tendencia, y cobraba el -10 de base).
+            # La pena es un PRIOR sobre lo no observado, asi que se descuenta
+            # en la proporcion en que la muestra YA cubre este regimen: si toda
+            # la historia del lado es contra-tendencia, la expectancy/PF/WR que
+            # ya sumaron puntos se midieron EXACTAMENTE aca y cobrar la pena
+            # entera es contar dos veces lo mismo. Queda un piso del 40%: que
+            # el edge se haya medido en este regimen no borra que operar contra
+            # la SMA200 es estructuralmente mas fragil.
+            if n_side > 0:
+                frac_counter = 1.0 - (n_trend / n_side)
+                pen *= 1.0 - 0.6 * frac_counter * sample_w
             score -= pen
 
     # Confluencia con figura tecnica (patterns.py): bonus/malus ACOTADO — una
@@ -1491,7 +1536,8 @@ def _generate_rationale(sym, data, levels=None):
     # 2b. Figura tecnica + Fibonacci (patterns.py)
     pat = data.get("pattern")
     if pat and pat.get("text"):
-        parts.append(f"Figura: {pat['text']}")
+        parts.append("Figura: " + pat["text"]
+                     + _fig_frame(pat.get("direction"), is_bearish))
         if pat.get("secondary"):
             parts.append(f"Figura secundaria: {pat['secondary']}")
     fibd = data.get("fib")
@@ -1892,7 +1938,7 @@ def _generate_thesis(sym, data, levels, fund):
     fibd = data.get("fib")
     fig_bits = []
     if pat and pat.get("text"):
-        fig_bits.append(pat["text"])
+        fig_bits.append(pat["text"] + _fig_frame(pat.get("direction"), is_bearish))
     if fibd and fibd.get("text") and fibd.get("relevant", True):
         fig_bits.append("Fibonacci: " + fibd["text"])
     if fig_bits:
@@ -4833,8 +4879,9 @@ function figChips(r){
   if(r&&r.pattern){
     let p=r.pattern;
     let _ctx=(p.tier==='contexto');
-    let _tt=String(p.text||'')+(_ctx?' · Figura de CONTEXTO: sus niveles sirven de referencia pero su objetivo medido no se alcanza mas que el azar (edge '+(p.edge!=null?p.edge:'s/d')+' medido en 60 simbolos x 5A), asi que no pesa en el score ni en el veredicto.':' · Figura VALIDADA: edge '+(p.edge!=null?'+'+p.edge:'')+' sobre el baseline aleatorio (60 simbolos x 5A).');
-    h+='<span class="rec-thesis-fig" title="'+_tt.replace(/"/g,'&quot;')+'">'+p.name+' ('+p.status+(_ctx?', contexto':'')+')</span>';
+    let _contra=(p.direction==='alcista'||p.direction==='bajista')&&((p.direction==='bajista')!==_labelIsBearish(r.signal_label||r.signal||''));
+    let _tt=String(p.text||'')+(_contra?' · CONTRA la tesis actual: su objetivo medido apunta al lado opuesto y resta en el score.':'')+(_ctx?' · Figura de CONTEXTO: sus niveles sirven de referencia pero su objetivo medido no se alcanza mas que el azar (edge '+(p.edge!=null?p.edge:'s/d')+' medido en 60 simbolos x 5A), asi que no pesa en el score ni en el veredicto.':' · Figura VALIDADA: edge '+(p.edge!=null?'+'+p.edge:'')+' sobre el baseline aleatorio (60 simbolos x 5A).');
+    h+='<span class="rec-thesis-fig" title="'+_tt.replace(/"/g,'&quot;')+'">'+p.name+' ('+p.status+(_ctx?', contexto':'')+')'+(_contra?' ⚠':'')+'</span>';
   }
   if(r&&r.fib&&r.fib.at){
     h+='<span class="rec-thesis-fig" title="'+String(r.fib.text||'').replace(/"/g,'&quot;')+'">Fib '+r.fib.at+'%</span>';
