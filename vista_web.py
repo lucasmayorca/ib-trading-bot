@@ -1045,8 +1045,10 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     # Aca el shrinkage SI es multiplicativo: PF 1.0 (sin edge) ya ES 0 puntos,
     # o sea el neutral de esta escala coincide con el cero.
     s3 = pf_norm * 15 * sample_w
+    _pf_txt = ("sin trades perdedores (no se puede calcular)" if pf_val >= 999
+               else f"PF {pf_val:.2f}")
     _part("Profit factor", s3, 15,
-          f"PF {pf_val:.2f} — dolares ganados por dolar perdido "
+          f"{_pf_txt} — dolares ganados por dolar perdido "
           f"(1.0 = 0 pts, 2.5+ = maximo) · {_muestra}" + _ancla(0))
 
     # Component 4: calibrated confidence / statistical robustness (0-15)
@@ -1100,9 +1102,11 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
                 frac_counter = 1.0 - (n_trend / n_side)
                 pen *= 1.0 - 0.6 * frac_counter * sample_w
                 if frac_counter >= 0.999:
-                    _why += (f" — descontada: los {n_side} trades medidos fueron "
-                             "TODOS en este mismo regimen, la pena es un prior "
-                             "sobre lo no observado")
+                    _why += (" — descontada: el unico trade medido fue en este "
+                             "mismo regimen" if n_side == 1 else
+                             f" — descontada: los {n_side} trades medidos fueron "
+                             "TODOS en este mismo regimen")
+                    _why += ", la pena es un prior sobre lo no observado"
                 elif frac_counter > 0:
                     _why += (f" — descontada en parte: {n_side - n_trend} de "
                              f"{n_side} trades medidos fueron contra-tendencia")
