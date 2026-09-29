@@ -506,6 +506,18 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   (`pen *= 1 − 0.6·frac_counter·sample_w`), con **piso del 40%** — que el edge se haya medido
   acá no borra que operar contra la SMA200 es estructuralmente más frágil. Barrido de 60 large
   caps: los 9 elegibles suben (CRWD 48.1 → 54.1; los de muestra 100% contra-tendencia +6).
+- **Desglose del score en cada análisis (2026-09)**: `_score_stock(..., parts=[])` llena la lista
+  con `{lab, pts, max, why}` por componente **dentro del cálculo**, no afuera — un desglose
+  reconstruido en otro lado se desincroniza con la fórmula en el primer cambio de pesos y la
+  tarjeta pasa a explicar un número que ya no muestra (hay test: la suma de las filas == score).
+  Viaja como `score_parts` en `compute_top3` (acciones y ETFs) y en el deep analysis de Mi Cartera
+  (local + espejo `cloud/server.py`); si el símbolo es inelegible el desglose se descarta entero,
+  nunca se manda a medias. UI: panel `.sco-*` ("Cómo se compone el Score") arriba de Niveles de
+  Precio en los 3 acordeones, una fila por componente con micro-barra pts/max y el `why` en el
+  tooltip. El fallback relajado de `compute_top3` arma su propio desglose de 2 filas y lo dice.
+  Los chips del header (Score/Fuerza/Conf/WR/R/R) y las filas del panel expandido llevan tooltips
+  que aclaran **qué NO es** cada métrica (el score no es probabilidad ni retorno esperado; la
+  confianza no es probabilidad de ganar; el R/R es geometría de niveles, no probabilidad).
 - **La figura que contradice la tesis se DICE, no solo se penaliza (2026-09)**: `_score_stock`
   ya restaba −3 por una figura confirmada en contra, pero `_generate_thesis`/`_generate_rationale`
   imprimían su texto en seco — "Doble suelo confirmado, objetivo medido $277.31" dentro de una

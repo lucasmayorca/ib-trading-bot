@@ -326,3 +326,35 @@ def test_figura_contra_la_tesis_se_dice_ademas_de_penalizarse():
     assert "a favor" in vw._fig_frame("bajista", is_bearish=True)
     assert "a favor" in vw._fig_frame("alcista", is_bearish=False)
     assert vw._fig_frame(None, is_bearish=True) == ""
+
+
+def test_el_desglose_suma_exactamente_el_score():
+    """El desglose que ve el usuario tiene que SER la formula, no un relato.
+
+    Se llena dentro de `_score_stock`, junto al calculo: reconstruirlo afuera
+    se desincroniza con la formula en el primer cambio de pesos y la tarjeta
+    pasa a explicar un numero que ya no es el que muestra.
+    """
+    d = mk_analysis("2026-09-18", price=100.0, label="VENTA FUERTE",
+                    signal="SELL", strength=4.3)
+    d["chart"]["mas"]["sma200_val"] = 130.0     # con-tendencia: sin penalizacion
+    d["backtest"].update(sell_count_trend=10, sell_win_rate_trend=0.6)
+    parts = []
+    score = vw._score_stock("TEST", d, min_target_pct=0, parts=parts)
+    assert parts and parts[-1]["lab"] == "TOTAL"
+    assert parts[-1]["pts"] == round(score, 1)
+    suma = sum(p["pts"] for p in parts[:-1])
+    assert abs(suma - score) < 0.1, f"{suma} != {score}"
+    # Cada componente acotado dice su techo, y ninguno lo pasa.
+    for p in parts[:-1]:
+        if p["max"] is not None:
+            assert -0.01 <= p["pts"] <= p["max"] + 0.01, p
+
+
+def test_inelegible_no_deja_un_desglose_a_medias():
+    """Si el simbolo no califica, el desglose no puede quedar trunco: la UI
+    mostraria media formula sumando a un total que no existe."""
+    d = mk_analysis("2026-09-18", label="NEUTRAL", signal="HOLD")
+    parts = []
+    assert vw._score_stock("TEST", d, min_target_pct=0, parts=parts) is None
+    assert not any(p["lab"] == "TOTAL" for p in parts)

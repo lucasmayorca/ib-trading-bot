@@ -871,12 +871,15 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
     sig = data.get("signal", "HOLD")
 
     score = 0
+    score_parts = []
     try:
-        s = _score_stock(sym, data)
+        s = _score_stock(sym, data, parts=score_parts)
         if s is not None:
             score = round(s, 1)
+        else:
+            score_parts = []      # inelegible: el desglose quedaria a medias
     except Exception:
-        pass
+        score_parts = []
 
     return {
         "signal": sig,
@@ -885,6 +888,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "conditions_met": data.get("conditions_met", 0) or 0,
         "confidence": bt.get("confidence", 0) or 0,
         "score": score,
+        "score_parts": score_parts,
         "price": data.get("price", 0),
         "entry_low": levels.get("entry_low", 0),
         "entry_high": levels.get("entry_high", 0),

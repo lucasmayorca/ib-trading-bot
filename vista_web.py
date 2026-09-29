@@ -947,14 +947,24 @@ def audit_universe(cache, universe, label=""):
     return problems
 
 
-def _score_stock(sym, data, min_target_pct=None):
+def _score_stock(sym, data, min_target_pct=None, parts=None):
     """Score a stock 0-100 for top-N ranking. Returns None if ineligible.
 
     Ranks by the *expected quality* of the current signal, leaning on the
     backtest's per-trade expectancy (already net of costs) and profit factor
     rather than raw win rate. Small-sample edges are shrunk toward neutral,
     and signals that fight the SMA200 trend are penalized.
+
+    `parts` (lista opcional) se llena con el DESGLOSE de la formula —
+    {lab, pts, max, why} por componente — para que la UI pueda mostrar de
+    donde sale el numero en vez de pedirle al usuario que confie en el.
+    Se llena aca adentro, junto al calculo, a proposito: un desglose
+    reconstruido afuera se desincroniza con la formula en el primer cambio.
     """
+    def _part(lab, pts, mx, why):
+        if parts is not None:
+            parts.append({"lab": lab, "pts": round(float(pts), 1),
+                          "max": mx, "why": why})
     sig = data.get("signal", "HOLD")
     label = data.get("signal_label", sig)
     is_bearish = _label_is_bearish(label)
@@ -999,6 +1009,8 @@ def _score_stock(sym, data, min_target_pct=None):
 
     # Component 1: snapshot conviction (0-25)
     s1 = min(strength / 5.1, 1.0) * 25
+    _part("Fuerza de la señal", s1, 25, f"{strength:.1f} de 5.1 — indicadores "
+          f"que confirman y con que intensidad")
 
     # Component 2: expectancy — the honest core (0-30), shrunk by sample size
     exp_val = float(expectancy) if expectancy is not None else 0.0
@@ -1008,6 +1020,13 @@ def _score_stock(sym, data, min_target_pct=None):
     # puntos MAS que a uno con edge medido exactamente nulo, y "sin evidencia"
     # es la media, no lo peor. Con sample_w=1 el resultado es identico al viejo.
     s2 = 15.0 + (((exp_capped + 6.0) / 12.0) * 30 - 15.0) * sample_w
+    _muestra = (f"{n_side} trades historicos" if n_side else "sin trades historicos")
+    if sample_w < 1.0:
+        _muestra += (f" (<{robust_n}: el valor se acerca al neutral de 15)"
+                     if n_side else " — se toma el neutral de 15, no 0")
+    _part("Expectancy historica", s2, 30,
+          (f"{exp_val:+.2f}% por trade, neto de costes · {_muestra}"
+           if expectancy is not None else f"sin medir · {_muestra}"))
 
     # Component 3: profit factor (0-15), shrunk by sample size
     pf_val = float(pf) if pf is not None else 1.0
@@ -1015,15 +1034,25 @@ def _score_stock(sym, data, min_target_pct=None):
     # Aca el shrinkage SI es multiplicativo: PF 1.0 (sin edge) ya ES 0 puntos,
     # o sea el neutral de esta escala coincide con el cero.
     s3 = pf_norm * 15 * sample_w
+    _part("Profit factor", s3, 15,
+          f"PF {pf_val:.2f} (1.0 = 0 pts, 2.5+ = maximo) · {_muestra}")
 
     # Component 4: calibrated confidence / statistical robustness (0-15)
     s4 = min(confidence / 100, 1.0) * 15
+    _part("Confianza del backtest", s4, 15,
+          f"{confidence:.0f}/100 — significancia estadistica del edge x muestra")
 
     # Component 5: win rate (0-10), shrunk toward the 50% neutral (5 pts)
     s5 = 5.0 + (min(wr, 1.0) * 10 - 5.0) * sample_w
+    _part("Win rate", s5, 10,
+          f"{wr * 100:.0f}% historico · {_muestra}"
+          + ("" if sample_w >= 1.0 else " (se acerca al neutral de 5)"))
 
     # Component 6: active order signal bonus (0 or 5)
     s6 = 5.0 if sig in ("BUY", "SELL") else 0.0
+    _part("Señal activa", s6, 5,
+          f"{label} — 3/3 condiciones, ejecutable" if s6 else
+          f"{label} ({conditions}/3) — todavia no es señal del sistema")
 
     score = s1 + s2 + s3 + s4 + s5 + s6
 
@@ -1054,10 +1083,20 @@ def _score_stock(sym, data, min_target_pct=None):
             # entera es contar dos veces lo mismo. Queda un piso del 40%: que
             # el edge se haya medido en este regimen no borra que operar contra
             # la SMA200 es estructuralmente mas fragil.
+            _why = (f"{'vender' if is_bearish else 'comprar'} con el precio "
+                    f"{'sobre' if is_bearish else 'bajo'} su SMA200 (${sma200:,.2f})")
             if n_side > 0:
                 frac_counter = 1.0 - (n_trend / n_side)
                 pen *= 1.0 - 0.6 * frac_counter * sample_w
+                if frac_counter >= 0.999:
+                    _why += (f" — descontada: los {n_side} trades medidos fueron "
+                             "TODOS en este mismo regimen, la pena es un prior "
+                             "sobre lo no observado")
+                elif frac_counter > 0:
+                    _why += (f" — descontada en parte: {n_side - n_trend} de "
+                             f"{n_side} trades medidos fueron contra-tendencia")
             score -= pen
+            _part("Penalizacion contra-tendencia", -pen, None, _why)
 
     # Confluencia con figura tecnica (patterns.py): bonus/malus ACOTADO — una
     # figura chartista alineada con el label refuerza el setup; una confirmada
@@ -1071,12 +1110,23 @@ def _score_stock(sym, data, min_target_pct=None):
     if pat_dir in ("alcista", "bajista") and pat.get("tier") == "validada":
         aligned = (pat_dir == "bajista") == is_bearish
         confirmed = pat.get("status") == "confirmada"
+        _d = 0.0
         if aligned:
-            score += 5.0 if confirmed else 2.5
+            _d = 5.0 if confirmed else 2.5
         elif confirmed:
-            score -= 3.0
+            _d = -3.0
+        score += _d
+        if _d:
+            _part("Figura tecnica", _d, None,
+                  f"{pat.get('name', 'figura')} {pat_dir} ({pat.get('status')}) — "
+                  + ("a favor de la tesis" if aligned else "CONTRA la tesis")
+                  + ", edge medido sobre 217 simbolos x 10A")
 
-    return max(0.0, min(100.0, score))
+    score = max(0.0, min(100.0, score))
+    if parts is not None:
+        parts.append({"lab": "TOTAL", "pts": round(score, 1), "max": 100,
+                      "why": "acotado a 0-100"})
+    return score
 
 
 def _find_sr_levels(ohlc, atr, price, lookback=252, window=3):
@@ -2089,16 +2139,17 @@ def compute_top3(cache, min_target_pct=None, universe=None):
     vigentes = [(sym, data) for sym, data, _ in universe_items(cache, universe) if data]
     scored = []
     for sym, data in vigentes:
-        score = _score_stock(sym, data, min_target_pct)
+        breakdown = []
+        score = _score_stock(sym, data, min_target_pct, parts=breakdown)
         if score is not None:
-            scored.append((sym, data, score))
+            scored.append((sym, data, score, breakdown))
 
     scored.sort(key=lambda x: x[2], reverse=True)
 
     # If fewer than N eligible, relax filter: include best HOLDs with score > 0
     if len(scored) < top_n:
         for sym, data in vigentes:
-            if any(s == sym for s, _, _ in scored):
+            if any(s == sym for s, _, _, _ in scored):
                 continue  # already scored
             ohlc = (data.get("chart") or {}).get("ohlc", [])
             if len(ohlc) < 20:
@@ -2116,13 +2167,23 @@ def compute_top3(cache, min_target_pct=None, universe=None):
             confidence = bt.get("confidence", 0) or 0
             # Relaxed score for weak HOLDs: same scale as _score_stock's
             # conviction (25) + robustness (15) components, no edge credit.
-            s = min(strength / 5.1, 1.0) * 25 + min(confidence / 100, 1.0) * 15
+            c1 = min(strength / 5.1, 1.0) * 25
+            c2 = min(confidence / 100, 1.0) * 15
+            s = c1 + c2
             if s > 0:
-                scored.append((sym, data, round(s, 1)))
+                scored.append((sym, data, round(s, 1), [
+                    {"lab": "Fuerza de la señal", "pts": round(c1, 1), "max": 25,
+                     "why": f"{strength:.1f} de 5.1"},
+                    {"lab": "Confianza del backtest", "pts": round(c2, 1), "max": 15,
+                     "why": f"{confidence:.0f}/100"},
+                    {"lab": "TOTAL", "pts": round(s, 1), "max": 100,
+                     "why": "score relajado: el setup no califica para el ranking "
+                            "completo, se puntua solo conviccion + robustez"},
+                ]))
         scored.sort(key=lambda x: x[2], reverse=True)
 
     # Fetch fundamentals only for top candidates (not all 100)
-    top_syms = [sym for sym, _, _ in scored[:top_n + 3]]
+    top_syms = [sym for sym, _, _, _ in scored[:top_n + 3]]
     try:
         _fetch_fundamentals(top_syms)
     except Exception as e:
@@ -2130,7 +2191,7 @@ def compute_top3(cache, min_target_pct=None, universe=None):
 
     n_bars = 90
     top3 = []
-    for sym, data, score in scored[:top_n]:
+    for sym, data, score, breakdown in scored[:top_n]:
         levels = _compute_price_levels(data)
         rationale = _generate_rationale(sym, data, levels)
         bt = data.get("backtest", {}) or {}
@@ -2181,6 +2242,9 @@ def compute_top3(cache, min_target_pct=None, universe=None):
             "conditions_met": data.get("conditions_met", 0) or 0,
             "confidence": bt.get("confidence", 0) or 0,
             "score": round(score, 1),
+            # Desglose de la formula, generado DENTRO de _score_stock para que
+            # no se desincronice con el calculo — la UI lo muestra tal cual.
+            "score_parts": breakdown,
             "entry_low": levels["entry_low"],
             "entry_high": levels["entry_high"],
             "target": levels["target"],
@@ -2484,6 +2548,21 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .rec-ml{color:var(--muted);font-weight:600}
 .rec-mv{font-family:'JetBrains Mono',monospace;font-weight:700}
 .rec-levels{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:14px}
+/* Desglose del score: de donde sale cada punto */
+.sco{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:14px;margin-bottom:14px}
+.sco-t{font-size:10px;font-weight:700;color:#2456e6;text-transform:uppercase;letter-spacing:.6px;margin-bottom:9px}
+.sco-r{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;font-size:12px;padding:3px 0 6px;cursor:help}
+.sco-r:hover{background:rgba(36,86,230,.04)}
+.sco-l{color:var(--muted);font-weight:600}
+.sco-v{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--text);white-space:nowrap}
+.sco-v.neg{color:var(--sell)}
+.sco-max{color:var(--dim);font-weight:500}
+.sco-bar{grid-column:1/-1;height:3px;margin-top:1px;border-radius:2px;background:rgba(22,24,29,.07);overflow:hidden}
+.sco-bar>i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.sco-bar.neg>i{background:var(--sell)}
+.sco-tot{border-top:1px solid var(--glass-border);margin-top:7px;padding-top:7px}
+.sco-tot .sco-l{color:var(--text);font-weight:800;text-transform:uppercase;font-size:11px;letter-spacing:.4px}
+.sco-tot .sco-v{color:var(--accent);font-size:15px}
 .rec-lt{font-size:10px;font-weight:700;color:#2456e6;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
 .rec-lr{display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:4px 0}
 .rec-ll{color:var(--muted);font-weight:600}
@@ -3775,6 +3854,7 @@ function renderPortAnalysisList(positions){
     html+='<div class="rec-m"><span class="rec-ml" title="Retorno promedio historico de este setup en el backtest 5A — no es el retorno de tu posicion">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
     let bearPos=_labelIsBearish(rec.signal_label||sig);
+    html+=scoreBreakdownHTML(rec.score_parts);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Costo Prom.</span><span class="rec-lv lv-entry">$'+avgCost.toFixed(2)+'</span></div>';
     html+='<div class="rec-lr"><span class="rec-ll">Precio Actual</span><span class="rec-lv">$'+curPrice.toFixed(2)+'</span></div>';
@@ -4880,7 +4960,7 @@ function figChips(r){
     let p=r.pattern;
     let _ctx=(p.tier==='contexto');
     let _contra=(p.direction==='alcista'||p.direction==='bajista')&&((p.direction==='bajista')!==_labelIsBearish(r.signal_label||r.signal||''));
-    let _tt=String(p.text||'')+(_contra?' · CONTRA la tesis actual: su objetivo medido apunta al lado opuesto y resta en el score.':'')+(_ctx?' · Figura de CONTEXTO: sus niveles sirven de referencia pero su objetivo medido no se alcanza mas que el azar (edge '+(p.edge!=null?p.edge:'s/d')+' medido en 60 simbolos x 5A), asi que no pesa en el score ni en el veredicto.':' · Figura VALIDADA: edge '+(p.edge!=null?'+'+p.edge:'')+' sobre el baseline aleatorio (60 simbolos x 5A).');
+    let _tt=String(p.text||'')+(_contra?' · CONTRA la tesis actual: su objetivo medido apunta al lado opuesto y resta en el score.':'')+(_ctx?' · Figura de CONTEXTO: sus niveles sirven de referencia pero su objetivo medido no se alcanza mas que el azar (edge '+(p.edge!=null?p.edge:'s/d')+' medido sobre 217 simbolos x 10 años, 6.935 eventos), asi que no pesa en el score ni en el veredicto.':' · Figura VALIDADA: edge '+(p.edge!=null?'+'+p.edge:'')+' puntos sobre el baseline aleatorio (217 simbolos x 10 años, 6.935 eventos).');
     h+='<span class="rec-thesis-fig" title="'+_tt.replace(/"/g,'&quot;')+'">'+p.name+' ('+p.status+(_ctx?', contexto':'')+')'+(_contra?' ⚠':'')+'</span>';
   }
   if(r&&r.fib&&r.fib.at){
@@ -4895,6 +4975,29 @@ function figChips(r){
     h+='<span class="rec-thesis-fig rec-thesis-vela '+cls+'" title="'+ttl.replace(/"/g,'&quot;')+'">Vela: '+c.name+(c.status==='confirmada'?' ✓':(c.status==='por confirmar'?' ?':''))+(contra?' ⚠':'')+'</span>';
   }
   return h;
+}
+function scoreBreakdownHTML(sp){
+  // Desglose de la formula del score. Las filas vienen del SERVIDOR
+  // (_score_stock las llena junto al calculo) — reconstruirlas aca se
+  // desincronizaria con la formula en el primer cambio de pesos.
+  if(!sp||!sp.length)return '';
+  let h='<div class="sco"><div class="sco-t" title="Cada componente con los puntos que aporto y por que. Pasa el cursor por una fila para el detalle.">Cómo se compone el Score</div>';
+  for(let p of sp){
+    let tot=(p.lab==='TOTAL');
+    let neg=(p.pts<0);
+    let val=(p.pts>0&&!tot?'+':'')+p.pts.toFixed(1);
+    h+='<div class="sco-r'+(tot?' sco-tot':'')+'" title="'+String(p.why||'').replace(/"/g,'&quot;')+'">';
+    h+='<span class="sco-l">'+p.lab+'</span>';
+    h+='<span class="sco-v'+(neg?' neg':'')+'">'+val+(p.max!=null?'<span class="sco-max"> / '+p.max+'</span>':'')+'</span>';
+    if(!tot&&p.max!=null&&p.max>0){
+      h+='<span class="sco-bar"><i style="width:'+Math.max(0,Math.min(100,p.pts/p.max*100)).toFixed(0)+'%"></i></span>';
+    }else if(!tot){
+      // Ajuste sin techo (penalizacion / figura): barra relativa a ±15
+      h+='<span class="sco-bar'+(neg?' neg':'')+'"><i style="width:'+Math.min(100,Math.abs(p.pts)/15*100).toFixed(0)+'%"></i></span>';
+    }
+    h+='</div>';
+  }
+  return h+'</div>';
 }
 function _objWhy(r){
   let parts=[];
@@ -5307,13 +5410,13 @@ function renderTop3(top3,asOfRef){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la señal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + señal activa (5), menos penalización contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
-    html+='<span class="rec-sm" title="Fuerza de la señal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades entre si — NO es probabilidad de acierto ni retorno esperado. Suma: fuerza de la señal (25) + expectancy historica del setup (30) + profit factor (15) + confianza del backtest (15) + win rate (10) + señal activa 3/3 (5); menos penalizacion si opera contra la SMA200, mas/menos la figura tecnica si tiene edge medido. Con pocos trades historicos los componentes de backtest se acercan a su valor NEUTRAL (sin evidencia no es lo mismo que evidencia de que es malo). El desglose completo esta al abrir la tarjeta."><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Fuerza de la señal (0-5.1): 1 punto por cada indicador que confirma (MACD, RSI, Koncorde) mas bonus por condiciones extremas. 3.0 = los tres alineados; arriba de 3 = ademas intensos. Es la foto de HOY, no tiene nada de historico."><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     let cf=r.confidence!=null?r.confidence:null;
     let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
-    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadística del edge x tamaño de muestra. 0 = hubo señales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
-    html+='<span class="rec-sm" title="Win rate historico de este setup (backtest 5A, neto de costes)"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
-    html+='<span class="rec-sm" title="Riesgo/beneficio: ganancia esperada al objetivo vs perdida al stop"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
+    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): que tan estadisticamente solido es el edge de este setup = significancia de que la expectancy sea &gt;0, castigada por muestra chica. NO es probabilidad de ganar. 0 es un resultado real (hubo señales pero sin edge robusto); &quot;---&quot; seria no haber tenido ninguna señal historica."><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
+    html+='<span class="rec-sm" title="Win rate historico: de todas las veces que este mismo setup aparecio en 5 años para este simbolo, que porcentaje cerro en ganancia (neto de costes). Ojo: un WR bajo con ganadores grandes puede ser mejor negocio que uno alto con ganadores chicos — mirar tambien R/R y Ret. Prom."><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
+    html+='<span class="rec-sm" title="Riesgo/Beneficio: cuantos dolares se ganan al objetivo por cada dolar arriesgado al stop. 2:1 = el objetivo esta al doble de distancia que la invalidacion. Es geometria de los niveles, no probabilidad: un R/R alto con win rate bajo puede no tener edge."><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
     html+='</span>';
     html+='</summary>';
 
@@ -5350,11 +5453,12 @@ function renderTop3(top3,asOfRef){
     html+='<div class="rec-2col-left">'+scStackHTML('rec_'+i,SC_LEGEND_REC)+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-metrics">';
-    html+='<div class="rec-m"><span class="rec-ml">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Fuerza de la señal (0-5.1): 1 punto por indicador que confirma (MACD, RSI, Koncorde) + bonus por condiciones extremas. Es la lectura de hoy, sin componente historico.">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Confianza calibrada del backtest 5A: significancia estadistica de que este setup tenga expectancy positiva, castigada por muestra chica. No es probabilidad de ganar.">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Porcentaje de veces que este mismo setup cerro en ganancia en 5A (neto de costes). Leerlo junto al R/R: un WR bajo con ganadores grandes puede ser mejor negocio.">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Retorno promedio por trade de este setup en el backtest 5A, neto de costes — no es el retorno de una posicion tuya.">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
+    html+=scoreBreakdownHTML(r.score_parts);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
@@ -5365,7 +5469,7 @@ function renderTop3(top3,asOfRef){
     html+=recWhy(_objWhy(r));
     html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Invalidación (techo)':'Stop Loss')+'</span><span class="rec-lv'+(bearT2?'':' lv-stop')+'">$'+r.stop_loss.toFixed(2)+'</span></div>';
     html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+(bearT2?' — si el precio lo supera, la lectura bajista se anula':' — si se pierde, la tesis se invalida')):'');
-    html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
+    html+='<div class="rec-lr"><span class="rec-ll" title="Cuantos dolares se ganan al objetivo por cada dolar arriesgado al stop. Geometria de los niveles, no probabilidad.">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
     if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
       html+=recWhy('Estimado por volatilidad (ATR·√t) para recorrer la distancia al objetivo');}
     html+='</div>';
@@ -6200,13 +6304,13 @@ function renderEtfTop3(top3,asOfRef){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades: fuerza de la señal (25) + expectancy historica (30) + profit factor (15) + confianza (15) + win rate (10) + señal activa (5), menos penalización contra-tendencia"><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
-    html+='<span class="rec-sm" title="Fuerza de la señal actual (0-5.1): cuantos indicadores confirman y con que intensidad"><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades entre si — NO es probabilidad de acierto ni retorno esperado. Suma: fuerza de la señal (25) + expectancy historica del setup (30) + profit factor (15) + confianza del backtest (15) + win rate (10) + señal activa 3/3 (5); menos penalizacion si opera contra la SMA200, mas/menos la figura tecnica si tiene edge medido. Con pocos trades historicos los componentes de backtest se acercan a su valor NEUTRAL (sin evidencia no es lo mismo que evidencia de que es malo). El desglose completo esta al abrir la tarjeta."><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Fuerza de la señal (0-5.1): 1 punto por cada indicador que confirma (MACD, RSI, Koncorde) mas bonus por condiciones extremas. 3.0 = los tres alineados; arriba de 3 = ademas intensos. Es la foto de HOY, no tiene nada de historico."><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     let cf=r.confidence!=null?r.confidence:null;
     let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
-    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): significancia estadística del edge x tamaño de muestra. 0 = hubo señales pero sin edge robusto"><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
-    html+='<span class="rec-sm" title="Win rate historico de este setup (backtest 5A, neto de costes)"><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
-    html+='<span class="rec-sm" title="Riesgo/beneficio: ganancia esperada al objetivo vs perdida al stop"><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
+    html+='<span class="rec-sm" title="Confianza calibrada del backtest 5A (0-100): que tan estadisticamente solido es el edge de este setup = significancia de que la expectancy sea &gt;0, castigada por muestra chica. NO es probabilidad de ganar. 0 es un resultado real (hubo señales pero sin edge robusto); &quot;---&quot; seria no haber tenido ninguna señal historica."><span class="lab">Conf</span><span class="val" style="color:'+cfCol+'">'+(cf!=null?cf.toFixed(0):'--')+'</span></span>';
+    html+='<span class="rec-sm" title="Win rate historico: de todas las veces que este mismo setup aparecio en 5 años para este simbolo, que porcentaje cerro en ganancia (neto de costes). Ojo: un WR bajo con ganadores grandes puede ser mejor negocio que uno alto con ganadores chicos — mirar tambien R/R y Ret. Prom."><span class="lab">WR</span><span class="val" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></span>';
+    html+='<span class="rec-sm" title="Riesgo/Beneficio: cuantos dolares se ganan al objetivo por cada dolar arriesgado al stop. 2:1 = el objetivo esta al doble de distancia que la invalidacion. Es geometria de los niveles, no probabilidad: un R/R alto con win rate bajo puede no tener edge."><span class="lab">R/R</span><span class="val" style="color:var(--accent)">'+r.risk_reward.toFixed(1)+':1</span></span>';
     html+='</span>';
     html+='</summary>';
 
@@ -6231,11 +6335,12 @@ function renderEtfTop3(top3,asOfRef){
     html+='<div class="rec-2col-left">'+scStackHTML('etfrec_'+i,SC_LEGEND_REC)+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-metrics">';
-    html+='<div class="rec-m"><span class="rec-ml">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
-    html+='<div class="rec-m"><span class="rec-ml">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Fuerza de la señal (0-5.1): 1 punto por indicador que confirma (MACD, RSI, Koncorde) + bonus por condiciones extremas. Es la lectura de hoy, sin componente historico.">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Confianza calibrada del backtest 5A: significancia estadistica de que este setup tenga expectancy positiva, castigada por muestra chica. No es probabilidad de ganar.">Confianza</span><span class="rec-mv" style="color:'+(r.confidence>=60?'var(--buy)':(r.confidence>=30?'var(--hold)':'var(--sell)'))+'">'+r.confidence.toFixed(0)+'%</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Porcentaje de veces que este mismo setup cerro en ganancia en 5A (neto de costes). Leerlo junto al R/R: un WR bajo con ganadores grandes puede ser mejor negocio.">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
+    html+='<div class="rec-m"><span class="rec-ml" title="Retorno promedio por trade de este setup en el backtest 5A, neto de costes — no es el retorno de una posicion tuya.">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
+    html+=scoreBreakdownHTML(r.score_parts);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
@@ -6246,7 +6351,7 @@ function renderEtfTop3(top3,asOfRef){
     html+=recWhy(_objWhy(r));
     html+='<div class="rec-lr"><span class="rec-ll">'+(bearT2?'Invalidación (techo)':'Stop Loss')+'</span><span class="rec-lv'+(bearT2?'':' lv-stop')+'">$'+r.stop_loss.toFixed(2)+'</span></div>';
     html+=recWhy(r.stop_basis?('Ubicado '+r.stop_basis+(bearT2?' — si el precio lo supera, la lectura bajista se anula':' — si se pierde, la tesis se invalida')):'');
-    html+='<div class="rec-lr"><span class="rec-ll">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
+    html+='<div class="rec-lr"><span class="rec-ll" title="Cuantos dolares se ganan al objetivo por cada dolar arriesgado al stop. Geometria de los niveles, no probabilidad.">R/R Ratio</span><span class="rec-lv lv-rr">'+r.risk_reward.toFixed(1)+':1</span></div>';
     if(r.horizon){html+='<div class="rec-lr"><span class="rec-ll">Horizonte</span><span class="rec-lv" style="color:var(--accent)">'+r.horizon+'</span></div>';
       html+=recWhy('Estimado por volatilidad (ATR·√t) para recorrer la distancia al objetivo');}
     html+='</div>';
@@ -8745,12 +8850,15 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
 
     # 6. Score for consistency with top3 (no eligibility filter)
     score = 0
+    score_parts = []
     try:
-        s = _score_stock(sym, data)
+        s = _score_stock(sym, data, parts=score_parts)
         if s is not None:
             score = round(s, 1)
+        else:
+            score_parts = []      # inelegible: el desglose quedaria a medias
     except Exception:
-        pass
+        score_parts = []
 
     return {
         "signal": sig,
@@ -8759,6 +8867,7 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "conditions_met": data.get("conditions_met", 0) or 0,
         "confidence": bt.get("confidence", 0) or 0,
         "score": score,
+        "score_parts": score_parts,
         "price": data.get("price", 0),
         "entry_low": levels.get("entry_low", 0),
         "entry_high": levels.get("entry_high", 0),
