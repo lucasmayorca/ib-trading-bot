@@ -1020,13 +1020,24 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     # puntos MAS que a uno con edge medido exactamente nulo, y "sin evidencia"
     # es la media, no lo peor. Con sample_w=1 el resultado es identico al viejo.
     s2 = 15.0 + (((exp_capped + 6.0) / 12.0) * 30 - 15.0) * sample_w
-    _muestra = (f"{n_side} trades historicos" if n_side else "sin trades historicos")
-    if sample_w < 1.0:
-        _muestra += (f" (<{robust_n}: el valor se acerca al neutral de 15)"
-                     if n_side else " — se toma el neutral de 15, no 0")
+    _muestra = (f"{n_side} trade{'s' if n_side != 1 else ''} historico"
+                f"{'s' if n_side != 1 else ''}" if n_side else "sin trades historicos")
+
+    def _ancla(neutral):
+        """Cada escala tiene SU neutral: 15 la expectancy, 0 el profit factor
+        (PF 1.0 ya es cero puntos) y 5 el win rate. Un texto unico decia
+        'neutral de 15' tambien en las otras dos."""
+        if sample_w >= 1.0:
+            return ""
+        if not n_side:
+            return (f" — sin muestra se toma el neutral de {neutral:g}"
+                    if neutral else " — sin muestra no aporta")
+        return (f" — con menos de {robust_n} el valor tira al neutral de {neutral:g}"
+                if neutral else f" — con menos de {robust_n} el aporte se reduce")
+
     _part("Expectancy historica", s2, 30,
           (f"{exp_val:+.2f}% por trade, neto de costes · {_muestra}"
-           if expectancy is not None else f"sin medir · {_muestra}"))
+           if expectancy is not None else f"sin medir · {_muestra}") + _ancla(15))
 
     # Component 3: profit factor (0-15), shrunk by sample size
     pf_val = float(pf) if pf is not None else 1.0
@@ -1035,7 +1046,8 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     # o sea el neutral de esta escala coincide con el cero.
     s3 = pf_norm * 15 * sample_w
     _part("Profit factor", s3, 15,
-          f"PF {pf_val:.2f} (1.0 = 0 pts, 2.5+ = maximo) · {_muestra}")
+          f"PF {pf_val:.2f} — dolares ganados por dolar perdido "
+          f"(1.0 = 0 pts, 2.5+ = maximo) · {_muestra}" + _ancla(0))
 
     # Component 4: calibrated confidence / statistical robustness (0-15)
     s4 = min(confidence / 100, 1.0) * 15
@@ -1045,8 +1057,7 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     # Component 5: win rate (0-10), shrunk toward the 50% neutral (5 pts)
     s5 = 5.0 + (min(wr, 1.0) * 10 - 5.0) * sample_w
     _part("Win rate", s5, 10,
-          f"{wr * 100:.0f}% historico · {_muestra}"
-          + ("" if sample_w >= 1.0 else " (se acerca al neutral de 5)"))
+          f"{wr * 100:.0f}% historico · {_muestra}" + _ancla(5))
 
     # Component 6: active order signal bonus (0 or 5)
     s6 = 5.0 if sig in ("BUY", "SELL") else 0.0
