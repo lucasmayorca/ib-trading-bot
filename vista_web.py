@@ -1774,6 +1774,7 @@ def _system_status(data, is_bearish):
 
     # --- MACD: histograma del lado correcto Y girando ---
     hist = (vals.get("macd") or {}).get("hist")
+    line = (vals.get("macd") or {}).get("macd")
     if data.get("macd_ok"):
         met.append("MACD girando " + ("a la baja" if is_bearish else "al alza"))
     else:
@@ -1783,11 +1784,21 @@ def _system_status(data, is_bearish):
         elif is_bearish:
             if hist > 0:
                 missing.append(f"MACD positivo{h_txt} pero aun sin girar a la baja")
+            elif line is not None and line > 0:
+                # El cruce ya paso: la condicion del sistema (hist>0 cayendo)
+                # deja de cumplirse justo cuando el giro se completa. Decirlo
+                # asi, y no "fuera de zona", que suena a que no paso nada.
+                missing.append(f"MACD ya cruzo a la baja{h_txt} — el giro ya ocurrio; "
+                               f"la condicion pide hist>0 cayendo")
             else:
                 missing.append(f"MACD ya negativo{h_txt} — fuera de zona de venta")
         else:
             if hist < 0:
                 missing.append(f"MACD negativo{h_txt} pero aun sin girar al alza")
+            elif line is not None and line < 0:
+                missing.append(f"MACD ya cruzo al alza{h_txt}, con la linea en "
+                               f"{line:.2f} — el giro ya ocurrio; la condicion "
+                               f"pide hist<0 girando")
             else:
                 missing.append(f"MACD todavia positivo{h_txt} — sin zona de compra")
 
@@ -1896,16 +1907,23 @@ def _generate_thesis(sym, data, levels, fund):
         hist = macd_v.get("hist")
         if hist is not None:
             macd_ok = data.get("macd_ok", False)
+            # El histograma dice MACD vs señal; la ZONA la da la linea respecto
+            # de cero. "MACD positivo" con la linea en -29.87 (cruce alcista
+            # recien hecho) se leia como sobrecompra con el momentum girando
+            # al alza — el mismo error que rompia la etiqueta de señal.
+            line = macd_v.get("macd")
+            cruce = (line is not None and ((hist > 0 and line < 0) or
+                                           (hist < 0 and line > 0)))
             if hist > 0:
-                if macd_ok:
-                    ind_parts.append(f"MACD positivo ({hist:.2f}) pero girando a la baja")
-                else:
-                    ind_parts.append(f"MACD positivo ({hist:.2f})")
+                base = (f"MACD cruzado al alza ({hist:+.2f}) con la linea aun "
+                        f"bajo cero ({line:.2f})" if cruce
+                        else f"MACD positivo ({hist:.2f})")
+                ind_parts.append(base + (" pero girando a la baja" if macd_ok else ""))
             else:
-                if macd_ok:
-                    ind_parts.append(f"MACD negativo ({hist:.2f}) pero recuperando")
-                else:
-                    ind_parts.append(f"MACD negativo ({hist:.2f})")
+                base = (f"MACD cruzado a la baja ({hist:+.2f}) con la linea aun "
+                        f"sobre cero ({line:.2f})" if cruce
+                        else f"MACD negativo ({hist:.2f})")
+                ind_parts.append(base + (" pero recuperando" if macd_ok else ""))
 
     if rsi_v is not None:
         rsi_ok = data.get("rsi_ok", False)
@@ -5532,6 +5550,7 @@ function buildTechSummary(r){
   let rsi=r.values?r.values.rsi:null;
   let mas=r.chart?r.chart.mas:null;
   let mh=r.values&&r.values.macd?r.values.macd.hist:null;
+  let ml=r.values&&r.values.macd?r.values.macd.macd:null;
   let price=r.price||0;
 
   // 1. Señal principal (usa signal_label descriptivo)
@@ -5594,10 +5613,12 @@ function buildTechSummary(r){
     }
   }
 
-  // 5. MACD momentum
+  // 5. MACD momentum. El histograma solo dice MACD vs señal: decir "MACD
+  // positivo" con la linea en -29.87 (cruce alcista recien hecho, bien bajo
+  // cero) leia como sobrecompra justo cuando el momentum estaba girando al alza.
   if(mh!=null&&!isNaN(mh)){
-    if(mh>0) parts.push('MACD positivo');
-    else parts.push('MACD negativo');
+    if(mh>0) parts.push((ml!=null&&ml<0)?'MACD cruzado al alza (linea aun bajo cero)':'MACD positivo');
+    else parts.push((ml!=null&&ml>0)?'MACD cruzado a la baja (linea aun sobre cero)':'MACD negativo');
   }
 
   return {text:parts.join(' &bull; '),alerts:alerts,hasAlert:alerts.length>0};

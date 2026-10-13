@@ -358,3 +358,127 @@ def test_inelegible_no_deja_un_desglose_a_medias():
     parts = []
     assert vw._score_stock("TEST", d, min_target_pct=0, parts=parts) is None
     assert not any(p["lab"] == "TOTAL" for p in parts)
+
+
+# ── 10. El titular lo decide el BALANCE, no una condicion suelta ─────
+#
+# Caso real (BAC, 2026-10): RSI 32, MACD recien cruzado al alza con la linea
+# en -29.9, y el Koncorde pinchando desde arriba de su media. Esa UNICA
+# condicion de venta se llevaba el titular entero: "VIRANDO A VENTA" con el
+# RSI por el piso y el momentum girando al alza.
+
+def _ind(hist, hist_prev, macd_line, rsi, rsi_prev, marron, marron_prev,
+         media, azul=0.0):
+    """Indicadores sinteticos con la forma que consume generate_signal."""
+    import pandas as pd
+    n = 6
+    serie = lambda last, prev: [prev] * (n - 1) + [last]
+    return {
+        "macd": pd.DataFrame({"macd": [macd_line] * n,
+                              "signal": [macd_line - hist] * n,
+                              "hist": serie(hist, hist_prev)}),
+        "rsi": pd.DataFrame({"rsi": serie(rsi, rsi_prev)}),
+        "koncorde": pd.DataFrame({"marron": serie(marron, marron_prev),
+                                  "media": [media] * n, "verde": [0.0] * n,
+                                  "azul": [azul] * n}),
+    }
+
+
+# El caso denunciado y su espejo exacto, para que el arreglo no sea de un lado.
+CASO_BAC = dict(hist=1.70, hist_prev=0.88, macd_line=-29.87, rsi=32.0,
+                rsi_prev=31.0, marron=31.04, marron_prev=33.0, media=18.13,
+                azul=21.52)
+CASO_ESPEJO = dict(hist=-1.70, hist_prev=-0.88, macd_line=29.87, rsi=68.0,
+                   rsi_prev=69.0, marron=-31.04, marron_prev=-33.0,
+                   media=-18.13)
+
+
+def test_una_condicion_suelta_no_impone_el_titular():
+    """RSI 32 + MACD cruzando al alza NO es 'VIRANDO A VENTA' porque el
+    Koncorde pinche: dos indicadores de tres leen al alza."""
+    import signals
+    sig = signals.generate_signal(_ind(**CASO_BAC))
+    assert sig["signal_label"] == "VIRANDO A COMPRA", sig["signal_label"]
+    assert not vw._label_is_bearish(sig["signal_label"])
+
+
+def test_el_balance_es_simetrico():
+    """Mismo cuadro dado vuelta: si el de arriba es alcista, este es bajista."""
+    import signals
+    assert signals.generate_signal(_ind(**CASO_ESPEJO))["signal_label"] == \
+        "VIRANDO A VENTA"
+
+
+def test_el_histograma_no_es_la_zona_del_macd():
+    """hist > 0 con la LINEA bien bajo cero es un cruce alcista reciente, no
+    sobrecompra. Juzgar la zona por el signo del histograma era lo que daba
+    vuelta la lectura justo cuando el cruce se completaba."""
+    import signals
+    bull, bear = signals._trend_balance(
+        rsi=None, macd_hist=1.7, macd_line=-29.9, macd_rising=True,
+        marron=None, media=None, marron_rising=None)
+    assert bull > bear
+    bull2, bear2 = signals._trend_balance(
+        rsi=None, macd_hist=1.7, macd_line=29.9, macd_rising=True,
+        marron=None, media=None, marron_rising=None)
+    assert bull2 < bull  # ya arriba: el mismo giro pesa menos
+
+
+def test_una_tendencia_sana_no_se_etiqueta_virando():
+    """Todo subiendo con RSI 58 es una tendencia, no un giro. Sin un piso de
+    evidencia el label se infla y 'VIRANDO A COMPRA' deja de querer decir algo."""
+    import signals
+    sig = signals.generate_signal(_ind(hist=2.0, hist_prev=1.5, macd_line=5.0,
+                                       rsi=58.0, rsi_prev=55.0, marron=30.0,
+                                       marron_prev=28.0, media=18.0))
+    assert sig["signal_label"] == "NEUTRAL", sig["signal_label"]
+
+
+def test_sobrevendido_sin_giro_sigue_siendo_zona():
+    """RSI 25 pero todo todavia cayendo: zona, no giro."""
+    import signals
+    sig = signals.generate_signal(_ind(hist=-2.0, hist_prev=-1.5, macd_line=-5.0,
+                                       rsi=25.0, rsi_prev=28.0, marron=-30.0,
+                                       marron_prev=-28.0, media=-18.0))
+    assert sig["signal_label"] == "ZONA DE SOBREVENTA", sig["signal_label"]
+
+
+def test_inminente_sigue_pidiendo_2_de_3_y_zonas_coherentes():
+    """El gate que alimenta Top Recomendaciones no se toca."""
+    import signals
+    buena = signals.generate_signal(_ind(hist=-2.0, hist_prev=-3.0, macd_line=-5.0,
+                                         rsi=28.0, rsi_prev=27.0, marron=-30.0,
+                                         marron_prev=-28.0, media=-18.0))
+    assert buena["signal_label"] == "COMPRA INMINENTE"
+    assert buena["conditions_met"] == 2
+    # 2/3 de venta pero con el RSI en 32: no hay coherencia de zona
+    floja = signals.generate_signal(_ind(hist=2.0, hist_prev=3.0, macd_line=-20.0,
+                                         rsi=32.0, rsi_prev=33.0, marron=30.0,
+                                         marron_prev=32.0, media=18.0))
+    assert floja["signal_label"] == "VIRANDO A VENTA"
+
+
+def test_el_detalle_mostrado_sigue_al_titular():
+    """Las filas MACD/RSI/Koncorde y el x/3 son del lado del titular: mostrar
+    'TECHO CONFIRMADO' del lado vendedor debajo de una lectura alcista era la
+    mitad visible del bug."""
+    import signals
+    sig = signals.generate_signal(_ind(**CASO_BAC))
+    assert "TECHO CONFIRMADO" not in sig["konc_detail"], sig["konc_detail"]
+    assert sig["conditions_met"] == 0  # ninguna condicion de COMPRA cumplida aun
+
+
+def test_bridge_clasifica_igual_que_el_local():
+    """bridge/signals.py es un duplicado deliberado: si se desincronizan, el
+    cloud y el local muestran etiquetas distintas del mismo grafico."""
+    import signals
+    import bridge.signals as bs
+    for caso in (CASO_BAC, CASO_ESPEJO,
+                 dict(hist=2.0, hist_prev=3.0, macd_line=5.0, rsi=55.0,
+                      rsi_prev=58.0, marron=30.0, marron_prev=35.0, media=18.0),
+                 dict(hist=2.0, hist_prev=1.5, macd_line=5.0, rsi=58.0,
+                      rsi_prev=55.0, marron=30.0, marron_prev=28.0, media=18.0)):
+        a = signals.generate_signal(_ind(**caso))
+        b = bs.generate_signal(_ind(**caso))
+        assert a["signal_label"] == b["signal_label"], caso
+        assert a["signal"] == b["signal"] and a["strength"] == b["strength"]

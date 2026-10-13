@@ -108,6 +108,8 @@ def check_buy_conditions(koncorde_df, macd_df, rsi_df):
         "macd_detail": macd_detail,
         "rsi_detail": rsi_detail,
         "konc_detail": konc_detail,
+        "macd_rising": bool(hist > hist_prev),
+        "konc_rising": bool(marron > marron_prev),
         "strength": strength,
         "conditions_met": sum([macd_ok, rsi_ok, konc_ok]),
     }
@@ -201,6 +203,8 @@ def check_sell_conditions(koncorde_df, macd_df, rsi_df):
         "macd_detail": macd_detail,
         "rsi_detail": rsi_detail,
         "konc_detail": konc_detail,
+        "macd_rising": bool(hist > hist_prev),
+        "konc_rising": bool(marron > marron_prev),
         "strength": strength,
         "conditions_met": sum([macd_ok, rsi_ok, konc_ok]),
     }
@@ -235,79 +239,127 @@ def _zones_coherent_sell(rsi, macd_hist, marron, media):
     return bool(checks) and all(checks)
 
 
-def _classify_trend(signal, buy_details, sell_details, vals):
+# Umbrales del balance de evidencia (ver _trend_balance).
+TREND_MIN_LEAN = 2.5    # evidencia minima del lado que gana para etiquetar VIRANDO
+TREND_MIN_MARGIN = 1.0  # ventaja minima sobre el otro lado
+
+
+def _trend_balance(rsi, macd_hist, macd_line, macd_rising,
+                   marron, media, marron_rising):
+    """Pondera la evidencia alcista y bajista de los 3 indicadores.
+
+    Cada indicador vota por ZONA (en que mitad del rango estamos: que setup
+    del sistema esta en juego) y por GIRO (si nos acercamos a ese setup o nos
+    alejamos). Devuelve (bull, bear).
+
+    Existe porque contar las condiciones de UN solo lado dejaba que la primera
+    condicion que apareciera etiquetara el cuadro entero: un Koncorde que
+    pincha desde arriba de su media bastaba para decir "VIRANDO A VENTA" con
+    el RSI en 32 y el MACD recien cruzado al alza. El titular lo decide el
+    peso de la evidencia, nunca una condicion suelta.
     """
-    Genera una etiqueta descriptiva de tendencia basada en los 3 indicadores.
-    signal es BUY/SELL/HOLD; esta funcion devuelve un label mas granular.
+    bull = 0.0
+    bear = 0.0
+
+    # --- RSI: zona. Es el ancla, dice de que lado del rango estamos ---
+    if rsi is not None:
+        if rsi < 30:
+            bull += 2.0
+        elif rsi < 35:
+            bull += 1.5
+        elif rsi < 45:
+            bull += 1.0
+        elif rsi > 70:
+            bear += 2.0
+        elif rsi > 65:
+            bear += 1.5
+        elif rsi > 55:
+            bear += 1.0
+
+    # --- MACD: giro + donde esta la LINEA respecto de cero ---
+    # El histograma solo dice MACD vs senal. Con la linea bien bajo cero un
+    # histograma positivo no es sobrecompra: es un cruce alcista recien hecho
+    # (el caso que rompia la etiqueta). La zona la da la linea, no el hist.
+    if macd_hist is not None and macd_rising is not None:
+        if macd_rising:
+            if macd_hist < 0:
+                bull += 1.5   # condicion de compra del sistema: giro bajo cero
+            elif macd_line is not None and macd_line < 0:
+                bull += 1.2   # cruce alcista reciente, la linea aun bajo cero
+            else:
+                bull += 0.5   # momentum a favor pero ya en zona alta
+        else:
+            if macd_hist > 0:
+                bear += 1.5
+            elif macd_line is not None and macd_line > 0:
+                bear += 1.2
+            else:
+                bear += 0.5
+
+    # --- Koncorde: marron vs su media (zona) + giro ---
+    if marron is not None and media is not None and marron_rising is not None:
+        if marron_rising:
+            bull += 1.5 if marron < media else 0.5
+        else:
+            bear += 1.5 if marron > media else 0.5
+
+    return bull, bear
+
+
+def _classify_trend(signal, buy_details, sell_details, vals):
+    """Etiqueta descriptiva de tendencia. Devuelve (label, direccion).
+
+    `signal` (BUY/SELL/HOLD) es el gatillo de ordenes y no se toca aca; esta
+    etiqueta es display-only y mas granular. La direccion ("bull"/"bear"/
+    "neutral") viaja al lado del texto para no tener que re-parsear el label
+    con substrings (SOBREVENTA contiene VENTA).
     """
     if signal == "BUY":
-        if buy_details.get("strength", 0) >= 4:
-            return "COMPRA FUERTE"
-        return "COMPRA"
+        return ("COMPRA FUERTE" if buy_details.get("strength", 0) >= 4
+                else "COMPRA"), "bull"
 
     if signal == "SELL":
-        if sell_details.get("strength", 0) >= 4:
-            return "VENTA FUERTE"
-        return "VENTA"
+        return ("VENTA FUERTE" if sell_details.get("strength", 0) >= 4
+                else "VENTA"), "bear"
 
     # --- HOLD: analizar tendencia con los indicadores ---
     buy_met = buy_details.get("conditions_met", 0)
     sell_met = sell_details.get("conditions_met", 0)
 
     rsi = vals.get("rsi")
-    macd_hist = vals.get("macd", {}).get("hist") if vals.get("macd") else None
-    konc = vals.get("koncorde", {})
+    macd_vals = vals.get("macd") or {}
+    macd_hist = macd_vals.get("hist")
+    macd_line = macd_vals.get("macd")
+    konc = vals.get("koncorde") or {}
     marron = konc.get("marron")
     media = konc.get("media")
 
-    # 2 de 3 condiciones de compra cumplidas + zonas coherentes (cuadro sobrevendido).
-    # Sin coherencia de zona se degrada a VIRANDO: un giro tecnico con RSI/MACD
-    # elevados no es un setup de compra del sistema.
-    if buy_met == 2:
-        if _zones_coherent_buy(rsi, macd_hist, marron, media):
-            return "COMPRA INMINENTE"
-        return "VIRANDO A COMPRA"
-    # 2 de 3 condiciones de venta cumplidas + zonas coherentes (cuadro sobrecomprado)
-    if sell_met == 2:
-        if _zones_coherent_sell(rsi, macd_hist, marron, media):
-            return "VENTA INMINENTE"
-        return "VIRANDO A VENTA"
+    macd_rising = buy_details.get("macd_rising", sell_details.get("macd_rising"))
+    konc_rising = buy_details.get("konc_rising", sell_details.get("konc_rising"))
 
-    # 1 condicion: detectar hacia donde vira
-    # Analizar la direccion predominante de los indicadores
-    bullish_hints = 0
-    bearish_hints = 0
+    # 2 de 3 condiciones + zonas coherentes => INMINENTE (gatea el Top).
+    if buy_met == 2 and _zones_coherent_buy(rsi, macd_hist, marron, media):
+        return "COMPRA INMINENTE", "bull"
+    if sell_met == 2 and _zones_coherent_sell(rsi, macd_hist, marron, media):
+        return "VENTA INMINENTE", "bear"
 
-    if rsi is not None:
-        if rsi < 40:
-            bullish_hints += 1
-        elif rsi > 60:
-            bearish_hints += 1
-
-    if macd_hist is not None:
-        if macd_hist < 0 and buy_details.get("macd_ok"):
-            bullish_hints += 1
-        elif macd_hist > 0 and sell_details.get("macd_ok"):
-            bearish_hints += 1
-
-    if marron is not None and media is not None:
-        if marron < media and buy_details.get("konc_ok"):
-            bullish_hints += 1
-        elif marron > media and sell_details.get("konc_ok"):
-            bearish_hints += 1
-
-    if buy_met == 1 or bullish_hints >= 2:
-        return "VIRANDO A COMPRA"
-    if sell_met == 1 or bearish_hints >= 2:
-        return "VIRANDO A VENTA"
+    # Debajo de eso manda el BALANCE de evidencia: 2/3 sin coherencia de zona
+    # sigue cayendo en VIRANDO de su lado (el balance siempre lo acompana),
+    # pero una condicion suelta ya no puede imponer el titular.
+    bull, bear = _trend_balance(rsi, macd_hist, macd_line, macd_rising,
+                                marron, media, konc_rising)
+    if bull >= TREND_MIN_LEAN and bull - bear >= TREND_MIN_MARGIN:
+        return "VIRANDO A COMPRA", "bull"
+    if bear >= TREND_MIN_LEAN and bear - bull >= TREND_MIN_MARGIN:
+        return "VIRANDO A VENTA", "bear"
 
     if rsi is not None:
         if rsi < 35:
-            return "ZONA DE SOBREVENTA"
+            return "ZONA DE SOBREVENTA", "bull"
         if rsi > 65:
-            return "ZONA DE SOBRECOMPRA"
+            return "ZONA DE SOBRECOMPRA", "bear"
 
-    return "NEUTRAL"
+    return "NEUTRAL", "neutral"
 
 
 def generate_signal(indicators):
@@ -357,9 +409,19 @@ def generate_signal(indicators):
         r = rsi_data.iloc[-1]
         last_vals["rsi"] = r["rsi"]
 
-    signal_label = _classify_trend(
+    signal_label, label_dir = _classify_trend(
         signal, buy_details, sell_details, last_vals
     )
+
+    # Las filas que se muestran (x/3, fuerza, detalle por indicador) siguen la
+    # DIRECCION del titular. Elegirlas por "el lado con mas condiciones" era lo
+    # que colaba un "TECHO CONFIRMADO" de Koncorde debajo de una lectura
+    # alcista: una sola condicion del lado opuesto se llevaba toda la narrativa.
+    if signal == "HOLD":
+        if label_dir == "bull":
+            details = buy_details
+        elif label_dir == "bear":
+            details = sell_details
 
     return {
         "signal": signal,

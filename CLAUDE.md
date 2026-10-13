@@ -63,11 +63,36 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 - **Top Recomendaciones solo lista** señales completas (BUY/SELL 3/3) o INMINENTE coherente;
   VIRANDO/ZONA/NEUTRAL no se recomiendan (gate en `_score_stock` y en el fallback de
   `compute_top3`) — calidad antes que cantidad: si no hay 5 setups reales, se muestran menos.
-- **VIRANDO A COMPRA**: 1/3 buy or multiple bullish hints (RSI < 40, MACD/Koncorde turning)
-- **VIRANDO A VENTA**: 1/3 sell or multiple bearish hints (RSI > 60, MACD/Koncorde turning)
-- **ZONA DE SOBREVENTA**: RSI < 35, no conditions met
-- **ZONA DE SOBRECOMPRA**: RSI > 65, no conditions met
-- **NEUTRAL**: no clear direction
+- **VIRANDO A COMPRA / A VENTA**: ya **no** es "1/3 condiciones de ese lado". Por debajo de
+  INMINENTE el titular lo decide el **balance de evidencia** (`_trend_balance`, signals.py):
+  cada indicador vota por ZONA (en qué mitad del rango estamos: qué setup está en juego) y por
+  GIRO (si nos acercamos a ese setup o nos alejamos), y hace falta `bull >= TREND_MIN_LEAN` (2.5)
+  con `bull - bear >= TREND_MIN_MARGIN` (1.0) — o el espejo — para etiquetar VIRANDO. Pesos: RSI
+  2.0/1.5/1.0 según <30/<35/<45 (espejo >70/>65/>55); MACD 1.5 si el histograma está del lado del
+  setup y gira a favor, **1.2 si el cruce ya se completó pero la línea sigue del otro lado de
+  cero**, 0.5 si solo acompaña el momentum; Koncorde 1.5 girando desde el lado correcto de su
+  media, 0.5 si ya está del otro lado.
+- **BUG QUE ORIGINÓ ESTO (2026-10, caso BAC — "esto es inaceptable")**: con RSI 32, MACD recién
+  cruzado al alza (hist +1.70 subiendo, **línea en −29.87**) y el Koncorde pinchando desde arriba
+  de su media, el dashboard mostraba **VIRANDO A VENTA**. Dos defectos encadenados:
+  (1) `sell_met == 1` devolvía el label sin mirar nada más — una condición suelta del lado
+  contrario se llevaba el titular contra los otros dos indicadores; (2) la ZONA del MACD se
+  juzgaba por el **signo del histograma**, que solo dice MACD vs señal: con la línea bien bajo
+  cero un histograma positivo no es sobrecompra sino un cruce alcista recién hecho — o sea que la
+  lectura se daba vuelta **justo cuando el giro alcista se completaba**. Medido sobre 109 símbolos
+  del universo: 4 tenían etiqueta bajista con RSI < 40 (BAC 31, MS 30, HYG 30, IWM 35) → ahora 0.
+  Tests: `tests/test_invariantes.py` §10 (caso + espejo + paridad con el bridge).
+- **El detalle mostrado sigue la DIRECCIÓN del titular**, no "el lado con más condiciones":
+  `generate_signal` elige `details` (las filas MACD/RSI/Koncorde, el x/3 y la fuerza) por la
+  dirección que devuelve `_classify_trend` — por eso el label ahora viaja como `(label, direccion)`
+  y nadie re-parsea substrings. Antes se colaba un "TECHO CONFIRMADO" de Koncorde debajo de una
+  lectura alcista: la mitad visible del mismo bug.
+- **ZONA DE SOBREVENTA**: RSI < 35 sin giro suficiente para VIRANDO (sobrevendido pero todavía cayendo)
+- **ZONA DE SOBRECOMPRA**: RSI > 65 sin giro suficiente
+- **NEUTRAL**: no clear direction. Una tendencia sana (todo subiendo, RSI 58) cae acá a propósito:
+  es una tendencia, no un giro — inflar VIRANDO vacía la etiqueta de significado.
+- `signals.py` **no cambió el gatillo**: las 3 condiciones BUY/SELL, la fuerza y el backtest son
+  idénticos. Lo que cambió es display-only, así que el bot y las estadísticas no se mueven.
 
 `signal_label` is display-only; `signal` (BUY/SELL/HOLD) drives order execution in `bot.py`.
 The thesis (`_generate_thesis`) and rationale (`_generate_rationale`) use `signal_label` for direction consistency.
