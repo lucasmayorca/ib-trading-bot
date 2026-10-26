@@ -995,6 +995,9 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         n_side = bt.get("sell_count", 0) or 0
         n_trend = bt.get("sell_count_trend", 0) or 0
         wr_trend = bt.get("sell_win_rate_trend")
+        base_exp = bt.get("sell_baseline_expectancy")
+        base_pf = bt.get("sell_baseline_profit_factor")
+        base_wr = bt.get("sell_baseline_win_rate")
     else:
         wr = bt.get("buy_win_rate", 0) or 0
         expectancy = bt.get("buy_expectancy")
@@ -1002,6 +1005,9 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         n_side = bt.get("buy_count", 0) or 0
         n_trend = bt.get("buy_count_trend", 0) or 0
         wr_trend = bt.get("buy_win_rate_trend")
+        base_exp = bt.get("buy_baseline_expectancy")
+        base_pf = bt.get("buy_baseline_profit_factor")
+        base_wr = bt.get("buy_baseline_win_rate")
 
     # Small-sample shrinkage: with few historical trades, trust the edge less.
     robust_n = getattr(config, "BACKTEST_ROBUST_TRADES", 12)
@@ -1012,14 +1018,33 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     _part("Fuerza de la señal", s1, 25, f"{strength:.1f} de 5.1 — indicadores "
           f"que confirman y con que intensidad")
 
-    # Component 2: expectancy — the honest core (0-30), shrunk by sample size
+    # Component 2: EDGE contra el baseline del simbolo (0-30), shrunk by sample.
+    #
+    # EDGE, NO EXPECTANCY CRUDA (2026-10). La expectancy cruda mide la señal MAS
+    # la deriva del activo: sobre 217 simbolos x 10 años, entrar en corto al azar
+    # da -0.518%/trade y en largo al azar +0.347% — 0.87 pp que no son ni merito
+    # ni culpa del sistema. Puntuar la expectancy cruda premiaba comprar un activo
+    # que sube solo y castigaba toda lectura bajista aunque la señal informara.
+    # Medido: la señal de VENTA da -0.293% (negativa) pero su baseline es -0.518%,
+    # o sea un edge de +0.225 pp, IC95 [+0.050, +0.399], p=0.0116 — informa de
+    # verdad. Mismo rasero del lado comprador: +0.623% sobre un baseline de
+    # +0.347% es +0.276 pp, p=0.0922, NO significativo.
+    # Es el mismo criterio que patterns.py ya usa con las figuras (edge =
+    # hit_rate - baseline aleatorio, nunca el hit-rate crudo).
+    # Si falta el baseline (backtest viejo, o bridge sin actualizar) se cae a la
+    # expectancy cruda para no romper el ranking.
     exp_val = float(expectancy) if expectancy is not None else 0.0
-    exp_capped = max(-6.0, min(6.0, exp_val))          # ±6% per-trade caps the scale
+    _base = float(base_exp) if base_exp is not None else None
+    if _base is not None:
+        exp_val = exp_val - _base
+    # Cap ±4 pp: cubre de p10 a p90 del edge medido por simbolo (-2.57 a +3.55).
+    _cap = 4.0 if _base is not None else 6.0
+    exp_capped = max(-_cap, min(_cap, exp_val))
     # El shrinkage tira hacia el NEUTRAL de la escala (15 = edge cero), NO hacia
     # 0: multiplicar el componente entero castigaba al simbolo sin historia 15
     # puntos MAS que a uno con edge medido exactamente nulo, y "sin evidencia"
     # es la media, no lo peor. Con sample_w=1 el resultado es identico al viejo.
-    s2 = 15.0 + (((exp_capped + 6.0) / 12.0) * 30 - 15.0) * sample_w
+    s2 = 15.0 + (((exp_capped + _cap) / (2 * _cap)) * 30 - 15.0) * sample_w
     _muestra = (f"{n_side} trade{'s' if n_side != 1 else ''} historico"
                 f"{'s' if n_side != 1 else ''}" if n_side else "sin trades historicos")
 
@@ -1035,31 +1060,56 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         return (f" — con menos de {robust_n} el valor tira al neutral de {neutral:g}"
                 if neutral else f" — con menos de {robust_n} el aporte se reduce")
 
-    _part("Expectancy historica", s2, 30,
-          (f"{exp_val:+.2f}% por trade, neto de costes · {_muestra}"
-           if expectancy is not None else f"sin medir · {_muestra}") + _ancla(15))
+    if expectancy is None:
+        _exp_why = f"sin medir · {_muestra}"
+    elif _base is not None:
+        _exp_why = (f"{exp_val:+.2f} pp sobre entrar al azar en el mismo activo "
+                    f"({float(expectancy):+.2f}% del setup vs {_base:+.2f}% del "
+                    f"baseline) · {_muestra}")
+    else:
+        _exp_why = (f"{exp_val:+.2f}% por trade, neto de costes (sin baseline "
+                    f"medido) · {_muestra}")
+    _part("Edge sobre el baseline" if _base is not None else "Expectancy historica",
+          s2, 30, _exp_why + _ancla(15))
 
     # Component 3: profit factor (0-15), shrunk by sample size
     pf_val = float(pf) if pf is not None else 1.0
-    pf_norm = max(0.0, min(1.0, (pf_val - 1.0) / 1.5))  # PF 1.0->0, PF>=2.5->full
+    # Relativo al baseline por el mismo motivo que la expectancy: el PF de un
+    # corto en una decada alcista es estructuralmente <1 (baseline 0.75) y el de
+    # un largo >1. PF_rel = PF del setup / PF de entrar al azar; 1.0 = no aporta.
+    _pf_rel = pf_val
+    if base_pf:
+        _pf_rel = pf_val / float(base_pf)
+    pf_norm = max(0.0, min(1.0, (_pf_rel - 1.0) / 1.5))  # 1.0->0, >=2.5->full
     # Aca el shrinkage SI es multiplicativo: PF 1.0 (sin edge) ya ES 0 puntos,
     # o sea el neutral de esta escala coincide con el cero.
     s3 = pf_norm * 15 * sample_w
     _pf_txt = ("sin trades perdedores (no se puede calcular)" if pf_val >= 999
                else f"PF {pf_val:.2f}")
+    if base_pf and pf_val < 999:
+        _pf_txt += f" vs {float(base_pf):.2f} del baseline (x{_pf_rel:.2f})"
     _part("Profit factor", s3, 15,
-          f"{_pf_txt} — dolares ganados por dolar perdido "
-          f"(1.0 = 0 pts, 2.5+ = maximo) · {_muestra}" + _ancla(0))
+          f"{_pf_txt} — dolares ganados por dolar perdido, relativo a entrar al "
+          f"azar (1.0 = no aporta, 2.5+ = maximo) · {_muestra}" + _ancla(0))
 
     # Component 4: calibrated confidence / statistical robustness (0-15)
     s4 = min(confidence / 100, 1.0) * 15
     _part("Confianza del backtest", s4, 15,
           f"{confidence:.0f}/100 — significancia estadistica del edge x muestra")
 
-    # Component 5: win rate (0-10), shrunk toward the 50% neutral (5 pts)
-    s5 = 5.0 + (min(wr, 1.0) * 10 - 5.0) * sample_w
-    _part("Win rate", s5, 10,
-          f"{wr * 100:.0f}% historico · {_muestra}" + _ancla(5))
+    # Component 5: win rate (0-10), relativo al baseline y shrunk al neutral.
+    # Un 30% de aciertos shorteando no dice nada si entrar al azar tambien da 30%.
+    if base_wr is not None:
+        # +-15 pp de diferencia cubre el grueso de la distribucion medida.
+        _wr_edge = max(-0.15, min(0.15, min(wr, 1.0) - float(base_wr)))
+        _wr_norm = (_wr_edge + 0.15) / 0.30
+        _wr_why = (f"{wr * 100:.0f}% vs {float(base_wr) * 100:.0f}% de entrar al "
+                   f"azar ({(min(wr, 1.0) - float(base_wr)) * 100:+.0f} pp) · {_muestra}")
+    else:
+        _wr_norm = min(wr, 1.0)
+        _wr_why = f"{wr * 100:.0f}% historico (sin baseline medido) · {_muestra}"
+    s5 = 5.0 + (_wr_norm * 10 - 5.0) * sample_w
+    _part("Win rate", s5, 10, _wr_why + _ancla(5))
 
     # Component 6: how close the setup is to being executable (0-5).
     #

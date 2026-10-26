@@ -118,6 +118,10 @@ BACKTEST_COST_PCT = 0.10       # Coste round-trip por trade (comision + slippage
 BACKTEST_ROBUST_TRADES = 12    # Nº de trades no-solapados para peso de confianza pleno
 BACKTEST_COOLDOWN = True       # No abrir un nuevo trade hasta cerrar el anterior (evita solapes)
 BACKTEST_TREND_SMA = 200       # SMA para clasificar regimen (con/contra tendencia)
+# Cada cuantas ruedas se toma una entrada INCONDICIONAL para medir el baseline del
+# simbolo (la vara contra la que se mide el edge de la señal). 5 = ~250 muestras
+# por lado sobre 5 años, suficiente para una media estable y barato de calcular.
+BACKTEST_BASELINE_STRIDE = 5
 
 # === DATOS HISTORICOS ===
 HIST_DURATION = "1 Y"    # 1 año de datos

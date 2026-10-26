@@ -66,9 +66,53 @@ comparan contra la barra de **hace 3 ruedas**, no contra la anterior. Las condic
   significativo en las **dos mitades** de la década (+0.973% t=3.29 en 2016-21, +0.470% t=2.40 en
   2021-26) y en los dos regímenes (con y contra SMA200). No es el pico de una curva ruidosa: 2, 3,
   5, 7 y 10 son todos mejores que 1.
-- **El lado VENDEDOR sigue perdiendo plata en todos los lags** (−0.44%/trade y PF 0.80 con lag=1;
-  −0.30% y PF 0.85 con lag=3; t=−3.4 a −5.5, y peor en los últimos 5 años: t=−6.3). Cambiar el lag
-  **no lo arregla** — es una decisión pendiente del usuario, no un bug. No tocar sin decirlo.
+- **El lado VENDEDOR: medido a fondo (2026-10). Leer esto antes de "arreglarlo".**
+  1. **`bot.py` NUNCA abre cortos.** La señal SELL solo se vuelve accionable `if pos_info and
+     pos_info["pos"] > 0` (bot.py:357): únicamente **cierra un largo existente**. No hay path de
+     venta en corto en ningún lado del bot. Pero `backtester._simulate_short` sí simula cortos
+     desnudos ⇒ **`sell_expectancy`/`sell_win_rate`/`sell_profit_factor` describen una estrategia
+     que el bot no ejecuta**, y son los números que `_score_stock` usa para rankear las
+     recomendaciones de VENTA.
+  2. **Como entrada en corto pierde en términos absolutos, pero la SEÑAL tiene edge.** Contra su
+     propio baseline (entrada aleatoria, mismo bracket, 217 símbolos × 10 años):
+
+     | | exp/trade | n |
+     |---|---|---|
+     | VENTA del sistema (3/3) | −0.293% | 2.738 |
+     | Baseline: RSI>70 sin giro | −0.444% | 8.824 |
+     | Baseline: entrada aleatoria | −0.518% | 158.346 |
+
+     Diferencia sistema − aleatorio: **+0.225 pp, IC95 [+0.050, +0.399], p=0.0116**. O sea: la
+     señal informa de verdad; lo que pierde plata es **shortear**. El short aleatorio da −0.518% y
+     el largo aleatorio +0.347%: esa brecha de 0.87 pp es la deriva alcista de la década.
+  3. **OJO con el lado COMPRADOR, misma vara**: +0.623% contra un largo aleatorio de +0.347% es
+     **+0.276 pp, p=0.0922 — NO significativo**. El t=3.80 que figura arriba testea "expectancy >
+     0", no "mejor que entrar al azar". La comparación lag 1 vs lag 3 **no se ve afectada** (los
+     dos lados se midieron en términos idénticos), pero no hay que leer el +0.621% como edge
+     demostrado contra el mercado.
+  4. **Ningún bracket lo rescata**: 9 combinaciones de SL/TP (3/8, 3/3, 3/5, 5/8, 2/8, 5/5, 8/3,
+     4/6, 3/12) sobre las MISMAS señales — todas negativas. La mejor (3/3) da −0.185%. El bracket
+     no es el problema. El 8/3 da 60% de aciertos y **igual pierde** (−0.270%): win rate alto no es
+     expectancy.
+  5. **Ningún filtro de tendencia lo rescata.** `precio < SMA200` solo ocurre en **78 de 2.738**
+     señales (2.8%) — por construcción: el setup pide RSI>70, que casi nunca coexiste con un
+     precio bajo su media (`precio < SMA50`: **0** señales). Ese subconjunto da +0.760% PF 1.43
+     pero con t=1.36, no significativo. Relajando: pendiente de SMA200 bajando (n=481) +0.020%;
+     precio <+10% sobre SMA200 (n=819) −0.046%. El único efecto fuerte es el **inverso**:
+     shortear lo más extendido (>+20% sobre SMA200, n=1.013) da **−0.654%, t=−4.15**.
+  6. **El edge relativo se desvanece**: +1.23 pp sobre el baseline en 2016-18 (sistema +1.036%,
+     t=3.72), +0.34 pp en 2019-21, **−0.07 pp en 2022-26**. En el régimen actual no queda nada.
+  7. **Como SALIDA de un largo (lo único que el bot hace con SELL) es inservible, por timing**:
+     entre una señal de COMPRA y la siguiente de VENTA pasan **157 ruedas de mediana** (p10 = 41),
+     y cae dentro del tope de 20 ruedas de hold solo el **1.2%** de las veces (incluso el RSI>70
+     solo tarda 80 ruedas de mediana). Medido sobre las 992 entradas BUY de 10 años: aplicar la
+     salida por señal bajista cambia **0 de 992 trades**. Los largos salen por bracket, siempre.
+  **Conclusión**: no hay bug que arreglar en el bot. Lo que queda abierto es de PRESENTACIÓN: el
+  dashboard rankea setups de VENTA con un score cuyos componentes de expectancy/PF/win rate salen
+  de una simulación de corto desnudo que pierde plata y que nadie en este sistema ejecuta. Quien
+  actúe sobre una recomendación de VENTA (shorteando, o con las estrategias bajistas de Options
+  Lab) pelea contra una deriva de −0.52%/trade que el score nunca le muestra.
+  Scripts de la medición: `scratchpad/sell.py`, `sell2.py`, `exit.py`, `gap.py`.
 - **CUATRO copias del gatillo** (`config.SIGNAL_TURN_LAG` → `signals.TURN_LAG`, `backtester.py`
   `turn_lag` en `run_backtest` Y en `run_calibration_trades`, `bridge/signals.py` y
   `bridge/backtester.py` hardcodean 3). Si el backtest usa otra ventana que `signals.py`, **sus
@@ -226,7 +270,9 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
 - `SIGNAL_TURN_LAG = 3` — ventana del giro (ver "VENTANA DEL GIRO" en Signal Logic). Tocarlo
   obliga a tocar las 4 copias; con 1 el gatillo de compra tiene expectancy negativa.
 - Backtest: `BACKTEST_COST_PCT=0.10` (round-trip), `BACKTEST_COOLDOWN=True`,
-  `BACKTEST_ROBUST_TRADES=12` (muestra para confianza plena), `BACKTEST_TREND_SMA=200`
+  `BACKTEST_ROBUST_TRADES=12` (muestra para confianza plena), `BACKTEST_TREND_SMA=200`,
+  `BACKTEST_BASELINE_STRIDE=5` (cada cuántas ruedas se toma una entrada incondicional para medir
+  el baseline del símbolo — la vara del edge; ver "EDGE SOBRE BASELINE" en Backtest & Calibración)
 
 ## Web Dashboard (vista_web.py)
 - Default chart period: 1Y (scanner, top recommendations, portfolio)
@@ -585,6 +631,36 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   Efecto conjunto sobre el |Δ| diario del score: mediana 2.02 → 1.68, p90 11.63 → 10.65. Los
   saltos grandes que quedan son cambios REALES de label (ej. BAC: COMPRA FUERTE 3/3 fuerza 4.6 →
   COMPRA INMINENTE 2/3 fuerza 2.0, −22.8 puntos, de los cuales −12.7 son la fuerza).
+- **EDGE SOBRE BASELINE, NO EXPECTANCY CRUDA (2026-10)**: los tres componentes que miden
+  rendimiento histórico (expectancy 30, profit factor 15, win rate 10) se puntúan **relativos al
+  baseline del propio símbolo**: qué habría rendido entrar SIN condición, en el mismo activo, el
+  mismo período y el mismo bracket. `run_backtest` lo calcula simulando entradas incondicionales
+  cada `config.BACKTEST_BASELINE_STRIDE` (5) ruedas, largo y corto, y lo exporta como
+  `buy/sell_baseline_expectancy`, `..._profit_factor`, `..._win_rate` y `baseline_count`.
+  - **Por qué**: la expectancy cruda mide la señal MÁS la deriva del activo. El corto aleatorio da
+    −0.518%/trade y el largo aleatorio +0.347% — 0.87 pp que no son mérito ni culpa del sistema.
+    Puntuar crudo premiaba comprar lo que sube solo y castigaba toda lectura bajista aunque la
+    señal informara. Es el mismo criterio que `patterns.py` ya aplica a las figuras (edge =
+    hit_rate − baseline aleatorio, nunca el hit-rate crudo).
+  - **El baseline NO es constante entre símbolos** (rango intercuartil de 0.68 pp entre los 217
+    del universo), así que se mide por símbolo. No reemplazarlo por una constante global.
+  - **Escalas**: expectancy capeada a **±4 pp** de edge (cubre de p10 a p90 del edge medido por
+    símbolo: −2.57 a +3.55; con el crudo era ±6%); profit factor **relativo** (PF del setup / PF
+    del baseline, 1.0 = no aporta, 2.5+ = máximo); win rate como diferencia capeada a ±15 pp.
+    Los tres conservan su neutral: edge 0 ⇒ 15/30, PF_rel 1.0 ⇒ 0/15, WR igual al baseline ⇒ 5/10.
+  - **Fallback obligatorio**: si falta el baseline (backtest viejo, o **bridge sin reinstalar**) se
+    cae a la expectancy cruda con la escala vieja. Sin eso, el cloud rankearía todo con 15/30 fijo
+    hasta que el usuario actualice el bridge. Hay test.
+  - **Lo que el score significa CAMBIÓ**: ahora mide *calidad de la señal* (¿le gana a entrar al
+    azar en este activo?), no *ganancia esperada*. Un setup bajista puede puntuar bien y aun así
+    perder plata ejecutado como corto desnudo — por eso el `why` de cada componente muestra **los
+    dos números** ("+0.29 pp sobre entrar al azar (−0.29% del setup vs −0.59% del baseline)").
+    Efecto medido sobre los símbolos elegibles: los bajistas suben ~1.5 pts de media y los
+    alcistas bajan ~2.6. No volver a leer el Score como retorno esperado.
+  - Tests: `tests/test_invariantes.py` §12 (misma expectancy con distinto baseline puntúa distinto,
+    edge 0 cae en el neutral, el fallback sin baseline no rompe, paridad de campos con el bridge,
+    y el baseline se mide de verdad — largo > corto sobre una serie con deriva alcista).
+  ⚠ Cambia `bridge/backtester.py` ⇒ **requiere reinstalar el bridge**.
 - **El shrinkage tira al NEUTRAL de cada escala, no a cero (2026-09)**: `sample_w` multiplicaba
   el componente ENTERO, así que un símbolo sin ninguna señal histórica (`n=0`) sacaba 0 de
   expectancy y 0 de win_rate, **20 puntos menos** que uno con 12 trades y edge medido

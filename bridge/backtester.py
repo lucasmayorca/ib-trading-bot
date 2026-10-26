@@ -24,6 +24,7 @@ BACKTEST_ROBUST_TRADES = 12   # nº de trades no-solapados para peso de confianz
 BACKTEST_COOLDOWN = True      # no abrir un nuevo trade hasta cerrar el anterior
 BACKTEST_TREND_SMA = 200      # SMA para clasificar regimen (con/contra tendencia)
 TURN_LAG = 3                  # espejo de config.SIGNAL_TURN_LAG / signals.TURN_LAG
+BASELINE_STRIDE = 5           # espejo de config.BACKTEST_BASELINE_STRIDE
 
 
 def run_backtest(df, indicators_dict, stop_loss_pct=None,
@@ -120,7 +121,20 @@ def run_backtest(df, indicators_dict, stop_loss_pct=None,
                 if cooldown:
                     blocked_until = trade["exit_idx"]
 
-    return _compute_metrics(buy_trades, sell_trades)
+    # BASELINE por simbolo: entrar SIN condicion, mismo bracket. Es la vara del
+    # edge (espejo de backtester.py — ver "lado VENDEDOR" en CLAUDE.md).
+    base_long, base_short = [], []
+    for i in range(max(warmup_bars, TURN_LAG), n, BASELINE_STRIDE):
+        t = _simulate_long(closes, i, stop_loss_pct, take_profit_pct,
+                           max_hold_days, cost_pct, highs=highs, lows=lows, opens=opens)
+        if t is not None:
+            base_long.append(t)
+        t = _simulate_short(closes, i, stop_loss_pct, take_profit_pct,
+                            max_hold_days, cost_pct, highs=highs, lows=lows, opens=opens)
+        if t is not None:
+            base_short.append(t)
+
+    return _compute_metrics(buy_trades, sell_trades, base_long, base_short)
 
 
 def _ohlc_arrays(df):
@@ -349,9 +363,26 @@ def _side_stats(trades):
     }
 
 
-def _compute_metrics(buy_trades, sell_trades):
+def _baseline_stats(trades):
+    if not trades:
+        return {"expectancy": None, "profit_factor": None, "win_rate": None, "count": 0}
+    rets = [t["return_pct"] for t in trades]
+    wins = [x for x in rets if x > 0]
+    losses = [x for x in rets if x <= 0]
+    lsum = sum(losses)
+    return {
+        "expectancy": sum(rets) / len(rets),
+        "profit_factor": (sum(wins) / abs(lsum)) if losses and lsum != 0 else None,
+        "win_rate": len(wins) / len(rets),
+        "count": len(rets),
+    }
+
+
+def _compute_metrics(buy_trades, sell_trades, base_long=None, base_short=None):
     b = _side_stats(buy_trades)
     s = _side_stats(sell_trades)
+    bl = _baseline_stats(base_long or [])
+    bs = _baseline_stats(base_short or [])
     total = b["count"] + s["count"]
 
     if total == 0:
@@ -381,6 +412,13 @@ def _compute_metrics(buy_trades, sell_trades):
         "sell_win_rate_trend": s["win_rate_trend"],
         "buy_count_trend": b["count_trend"],
         "sell_count_trend": s["count_trend"],
+        "buy_baseline_expectancy": bl["expectancy"],
+        "sell_baseline_expectancy": bs["expectancy"],
+        "buy_baseline_profit_factor": bl["profit_factor"],
+        "sell_baseline_profit_factor": bs["profit_factor"],
+        "buy_baseline_win_rate": bl["win_rate"],
+        "sell_baseline_win_rate": bs["win_rate"],
+        "baseline_count": bl["count"],
     }
 
 
@@ -406,4 +444,11 @@ def _empty_result():
         "sell_win_rate_trend": None,
         "buy_count_trend": 0,
         "sell_count_trend": 0,
+        "buy_baseline_expectancy": None,
+        "sell_baseline_expectancy": None,
+        "buy_baseline_profit_factor": None,
+        "sell_baseline_profit_factor": None,
+        "buy_baseline_win_rate": None,
+        "sell_baseline_win_rate": None,
+        "baseline_count": 0,
     }

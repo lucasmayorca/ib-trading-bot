@@ -130,8 +130,28 @@ def run_backtest(df, indicators_dict=None, stop_loss_pct=None,
                 if cooldown:
                     blocked_until = trade["exit_idx"]
 
-    # 4. Calcular metricas
-    return _compute_metrics(buy_trades, sell_trades)
+    # 4. BASELINE: que habria rendido entrar SIN condicion, en el mismo simbolo,
+    #    el mismo periodo y el mismo bracket. Es la vara contra la que se mide el
+    #    edge: shortear una decada alcista pierde plata aunque la señal sea buena,
+    #    y comprarla gana aunque la señal no aporte nada. Medido sobre el universo
+    #    (217 simbolos x 10A): el short aleatorio da -0.518%/trade y el largo
+    #    aleatorio +0.347% — 0.87 pp de deriva que no es merito ni culpa del
+    #    sistema. El baseline NO es constante entre simbolos (rango intercuartil
+    #    de 0.68 pp), asi que se calcula por simbolo y no se hardcodea.
+    stride = max(1, int(getattr(config, "BACKTEST_BASELINE_STRIDE", 5)))
+    base_long, base_short = [], []
+    for i in range(max(warmup_bars, turn_lag), n, stride):
+        t = _simulate_long(closes, i, stop_loss_pct, take_profit_pct,
+                           max_hold_days, cost_pct, highs=highs, lows=lows, opens=opens)
+        if t is not None:
+            base_long.append(t)
+        t = _simulate_short(closes, i, stop_loss_pct, take_profit_pct,
+                            max_hold_days, cost_pct, highs=highs, lows=lows, opens=opens)
+        if t is not None:
+            base_short.append(t)
+
+    # 5. Calcular metricas
+    return _compute_metrics(buy_trades, sell_trades, base_long, base_short)
 
 
 def _entry_strength(side, h, h1, h2, r, r1, m, m1, m2):
@@ -494,10 +514,28 @@ def _side_stats(trades):
     }
 
 
-def _compute_metrics(buy_trades, sell_trades):
+def _baseline_stats(trades):
+    """Expectancy / PF / win rate de la entrada incondicional (la vara del edge)."""
+    if not trades:
+        return {"expectancy": None, "profit_factor": None, "win_rate": None, "count": 0}
+    rets = [t["return_pct"] for t in trades]
+    wins = [x for x in rets if x > 0]
+    losses = [x for x in rets if x <= 0]
+    lsum = sum(losses)
+    return {
+        "expectancy": sum(rets) / len(rets),
+        "profit_factor": (sum(wins) / abs(lsum)) if losses and lsum != 0 else None,
+        "win_rate": len(wins) / len(rets),
+        "count": len(rets),
+    }
+
+
+def _compute_metrics(buy_trades, sell_trades, base_long=None, base_short=None):
     """Calcula confianza calibrada, expectancy, retornos y win rates por direccion."""
     b = _side_stats(buy_trades)
     s = _side_stats(sell_trades)
+    bl = _baseline_stats(base_long or [])
+    bs = _baseline_stats(base_short or [])
     total = b["count"] + s["count"]
 
     # Confianza global (0-100): mezcla ponderada por muestra de la confianza
@@ -532,6 +570,14 @@ def _compute_metrics(buy_trades, sell_trades):
         "sell_win_rate_trend": s["win_rate_trend"],
         "buy_count_trend": b["count_trend"],
         "sell_count_trend": s["count_trend"],
+        # --- Baseline por simbolo: entrar sin condicion, mismo bracket ---
+        "buy_baseline_expectancy": bl["expectancy"],
+        "sell_baseline_expectancy": bs["expectancy"],
+        "buy_baseline_profit_factor": bl["profit_factor"],
+        "sell_baseline_profit_factor": bs["profit_factor"],
+        "buy_baseline_win_rate": bl["win_rate"],
+        "sell_baseline_win_rate": bs["win_rate"],
+        "baseline_count": bl["count"],
     }
 
 
@@ -558,4 +604,11 @@ def _empty_result():
         "sell_win_rate_trend": None,
         "buy_count_trend": 0,
         "sell_count_trend": 0,
+        "buy_baseline_expectancy": None,
+        "sell_baseline_expectancy": None,
+        "buy_baseline_profit_factor": None,
+        "sell_baseline_profit_factor": None,
+        "buy_baseline_win_rate": None,
+        "sell_baseline_win_rate": None,
+        "baseline_count": 0,
     }

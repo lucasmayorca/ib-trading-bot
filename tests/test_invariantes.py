@@ -587,3 +587,136 @@ def test_el_giro_se_mide_contra_la_barra_de_hace_lag_ruedas():
     assert hist[-1] > hist[-2]          # sube respecto a ayer...
     assert not det["macd_ok"]           # ...pero el sistema no lo llama giro
     assert not ok
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 12. EDGE SOBRE BASELINE, NO EXPECTANCY CRUDA (2026-10)
+#
+# La expectancy cruda mide la señal MAS la deriva del activo. Sobre 217 simbolos
+# x 10 años: entrar en corto al azar da -0.518%/trade y en largo al azar +0.347%
+# — 0.87 pp que no son merito ni culpa del sistema. Puntuar la expectancy cruda
+# premiaba comprar lo que sube solo y castigaba toda lectura bajista aunque la
+# señal informara (la de VENTA tiene edge de +0.225 pp sobre el azar, p=0.0116).
+# El baseline NO es constante entre simbolos (rango intercuartil 0.68 pp), asi
+# que se mide por simbolo en el backtest y no se hardcodea.
+# ──────────────────────────────────────────────────────────────────────────
+
+def _bt(**kw):
+    """Backtest sintetico con los campos que lee _score_stock."""
+    base = {
+        "confidence": 50.0, "buy_count": 20, "sell_count": 20,
+        "buy_win_rate": 0.5, "sell_win_rate": 0.5,
+        "buy_expectancy": 0.0, "sell_expectancy": 0.0,
+        "buy_profit_factor": 1.0, "sell_profit_factor": 1.0,
+        "buy_win_rate_trend": None, "sell_win_rate_trend": None,
+        "buy_count_trend": 20, "sell_count_trend": 20,
+        "buy_baseline_expectancy": None, "sell_baseline_expectancy": None,
+        "buy_baseline_profit_factor": None, "sell_baseline_profit_factor": None,
+        "buy_baseline_win_rate": None, "sell_baseline_win_rate": None,
+        "baseline_count": 0,
+    }
+    base.update(kw)
+    return base
+
+
+def _analysis(label, signal, bt, price=100.0):
+    """Analisis minimo que pasa la elegibilidad de _score_stock."""
+    n = 300
+    ohlc = [{"time": f"2026-01-{(i % 28) + 1:02d}", "open": price, "high": price * 1.01,
+             "low": price * 0.99, "close": price} for i in range(n)]
+    return {
+        "signal": signal, "signal_label": label, "strength": 3.0,
+        "conditions_met": 2 if signal == "HOLD" else 3,
+        "backtest": bt, "price": price,
+        "values": {"rsi": 72.0 if "VENTA" in label else 28.0,
+                   "macd": {"hist": 1.0, "macd": 1.0},
+                   "koncorde": {"marron": 10.0, "media": 5.0, "azul": 0.0}},
+        "rsi_ok": True, "macd_ok": True, "konc_ok": False,
+        "chart": {"ohlc": ohlc, "mas": {"sma200_val": None}},
+    }
+
+
+def _comp(parts, *names):
+    for p in parts:
+        if p["lab"] in names:
+            return p["pts"]
+    return None
+
+
+def test_el_score_mide_edge_no_expectancy_cruda():
+    """Dos setups con la MISMA expectancy cruda pero distinto baseline tienen que
+    puntuar distinto: el que la saca en un activo que cae solo no tiene edge."""
+    import vista_web as vw
+    # expectancy -0.3% con baseline -0.6% => edge +0.3 pp (la señal aporta)
+    buena = []
+    vw._score_stock("A", _analysis("VENTA INMINENTE", "HOLD",
+                    _bt(sell_expectancy=-0.3, sell_baseline_expectancy=-0.6)),
+                    min_target_pct=0, parts=buena)
+    # misma expectancy -0.3% pero baseline 0.0 => edge -0.3 pp (la señal resta)
+    mala = []
+    vw._score_stock("B", _analysis("VENTA INMINENTE", "HOLD",
+                    _bt(sell_expectancy=-0.3, sell_baseline_expectancy=0.0)),
+                    min_target_pct=0, parts=mala)
+    e_buena = _comp(buena, "Edge sobre el baseline")
+    e_mala = _comp(mala, "Edge sobre el baseline")
+    assert e_buena is not None and e_mala is not None
+    assert e_buena > e_mala, (e_buena, e_mala)
+
+
+def test_edge_cero_puntua_el_neutral_de_la_escala():
+    """Una señal que rinde exactamente lo que rinde entrar al azar no aporta
+    evidencia: tiene que caer en el neutral (15 de 30), no en 0 ni en el maximo."""
+    import vista_web as vw
+    parts = []
+    vw._score_stock("A", _analysis("VENTA INMINENTE", "HOLD",
+                    _bt(sell_expectancy=-0.5, sell_baseline_expectancy=-0.5)),
+                    min_target_pct=0, parts=parts)
+    assert abs(_comp(parts, "Edge sobre el baseline") - 15.0) < 0.01
+
+
+def test_sin_baseline_el_score_no_se_rompe():
+    """El bridge sin reinstalar manda backtests sin los campos de baseline: el
+    ranking tiene que caer a la expectancy cruda, no explotar ni dar 0."""
+    import vista_web as vw
+    parts = []
+    s = vw._score_stock("A", _analysis("COMPRA INMINENTE", "HOLD",
+                        _bt(buy_expectancy=2.0)), min_target_pct=0, parts=parts)
+    assert s is not None and s > 0
+    assert _comp(parts, "Expectancy historica") is not None   # etiqueta del fallback
+    assert _comp(parts, "Edge sobre el baseline") is None
+
+
+def test_el_backtest_exporta_el_baseline_y_el_bridge_tambien():
+    """Los campos tienen que existir en las DOS copias (el cloud lee los del
+    bridge). Si una no los manda, su ranking usa otra formula que el local."""
+    import backtester
+    import bridge.backtester as bbt
+    campos = ("buy_baseline_expectancy", "sell_baseline_expectancy",
+              "buy_baseline_profit_factor", "sell_baseline_profit_factor",
+              "buy_baseline_win_rate", "sell_baseline_win_rate", "baseline_count")
+    for mod in (backtester, bbt):
+        vacio = mod._empty_result()
+        for c in campos:
+            assert c in vacio, (mod.__name__, c)
+    assert bbt.BASELINE_STRIDE == backtester.config.BACKTEST_BASELINE_STRIDE
+
+
+def test_el_baseline_se_mide_de_verdad_sobre_una_serie():
+    """Extremo a extremo: sobre una serie con deriva alcista, el baseline LARGO
+    tiene que salir mejor que el CORTO. Si salen iguales, no se esta midiendo."""
+    import numpy as np
+    import pandas as pd
+    import backtester
+    rng = np.random.default_rng(11)
+    n = 700
+    # deriva alcista clara + ruido
+    close = 100 * np.exp(np.cumsum(rng.normal(0.0008, 0.015, n)))
+    df = pd.DataFrame({
+        "date": pd.bdate_range("2021-01-01", periods=n).astype(str),
+        "open": close, "high": close * 1.01, "low": close * 0.99,
+        "close": close, "volume": np.full(n, 1e6),
+    })
+    r = backtester.run_backtest(df)
+    assert r["baseline_count"] > 50, r["baseline_count"]
+    assert r["buy_baseline_expectancy"] > r["sell_baseline_expectancy"], (
+        r["buy_baseline_expectancy"], r["sell_baseline_expectancy"])
