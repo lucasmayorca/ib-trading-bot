@@ -39,6 +39,14 @@ KONCORDE_STOCH_PERIOD = 21
 KONCORDE_STOCH_SMOOTH = 3
 KONCORDE_MEDIA_PERIOD = 21
 
+# Si está en False, el bot NO ejecuta la señal SELL. OJO con lo que eso
+# significa: `bot.py` nunca abrió cortos — su rama SELL únicamente CIERRA un
+# largo existente (`if pos_info and pos_info["pos"] > 0`). Desactivarla no
+# cancela ninguna venta en corto: elimina la única salida discrecional del bot,
+# y las posiciones pasan a salir solo por el bracket (STP/LMT ya cargados en
+# TWS). La señal se sigue calculando y mostrando — esto es solo ejecución.
+EXECUTE_SELL_SIGNALS = False
+
 # === SENALES ===
 # VENTANA DEL GIRO (2026-10). Las condiciones de giro del sistema (histograma
 # MACD subiendo/cayendo, marron del Koncorde girando) se comparan contra la

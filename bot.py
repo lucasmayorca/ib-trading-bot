@@ -328,6 +328,7 @@ def run_scan_cycle(bot):
     print(f"Obtenidas {len(stocks)} acciones. Analizando...\n")
 
     actionable_signals = []
+    skipped_sells = []
 
     for i, stock in enumerate(stocks):
         symbol = stock["symbol"]
@@ -355,7 +356,13 @@ def run_scan_cycle(bot):
                     and symbol not in pending_entries and calculate_quantity(price) > 0):
                 actionable_signals.append((symbol, sig, price, pos_info))
         elif sig["signal"] == "SELL" and pos_info and pos_info["pos"] > 0:
-            actionable_signals.append((symbol, sig, price, pos_info))
+            # Esta rama CIERRA un largo (el bot nunca abrio cortos). Con
+            # EXECUTE_SELL_SIGNALS=False la señal se sigue calculando y
+            # mostrando, pero no genera orden: la posicion sale por el bracket.
+            if getattr(config, "EXECUTE_SELL_SIGNALS", True):
+                actionable_signals.append((symbol, sig, price, pos_info))
+            else:
+                skipped_sells.append(symbol)
 
         # Progreso
         if (i + 1) % 10 == 0:
@@ -369,6 +376,12 @@ def run_scan_cycle(bot):
 
     print(f"\n{'='*60}")
     print(f"  RESULTADOS: {len(buy_signals)} BUY | {len(sell_signals)} SELL")
+    if skipped_sells:
+        # No callar lo que se dejo de ejecutar: sin esto, una señal de salida
+        # ignorada es invisible y parece que el sistema no la vio.
+        print(f"  \033[93mSELL NO EJECUTADAS (EXECUTE_SELL_SIGNALS=False): "
+              f"{', '.join(skipped_sells)}\033[0m")
+        print(f"  Esas posiciones siguen abiertas con su bracket (SL/TP) en TWS.")
     print(f"{'='*60}")
 
     if not actionable_signals:

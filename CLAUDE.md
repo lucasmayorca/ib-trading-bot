@@ -107,6 +107,16 @@ comparan contra la barra de **hace 3 ruedas**, no contra la anterior. Las condic
      y cae dentro del tope de 20 ruedas de hold solo el **1.2%** de las veces (incluso el RSI>70
      solo tarda 80 ruedas de mediana). Medido sobre las 992 entradas BUY de 10 años: aplicar la
      salida por señal bajista cambia **0 de 992 trades**. Los largos salen por bracket, siempre.
+  8. **`EXECUTE_SELL_SIGNALS = False` (config.py, 2026-10)**: el bot ya no ejecuta la señal SELL.
+     La señal se sigue calculando y mostrando — lo que se apaga es la ORDEN; las posiciones salen
+     por el bracket (STP/LMT ya vivos en TWS). Los símbolos salteados se listan en el resumen del
+     ciclo (`skipped_sells`): una salida ignorada en silencio es invisible y parece que el sistema
+     no la vio. **Medido sin el tope de 20 ruedas del backtest** (en vivo el bracket no caduca, así
+     que el "0 de 992" del punto 7 no se traslada): la señal SELL llega antes que el bracket en
+     **21 de 971 trades (2.2%)** y en esos sale **PEOR** (+4.32% por señal vs +5.31% aguantando el
+     bracket, −0.99 pp); efecto global −0.021 pp/trade, p=0.39. La duración mediana de un trade con
+     bracket sin tope es de **6 ruedas** (p90 34), así que apagar la salida discrecional no deja
+     posiciones colgadas: el bracket resuelve rápido. Tests: §13.
   **Conclusión**: no hay bug que arreglar en el bot. Lo que queda abierto es de PRESENTACIÓN: el
   dashboard rankea setups de VENTA con un score cuyos componentes de expectancy/PF/win rate salen
   de una simulación de corto desnudo que pierde plata y que nadie en este sistema ejecuta. Quien
@@ -266,6 +276,9 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
 - `MAX_PER_TRADE = 5000` USD
 - `STOP_LOSS_PCT = 3.0`, `TAKE_PROFIT_PCT = 8.0`
 - `MAX_OPEN_POSITIONS = 10`
+- `EXECUTE_SELL_SIGNALS = False` — el bot no ejecuta la señal SELL (ver el punto 8 del bloque
+  "lado VENDEDOR" en Signal Logic). No apaga ningún corto: `bot.py` nunca los abrió; apaga el
+  cierre discrecional de un largo, que medido sale peor que aguantar el bracket.
 - MACD: 12/26/9, RSI: 14/21, Koncorde EMA: 255
 - `SIGNAL_TURN_LAG = 3` — ventana del giro (ver "VENTANA DEL GIRO" en Signal Logic). Tocarlo
   obliga a tocar las 4 copias; con 1 el gatillo de compra tiene expectancy negativa.

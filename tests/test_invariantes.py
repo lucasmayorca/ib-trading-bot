@@ -720,3 +720,50 @@ def test_el_baseline_se_mide_de_verdad_sobre_una_serie():
     assert r["baseline_count"] > 50, r["baseline_count"]
     assert r["buy_baseline_expectancy"] > r["sell_baseline_expectancy"], (
         r["buy_baseline_expectancy"], r["sell_baseline_expectancy"])
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 13. EXECUTE_SELL_SIGNALS (2026-10) — la rama SELL del bot CIERRA LARGOS
+#
+# `bot.py` nunca abrio cortos: su rama SELL exige `pos_info["pos"] > 0`. El flag
+# apaga esa EJECUCION, no la señal. Medido sin el tope temporal del backtest
+# (como opera en vivo, donde el bracket no caduca): la señal SELL llega antes
+# que el bracket en 21 de 971 trades (2.2%) y en esos sale PEOR (+4.32% vs
+# +5.31%, -0.99 pp); el efecto global es -0.021 pp/trade (p=0.39).
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_el_bot_nunca_abre_cortos():
+    """La rama SELL exige una posicion LARGA previa. Si alguien la afloja, el
+    bot empieza a shortear — y shortear con este setup pierde plata en los 10
+    años medidos (-0.29%/trade, PF 0.85)."""
+    import re
+    src = open(os.path.join(os.path.dirname(__file__), "..", "bot.py")).read()
+    # OJO: hay dos ramas SELL en bot.py — la de impresion (position_info) y la
+    # de ejecucion dentro de run_scan_cycle (pos_info). Esta es la segunda.
+    m = re.search(r'elif sig\["signal"\] == "SELL" and pos_info[^\n]*', src)
+    assert m, "no se encontro la rama SELL de run_scan_cycle"
+    rama = m.group(0)
+    assert 'pos_info["pos"] > 0' in rama, rama
+
+
+def test_el_flag_de_sell_existe_y_esta_documentado():
+    import config
+    assert hasattr(config, "EXECUTE_SELL_SIGNALS")
+    assert isinstance(config.EXECUTE_SELL_SIGNALS, bool)
+
+
+def test_con_el_flag_apagado_la_señal_sell_no_genera_orden():
+    """La señal se sigue calculando y mostrando; lo que no ocurre es la orden.
+    Se verifica sobre el codigo porque run_scan_cycle necesita TWS."""
+    import re
+    src = open(os.path.join(os.path.dirname(__file__), "..", "bot.py")).read()
+    i = src.index('elif sig["signal"] == "SELL" and pos_info')
+    bloque = src[i:i + 700]
+    # el append a actionable_signals tiene que estar detras del flag
+    assert "EXECUTE_SELL_SIGNALS" in bloque, bloque[:300]
+    pos_flag = bloque.index("EXECUTE_SELL_SIGNALS")
+    pos_append = bloque.index("actionable_signals.append")
+    assert pos_flag < pos_append, "el append no esta gobernado por el flag"
+    # y lo salteado se reporta: una salida ignorada en silencio es invisible
+    assert "skipped_sells" in bloque
+    assert "skipped_sells" in src[src.index("RESULTADOS:"):src.index("RESULTADOS:") + 600]
