@@ -284,10 +284,12 @@ def _detect_patterns(df, piv_h, piv_l, all_levels, atr, price,
 
 def _condition_items(ind):
     macd_df, rsi_df, konc_df = ind["macd"], ind["rsi"], ind["koncorde"]
-    hist, hist_prev = float(macd_df["hist"].iloc[-1]), float(macd_df["hist"].iloc[-2])
+    _lag = signals.TURN_LAG   # misma ventana de giro que el sistema
+    hist = float(macd_df["hist"].iloc[-1])
+    hist_prev = float(macd_df["hist"].iloc[-1 - _lag])
     rsi_v, rsi_prev3 = float(rsi_df["rsi"].iloc[-1]), float(rsi_df["rsi"].iloc[-4])
     marron = float(konc_df["marron"].iloc[-1])
-    marron_prev = float(konc_df["marron"].iloc[-2])
+    marron_prev = float(konc_df["marron"].iloc[-1 - _lag])
     media = float(konc_df["media"].iloc[-1])
 
     _, bd = signals.check_buy_conditions(konc_df, macd_df, rsi_df)
@@ -581,7 +583,7 @@ def _build_pulse():
         mas_payload["sma50"], mas_payload["sma200"], rsi_series, channel)
 
     hist = float(ind["macd"]["hist"].iloc[-1])
-    hist_prev = float(ind["macd"]["hist"].iloc[-2])
+    hist_prev = float(ind["macd"]["hist"].iloc[-1 - signals.TURN_LAG])
     rsi_v = float(ind["rsi"]["rsi"].iloc[-1])
     marron = float(ind["koncorde"]["marron"].iloc[-1])
     media = float(ind["koncorde"]["media"].iloc[-1])

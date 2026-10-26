@@ -40,6 +40,20 @@ KONCORDE_STOCH_SMOOTH = 3
 KONCORDE_MEDIA_PERIOD = 21
 
 # === SENALES ===
+# VENTANA DEL GIRO (2026-10). Las condiciones de giro del sistema (histograma
+# MACD subiendo/cayendo, marron del Koncorde girando) se comparan contra la
+# barra de hace SIGNAL_TURN_LAG ruedas, NO contra la barra anterior.
+# Medido sobre el universo completo (217 simbolos x 10 años, mismo motor de
+# ejecucion intradia, cooldown y costes del backtest) el lag de 1 barra era un
+# volado: el marron del Koncorde cambia de "subiendo" a "bajando" el 43% de los
+# dias y el histograma el 28%. Con lag=1 el gatillo de COMPRA tenia expectancy
+# NEGATIVA (-0.172%/trade, PF 0.92); con lag=3 pasa a +0.621%/trade, PF 1.32,
+# t=3.80, y es positivo en las DOS mitades de la decada (+0.973% y +0.470%).
+# El lag 1 era el peor de todos los probados (1,2,3,5,7,10).
+# ⚠ Espejado a mano en bridge/signals.py y bridge/backtester.py (son copias
+#   self-contained, sin config) — cambiar aca obliga a cambiar los cuatro.
+SIGNAL_TURN_LAG = 3
+
 # (No hay umbral de score configurable: signals.py exige 3/3 condiciones para
 #  BUY/SELL. SIGNAL_MIN_SCORE_BUY/SELL existieron aca pero ningun modulo los
 #  leia — se quitaron en 2026-09 para que config.py no prometa una perilla

@@ -23,6 +23,7 @@ BACKTEST_COST_PCT = 0.10      # coste round-trip por trade (comision + slippage)
 BACKTEST_ROBUST_TRADES = 12   # nº de trades no-solapados para peso de confianza pleno
 BACKTEST_COOLDOWN = True      # no abrir un nuevo trade hasta cerrar el anterior
 BACKTEST_TREND_SMA = 200      # SMA para clasificar regimen (con/contra tendencia)
+TURN_LAG = 3                  # espejo de config.SIGNAL_TURN_LAG / signals.TURN_LAG
 
 
 def run_backtest(df, indicators_dict, stop_loss_pct=None,
@@ -74,17 +75,15 @@ def run_backtest(df, indicators_dict, stop_loss_pct=None,
     sell_trades = []
     blocked_until = -1
 
-    for i in range(warmup_bars, n):
-        if i < 2:
-            continue
+    for i in range(max(warmup_bars, TURN_LAG), n):
         if cooldown and i <= blocked_until:
             continue
 
         h = hist_vals[i]
-        h1 = hist_vals[i - 1]
+        h1 = hist_vals[i - TURN_LAG]
         r = rsi_vals[i]
         m = marron_vals[i]
-        m1 = marron_vals[i - 1]
+        m1 = marron_vals[i - TURN_LAG]
         med = media_vals[i]
 
         if (math.isnan(h) or math.isnan(h1) or math.isnan(r) or

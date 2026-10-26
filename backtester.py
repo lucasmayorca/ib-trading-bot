@@ -46,6 +46,10 @@ def run_backtest(df, indicators_dict=None, stop_loss_pct=None,
     if cooldown is None:
         cooldown = getattr(config, "BACKTEST_COOLDOWN", True)
     trend_win = getattr(config, "BACKTEST_TREND_SMA", 200)
+    # Ventana del giro: IDENTICA a la de signals.py (config.SIGNAL_TURN_LAG).
+    # El backtest tiene que medir el mismo gatillo que dispara el bot; si se
+    # desincronizan, las estadisticas describen una estrategia que nadie opera.
+    turn_lag = max(1, int(getattr(config, "SIGNAL_TURN_LAG", 3)))
 
     # Datos insuficientes
     if df is None or len(df) < warmup_bars + max_hold_days:
@@ -74,20 +78,17 @@ def run_backtest(df, indicators_dict=None, stop_loss_pct=None,
     blocked_until = -1   # cooldown: indice hasta el que no se puede abrir otro trade
 
     # 3. Recorrer dia a dia desde warmup
-    for i in range(warmup_bars, n):
-        # Necesita al menos 2 barras previas para hist_prev, hist_prev2
-        if i < 2:
-            continue
+    for i in range(max(warmup_bars, turn_lag), n):
         # Cooldown: ya hay una posicion abierta que no cerro
         if cooldown and i <= blocked_until:
             continue
 
         # Valores actuales y previos
         h = hist_vals[i]
-        h1 = hist_vals[i - 1]
+        h1 = hist_vals[i - turn_lag]
         r = rsi_vals[i]
         m = marron_vals[i]
-        m1 = marron_vals[i - 1]
+        m1 = marron_vals[i - turn_lag]
         med = media_vals[i]
 
         # Saltar si hay NaN
@@ -183,6 +184,7 @@ def run_calibration_trades(df, indicators_dict=None, warmup_bars=None,
         cost_pct = getattr(config, "BACKTEST_COST_PCT", 0.10)
     cooldown = getattr(config, "BACKTEST_COOLDOWN", True)
     trend_win = getattr(config, "BACKTEST_TREND_SMA", 200)
+    turn_lag = max(1, int(getattr(config, "SIGNAL_TURN_LAG", 3)))
 
     if df is None or len(df) < warmup_bars + max_hold_days:
         return []
@@ -201,14 +203,13 @@ def run_calibration_trades(df, indicators_dict=None, warmup_bars=None,
     trades = []
     blocked_until = -1
 
-    for i in range(warmup_bars, n):
-        if i < 3:
-            continue
+    for i in range(max(warmup_bars, 2 * turn_lag), n):
         if cooldown and i <= blocked_until:
             continue
-        h, h1, h2 = hist_vals[i], hist_vals[i - 1], hist_vals[i - 2]
-        r, r1 = rsi_vals[i], rsi_vals[i - 1]
-        m, m1, m2 = marron_vals[i], marron_vals[i - 1], marron_vals[i - 2]
+        h, h1, h2 = hist_vals[i], hist_vals[i - turn_lag], hist_vals[i - 2 * turn_lag]
+        r, r1 = rsi_vals[i], rsi_vals[i - turn_lag]
+        m, m1, m2 = (marron_vals[i], marron_vals[i - turn_lag],
+                     marron_vals[i - 2 * turn_lag])
         med = media_vals[i]
         if (math.isnan(h) or math.isnan(h1) or math.isnan(h2) or math.isnan(r) or
                 math.isnan(r1) or math.isnan(m) or math.isnan(m1) or

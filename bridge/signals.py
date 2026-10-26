@@ -5,27 +5,33 @@ BUY/SELL when all 3 indicators align.
 
 import numpy as np
 
+# Espejo de config.SIGNAL_TURN_LAG (el bridge es self-contained, sin config).
+# Mantener en paridad con signals.py / backtester.py / bridge/backtester.py.
+TURN_LAG = 3
+MIN_BARS = 2 * TURN_LAG + 1
+
 
 def check_buy_conditions(koncorde_df, macd_df, rsi_df):
-    if len(koncorde_df) < 5 or len(macd_df) < 5 or len(rsi_df) < 5:
+    if (len(koncorde_df) < MIN_BARS or len(macd_df) < MIN_BARS
+            or len(rsi_df) < MIN_BARS):
         return False, {"razon": "Datos insuficientes"}
 
     hist = macd_df["hist"].iloc[-1]
-    hist_prev = macd_df["hist"].iloc[-2]
-    hist_prev2 = macd_df["hist"].iloc[-3]
+    hist_prev = macd_df["hist"].iloc[-1 - TURN_LAG]
+    hist_prev2 = macd_df["hist"].iloc[-1 - 2 * TURN_LAG]
 
     macd_oversold = hist < 0
     macd_turning = hist > hist_prev
     macd_had_bottom = hist_prev <= hist_prev2
     macd_ok = macd_oversold and macd_turning
-    macd_detail = f"hist={hist:.2f} prev={hist_prev:.2f}"
+    macd_detail = f"hist={hist:.2f} hace{TURN_LAG}r={hist_prev:.2f}"
     if macd_ok and macd_had_bottom:
         macd_detail += " PISO CONFIRMADO"
     elif macd_ok:
         macd_detail += " girando"
 
     rsi_val = rsi_df["rsi"].iloc[-1]
-    rsi_prev = rsi_df["rsi"].iloc[-2]
+    rsi_prev = rsi_df["rsi"].iloc[-1 - TURN_LAG]
     rsi_ok = rsi_val < 30
     rsi_detail = f"RSI={rsi_val:.1f}"
     if rsi_ok:
@@ -34,8 +40,8 @@ def check_buy_conditions(koncorde_df, macd_df, rsi_df):
             rsi_detail += " rebotando"
 
     marron = koncorde_df["marron"].iloc[-1]
-    marron_prev = koncorde_df["marron"].iloc[-2]
-    marron_prev2 = koncorde_df["marron"].iloc[-3]
+    marron_prev = koncorde_df["marron"].iloc[-1 - TURN_LAG]
+    marron_prev2 = koncorde_df["marron"].iloc[-1 - 2 * TURN_LAG]
     azul = koncorde_df["azul"].iloc[-1]
     media = koncorde_df["media"].iloc[-1]
 
@@ -80,25 +86,26 @@ def check_buy_conditions(koncorde_df, macd_df, rsi_df):
 
 
 def check_sell_conditions(koncorde_df, macd_df, rsi_df):
-    if len(koncorde_df) < 5 or len(macd_df) < 5 or len(rsi_df) < 5:
+    if (len(koncorde_df) < MIN_BARS or len(macd_df) < MIN_BARS
+            or len(rsi_df) < MIN_BARS):
         return False, {"razon": "Datos insuficientes"}
 
     hist = macd_df["hist"].iloc[-1]
-    hist_prev = macd_df["hist"].iloc[-2]
-    hist_prev2 = macd_df["hist"].iloc[-3]
+    hist_prev = macd_df["hist"].iloc[-1 - TURN_LAG]
+    hist_prev2 = macd_df["hist"].iloc[-1 - 2 * TURN_LAG]
 
     macd_overbought = hist > 0
     macd_turning = hist < hist_prev
     macd_had_peak = hist_prev >= hist_prev2
     macd_ok = macd_overbought and macd_turning
-    macd_detail = f"hist={hist:.2f} prev={hist_prev:.2f}"
+    macd_detail = f"hist={hist:.2f} hace{TURN_LAG}r={hist_prev:.2f}"
     if macd_ok and macd_had_peak:
         macd_detail += " TECHO CONFIRMADO"
     elif macd_ok:
         macd_detail += " girando"
 
     rsi_val = rsi_df["rsi"].iloc[-1]
-    rsi_prev = rsi_df["rsi"].iloc[-2]
+    rsi_prev = rsi_df["rsi"].iloc[-1 - TURN_LAG]
     rsi_ok = rsi_val > 70
     rsi_detail = f"RSI={rsi_val:.1f}"
     if rsi_ok:
@@ -107,8 +114,8 @@ def check_sell_conditions(koncorde_df, macd_df, rsi_df):
             rsi_detail += " cayendo"
 
     marron = koncorde_df["marron"].iloc[-1]
-    marron_prev = koncorde_df["marron"].iloc[-2]
-    marron_prev2 = koncorde_df["marron"].iloc[-3]
+    marron_prev = koncorde_df["marron"].iloc[-1 - TURN_LAG]
+    marron_prev2 = koncorde_df["marron"].iloc[-1 - 2 * TURN_LAG]
     azul = koncorde_df["azul"].iloc[-1]
     media = koncorde_df["media"].iloc[-1]
 

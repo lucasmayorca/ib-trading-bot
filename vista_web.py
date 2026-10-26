@@ -1061,16 +1061,56 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     _part("Win rate", s5, 10,
           f"{wr * 100:.0f}% historico · {_muestra}" + _ancla(5))
 
-    # Component 6: active order signal bonus (0 or 5)
-    s6 = 5.0 if sig in ("BUY", "SELL") else 0.0
-    _part("Señal activa", s6, 5,
-          f"{label} — 3/3 condiciones, ejecutable" if s6 else
-          f"{label} ({conditions}/3) — todavia no es señal del sistema")
+    # Component 6: how close the setup is to being executable (0-5).
+    #
+    # RAMPA PARCIAL, NO ESCALON (2026-10). Antes eran 5 puntos secos al pasar
+    # de 2/3 a 3/3. El credito parcial del 2/3 se da SOLO cuando lo que falta
+    # es el RSI, y proporcional a su distancia al umbral. No es arbitrario: de
+    # las tres condiciones, la del RSI es la estable — cambia de estado el 2.3%
+    # de los dias, contra el 27.7% del giro del MACD y el 43.3% del Koncorde
+    # (medido sobre 110 simbolos x 250 ruedas). Premiar la cercania de un GIRO
+    # seria volver a meter en el score el ruido de una barra que config.
+    # SIGNAL_TURN_LAG acaba de sacar; premiar la cercania del RSI no.
+    # Queda un escalon residual de 2 puntos al cruzar el umbral, y es
+    # irreducible: ahi el setup pasa a ser ejecutable de verdad.
+    if sig in ("BUY", "SELL"):
+        s6 = 5.0
+        _s6_why = f"{label} — 3/3 condiciones, ejecutable"
+    else:
+        rsi_now = (data.get("values", {}) or {}).get("rsi")
+        rsi_falta = not data.get("rsi_ok") and rsi_now is not None
+        if rsi_falta:
+            # 1.0 pegado al umbral (30 comprando / 70 vendiendo), 0 a 15 puntos.
+            _prox = ((rsi_now - 55.0) / 15.0 if is_bearish
+                     else (45.0 - rsi_now) / 15.0)
+            _prox = max(0.0, min(1.0, _prox))
+            s6 = 3.0 * _prox
+            _s6_why = (f"{label} ({conditions}/3) — falta el RSI ({rsi_now:.0f}, "
+                       f"necesita {'>70' if is_bearish else '<30'}): "
+                       f"{_prox * 100:.0f}% del credito por cercania")
+        else:
+            s6 = 0.0
+            _s6_why = (f"{label} ({conditions}/3) — lo que falta es un giro "
+                       f"(MACD o Koncorde), que cambia de signo demasiado "
+                       f"seguido como para puntuar su cercania")
+    _part("Señal activa", s6, 5, _s6_why)
 
     score = s1 + s2 + s3 + s4 + s5 + s6
 
     # Penalty: counter-trend. If the current signal fights the SMA200 trend and
     # the trend-aligned history also underperformed, dock up to 15 points.
+    #
+    # RAMPA, NO ESCALON (2026-10). Antes la pena entera (hasta 15 puntos, el
+    # 15% de la escala) se cobraba en cuanto el precio cruzaba la SMA200 por un
+    # centavo: dos dias consecutivos con el precio pegado a la media daban
+    # scores separados por 15 puntos sin que cambiara nada real. Y ahi es
+    # justamente donde la etiqueta de regimen es MAS dudosa — a 0.1 ATR de la
+    # media no hay "tendencia en contra", hay un precio indeciso. La pena ahora
+    # crece con la distancia pasada la media, medida en ATR, y satura a 1 ATR:
+    # pegado a la media ~0, claramente del otro lado la pena completa.
+    # El backtest sigue etiquetando `with_trend` de forma binaria a proposito:
+    # ahi se clasifica un trade consumado, aca se pondera un prior sobre el
+    # presente.
     mas = (data.get("chart") or {}).get("mas", {})
     sma200 = mas.get("sma200_val")
     price = data.get("price", 0) or 0
@@ -1078,11 +1118,17 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         # Counter-trend = buying below the 200-SMA (downtrend) or selling above it
         # (uptrend). Mirrors the backtest's `with_trend` tagging.
         counter_trend = (is_bearish and price > sma200) or (not is_bearish and price < sma200)
-        if counter_trend:
+        _ohlc_sc = (data.get("chart") or {}).get("ohlc", [])
+        _atr_sc = _compute_atr(_ohlc_sc) if len(_ohlc_sc) >= 15 else None
+        if not _atr_sc or _atr_sc <= 0:
+            _atr_sc = price * 0.02      # mismo fallback que _compute_price_levels
+        _ramp = min(1.0, abs(price - sma200) / _atr_sc)
+        if counter_trend and _ramp > 0:
             # Base penalty; deepen it when trend-aligned trades won < 50%.
             pen = 10.0
             if wr_trend is not None and wr_trend < 0.5:
                 pen += 5.0
+            pen *= _ramp
             # `wr_trend is None` con muestra (n_side>0) NO significa "no hay
             # evidencia": significa que NINGUN trade historico del lado fue
             # con-tendencia, o sea que el 100% de la muestra es justo el caso
@@ -1097,7 +1143,11 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
             # el edge se haya medido en este regimen no borra que operar contra
             # la SMA200 es estructuralmente mas fragil.
             _why = (f"{'vender' if is_bearish else 'comprar'} con el precio "
-                    f"{'sobre' if is_bearish else 'bajo'} su SMA200 (${sma200:,.2f})")
+                    f"{'sobre' if is_bearish else 'bajo'} su SMA200 (${sma200:,.2f}), "
+                    f"a {abs(price - sma200) / _atr_sc:.1f} ATR de la media")
+            if _ramp < 0.999:
+                _why += (f" — pena al {_ramp * 100:.0f}%: pegado a la media el "
+                         f"regimen todavia no esta definido")
             if n_side > 0:
                 frac_counter = 1.0 - (n_trend / n_side)
                 pen *= 1.0 - 0.6 * frac_counter * sample_w
@@ -8181,8 +8231,13 @@ def _compute_position_verdict(data, position, levels=None):
 
     # 2) MACD histograma + slope (peso 12)
     macd_series = (chart.get("macd") or {}).get("hist") or []
-    if len(macd_series) >= 3:
-        h0, h1, h2 = macd_series[-1], macd_series[-2], macd_series[-3]
+    # La ventana del giro es la MISMA que la de signals.py (signals.TURN_LAG):
+    # estos factores espejan las condiciones del sistema, y leerlas con otra
+    # ventana hace que el veredicto contradiga al label que muestra la tarjeta.
+    _lag = signals.TURN_LAG
+    if len(macd_series) >= 2 * _lag + 1:
+        h0, h1, h2 = (macd_series[-1], macd_series[-1 - _lag],
+                      macd_series[-1 - 2 * _lag])
         if h0 is not None and h1 is not None and h2 is not None:
             if h0 < 0 and h0 > h1:
                 bull += _f("MACD", f"histograma negativo ({h0:.2f}) pero girando al alza", "bull", 12)
@@ -8199,7 +8254,8 @@ def _compute_position_verdict(data, position, levels=None):
     rsi_val = vals.get("rsi")
     rsi_series = chart.get("rsi") or []
     if rsi_val is not None:
-        rsi_prev = rsi_series[-2] if len(rsi_series) >= 2 else rsi_val
+        rsi_prev = (rsi_series[-1 - _lag] if len(rsi_series) >= _lag + 1
+                    else rsi_val)
         if rsi_val < 30:
             bull += _f("RSI", f"{rsi_val:.0f} SOBREVENTA {'rebotando' if rsi_val > rsi_prev else 'aun cayendo'}",
                        "bull" if rsi_val > rsi_prev else "neutral", 10 if rsi_val > rsi_prev else 5)
@@ -8219,7 +8275,8 @@ def _compute_position_verdict(data, position, levels=None):
     media = konc.get("media")
     marron_series = (chart.get("koncorde") or {}).get("marron") or []
     if marron is not None and media is not None:
-        marron_prev = marron_series[-2] if len(marron_series) >= 2 else marron
+        marron_prev = (marron_series[-1 - _lag] if len(marron_series) >= _lag + 1
+                       else marron)
         if marron < media and marron > marron_prev:
             bull += _f("Koncorde", f"marron {marron:.1f} bajo media {media:.1f} pero girando arriba", "bull", 10)
         elif marron > media and marron < marron_prev:
@@ -9018,7 +9075,8 @@ def api_options_lab(symbol):
         "strength": data.get("strength", 0),
         "rsi": vals.get("rsi"),
         "macd_hist": macd_vals.get("hist"),
-        "macd_hist_prev": hist_arr[-2] if len(hist_arr) >= 2 else None,
+        "macd_hist_prev": (hist_arr[-1 - signals.TURN_LAG]
+                           if len(hist_arr) >= signals.TURN_LAG + 1 else None),
         "conditions_met": data.get("conditions_met", 0),
     }
 
@@ -9148,7 +9206,8 @@ def api_options_lab_top():
             "strength": data.get("strength", 0),
             "rsi": vals.get("rsi"),
             "macd_hist": macd_vals.get("hist"),
-            "macd_hist_prev": hist_arr[-2] if len(hist_arr) >= 2 else None,
+            "macd_hist_prev": (hist_arr[-1 - signals.TURN_LAG]
+                           if len(hist_arr) >= signals.TURN_LAG + 1 else None),
             "conditions_met": data.get("conditions_met", 0),
         }
 

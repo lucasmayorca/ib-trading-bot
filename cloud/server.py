@@ -31,6 +31,7 @@ import options_lab
 import calibration
 import enrichment
 import market_pulse
+import signals as _signals   # solo para signals.TURN_LAG (ventana del giro)
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -1218,7 +1219,9 @@ def _build_options_signal_data(data):
         "strength": data.get("strength", 0),
         "rsi": vals.get("rsi"),
         "macd_hist": macd_vals.get("hist"),
-        "macd_hist_prev": hist_arr[-2] if len(hist_arr) >= 2 else None,
+        # Misma ventana de giro que signals.py (espejo de vista_web).
+        "macd_hist_prev": (hist_arr[-1 - _signals.TURN_LAG]
+                           if len(hist_arr) >= _signals.TURN_LAG + 1 else None),
         "conditions_met": data.get("conditions_met", 0),
     }
 

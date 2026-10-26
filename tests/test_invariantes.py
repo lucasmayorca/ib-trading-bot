@@ -371,7 +371,10 @@ def _ind(hist, hist_prev, macd_line, rsi, rsi_prev, marron, marron_prev,
          media, azul=0.0):
     """Indicadores sinteticos con la forma que consume generate_signal."""
     import pandas as pd
-    n = 6
+    import signals
+    # Suficientes barras para leer el giro (-1-LAG) y el giro previo
+    # (-1-2*LAG) de signals.py con cualquier ventana configurada.
+    n = 2 * signals.TURN_LAG + 4
     serie = lambda last, prev: [prev] * (n - 1) + [last]
     return {
         "macd": pd.DataFrame({"macd": [macd_line] * n,
@@ -482,3 +485,105 @@ def test_bridge_clasifica_igual_que_el_local():
         b = bs.generate_signal(_ind(**caso))
         assert a["signal_label"] == b["signal_label"], caso
         assert a["signal"] == b["signal"] and a["strength"] == b["strength"]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 11. VENTANA DEL GIRO (2026-10) — el gatillo compara contra la barra de hace
+#     SIGNAL_TURN_LAG ruedas, no contra la anterior.
+#
+# Con lag=1 las dos condiciones de giro eran un volado: medido sobre 217
+# simbolos x 10 años, el marron del Koncorde cambiaba de "subiendo" a "bajando"
+# el 43% de los dias y el histograma el 28%. Consecuencias: el Top de
+# recomendaciones se renovaba entero cada dia (1.15 de 5 simbolos en comun con
+# el dia anterior, el 70% de las rachas de elegibilidad duraba 1 solo dia) y el
+# gatillo de COMPRA tenia expectancy NEGATIVA (-0.172%/trade, PF 0.92). Con
+# lag=3: +0.621%/trade, PF 1.32, t=3.80, positivo en las dos mitades de la
+# decada. El riesgo ahora es que una de las CUATRO copias se quede atras.
+# ──────────────────────────────────────────────────────────────────────────
+
+def test_las_cuatro_copias_usan_la_misma_ventana_de_giro():
+    """config, signals, el backtest y los dos duplicados del bridge tienen que
+    medir el MISMO gatillo. Si el backtest usa otra ventana, sus estadisticas
+    describen una estrategia que nadie opera; si el bridge usa otra, el cloud
+    muestra una señal distinta del mismo grafico."""
+    import config
+    import signals
+    import bridge.signals as bs
+    import bridge.backtester as bbt
+    assert signals.TURN_LAG == config.SIGNAL_TURN_LAG
+    assert bs.TURN_LAG == signals.TURN_LAG
+    assert bbt.TURN_LAG == signals.TURN_LAG
+
+
+def test_el_backtest_dispara_en_las_mismas_barras_que_signals():
+    """El gatillo del backtest esta reimplementado con numpy (no llama a
+    signals.py). Esta es la unica atadura que impide que se separen: sobre una
+    serie sintetica, los dias en que el backtest abriria una COMPRA tienen que
+    ser exactamente aquellos en que generate_signal devuelve BUY."""
+    import numpy as np
+    import pandas as pd
+    import backtester
+    import indicators
+    import signals
+
+    rng = np.random.default_rng(7)
+    n = 700
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.02, n)))
+    df = pd.DataFrame({
+        "date": pd.bdate_range("2021-01-01", periods=n).astype(str),
+        "open": close, "high": close * 1.01, "low": close * 0.99,
+        "close": close, "volume": np.full(n, 1e6),
+    })
+    ind = indicators.calculate_all(df)
+
+    # Dias en los que el SISTEMA (signals.py) ve una compra completa.
+    del_sistema = set()
+    for i in range(600, n):
+        sub = {k: v.iloc[:i + 1] for k, v in ind.items()}
+        ok, _ = signals.check_buy_conditions(sub["koncorde"], sub["macd"], sub["rsi"])
+        if ok:
+            del_sistema.add(i)
+
+    # Dias en los que el BACKTEST abriria (misma condicion, sin cooldown para
+    # que no se pierda ninguno por tener una posicion abierta).
+    lag = signals.TURN_LAG
+    h = ind["macd"]["hist"].values
+    r = ind["rsi"]["rsi"].values
+    m = ind["koncorde"]["marron"].values
+    med = ind["koncorde"]["media"].values
+    del_backtest = {
+        i for i in range(600, n)
+        if h[i] < 0 and h[i] > h[i - lag] and r[i] < 30
+        and m[i] < med[i] and m[i] > m[i - lag]
+    }
+    assert del_sistema == del_backtest, (
+        sorted(del_sistema ^ del_backtest))
+    # El backtest real lee la misma constante (si alguien la cambia en un solo
+    # lado, el conjunto de arriba deja de coincidir).
+    assert backtester.config.SIGNAL_TURN_LAG == lag
+
+
+def test_el_giro_se_mide_contra_la_barra_de_hace_lag_ruedas():
+    """Un histograma que sube respecto a AYER pero sigue por debajo del de hace
+    LAG ruedas NO es un giro: ese ruido de una barra era el que renovaba el Top
+    entero todos los dias."""
+    import pandas as pd
+    import signals
+    lag = signals.TURN_LAG
+    if lag < 2:
+        return  # con lag=1 no hay nada que distinguir
+    n = 2 * lag + 4
+    # hist: venia de -1.0, cayo a -3.0 y hoy rebota a -2.0. Sube vs. ayer,
+    # pero sigue muy por debajo de la barra de hace `lag` ruedas.
+    hist = [-1.0] * (n - lag) + [-3.0] * (lag - 1) + [-2.0]
+    ind = {
+        "macd": pd.DataFrame({"macd": [-5.0] * n, "signal": [-3.0] * n,
+                              "hist": hist}),
+        "rsi": pd.DataFrame({"rsi": [25.0] * n}),
+        "koncorde": pd.DataFrame({"marron": [-30.0] * n, "media": [-18.0] * n,
+                                  "verde": [0.0] * n, "azul": [0.0] * n}),
+    }
+    ok, det = signals.check_buy_conditions(ind["koncorde"], ind["macd"], ind["rsi"])
+    assert hist[-1] > hist[-2]          # sube respecto a ayer...
+    assert not det["macd_ok"]           # ...pero el sistema no lo llama giro
+    assert not ok

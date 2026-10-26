@@ -10,6 +10,17 @@ Los 3 indicadores deben coincidir para generar senal.
 
 import numpy as np
 
+try:
+    import config
+    TURN_LAG = int(getattr(config, "SIGNAL_TURN_LAG", 3))
+except Exception:          # el bridge y los tests pueden correr sin config
+    TURN_LAG = 3
+TURN_LAG = max(1, TURN_LAG)
+
+# Barras necesarias para leer la barra actual, la de referencia del giro
+# (-1-LAG) y la del giro previo (-1-2*LAG) sin salirse del DataFrame.
+MIN_BARS = 2 * TURN_LAG + 1
+
 
 def check_buy_conditions(koncorde_df, macd_df, rsi_df):
     """
@@ -20,13 +31,14 @@ def check_buy_conditions(koncorde_df, macd_df, rsi_df):
 
     Retorna: (es_senal: bool, detalles: dict)
     """
-    if len(koncorde_df) < 5 or len(macd_df) < 5 or len(rsi_df) < 5:
+    if (len(koncorde_df) < MIN_BARS or len(macd_df) < MIN_BARS
+            or len(rsi_df) < MIN_BARS):
         return False, {"razon": "Datos insuficientes"}
 
     # --- MACD: histograma negativo pero recuperando ---
     hist = macd_df["hist"].iloc[-1]
-    hist_prev = macd_df["hist"].iloc[-2]
-    hist_prev2 = macd_df["hist"].iloc[-3]
+    hist_prev = macd_df["hist"].iloc[-1 - TURN_LAG]
+    hist_prev2 = macd_df["hist"].iloc[-1 - 2 * TURN_LAG]
     macd_val = macd_df["macd"].iloc[-1]
     signal_val = macd_df["signal"].iloc[-1]
 
@@ -38,7 +50,7 @@ def check_buy_conditions(koncorde_df, macd_df, rsi_df):
     macd_had_bottom = hist_prev <= hist_prev2
 
     macd_ok = macd_oversold and macd_turning
-    macd_detail = f"hist={hist:.2f} prev={hist_prev:.2f}"
+    macd_detail = f"hist={hist:.2f} hace{TURN_LAG}r={hist_prev:.2f}"
     if macd_ok and macd_had_bottom:
         macd_detail += " PISO CONFIRMADO"
     elif macd_ok:
@@ -46,7 +58,7 @@ def check_buy_conditions(koncorde_df, macd_df, rsi_df):
 
     # --- RSI: por debajo de 30 ---
     rsi_val = rsi_df["rsi"].iloc[-1]
-    rsi_prev = rsi_df["rsi"].iloc[-2]
+    rsi_prev = rsi_df["rsi"].iloc[-1 - TURN_LAG]
 
     rsi_ok = rsi_val < 30
     rsi_detail = f"RSI={rsi_val:.1f}"
@@ -57,8 +69,8 @@ def check_buy_conditions(koncorde_df, macd_df, rsi_df):
 
     # --- Koncorde: marron negativo pero girando al alza ---
     marron = koncorde_df["marron"].iloc[-1]
-    marron_prev = koncorde_df["marron"].iloc[-2]
-    marron_prev2 = koncorde_df["marron"].iloc[-3]
+    marron_prev = koncorde_df["marron"].iloc[-1 - TURN_LAG]
+    marron_prev2 = koncorde_df["marron"].iloc[-1 - 2 * TURN_LAG]
     verde = koncorde_df["verde"].iloc[-1]
     azul = koncorde_df["azul"].iloc[-1]
     media = koncorde_df["media"].iloc[-1]
@@ -124,20 +136,21 @@ def check_sell_conditions(koncorde_df, macd_df, rsi_df):
 
     Retorna: (es_senal: bool, detalles: dict)
     """
-    if len(koncorde_df) < 5 or len(macd_df) < 5 or len(rsi_df) < 5:
+    if (len(koncorde_df) < MIN_BARS or len(macd_df) < MIN_BARS
+            or len(rsi_df) < MIN_BARS):
         return False, {"razon": "Datos insuficientes"}
 
     # --- MACD: histograma positivo pero cayendo ---
     hist = macd_df["hist"].iloc[-1]
-    hist_prev = macd_df["hist"].iloc[-2]
-    hist_prev2 = macd_df["hist"].iloc[-3]
+    hist_prev = macd_df["hist"].iloc[-1 - TURN_LAG]
+    hist_prev2 = macd_df["hist"].iloc[-1 - 2 * TURN_LAG]
 
     macd_overbought = hist > 0
     macd_turning = hist < hist_prev
     macd_had_peak = hist_prev >= hist_prev2
 
     macd_ok = macd_overbought and macd_turning
-    macd_detail = f"hist={hist:.2f} prev={hist_prev:.2f}"
+    macd_detail = f"hist={hist:.2f} hace{TURN_LAG}r={hist_prev:.2f}"
     if macd_ok and macd_had_peak:
         macd_detail += " TECHO CONFIRMADO"
     elif macd_ok:
@@ -145,7 +158,7 @@ def check_sell_conditions(koncorde_df, macd_df, rsi_df):
 
     # --- RSI: por encima de 70 ---
     rsi_val = rsi_df["rsi"].iloc[-1]
-    rsi_prev = rsi_df["rsi"].iloc[-2]
+    rsi_prev = rsi_df["rsi"].iloc[-1 - TURN_LAG]
 
     rsi_ok = rsi_val > 70
     rsi_detail = f"RSI={rsi_val:.1f}"
@@ -156,8 +169,8 @@ def check_sell_conditions(koncorde_df, macd_df, rsi_df):
 
     # --- Koncorde: marron positivo pero girando a la baja ---
     marron = koncorde_df["marron"].iloc[-1]
-    marron_prev = koncorde_df["marron"].iloc[-2]
-    marron_prev2 = koncorde_df["marron"].iloc[-3]
+    marron_prev = koncorde_df["marron"].iloc[-1 - TURN_LAG]
+    marron_prev2 = koncorde_df["marron"].iloc[-1 - 2 * TURN_LAG]
     verde = koncorde_df["verde"].iloc[-1]
     azul = koncorde_df["azul"].iloc[-1]
     media = koncorde_df["media"].iloc[-1]

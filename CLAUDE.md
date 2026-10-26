@@ -38,6 +38,58 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 
 ## Signal Logic
 
+### VENTANA DEL GIRO: `config.SIGNAL_TURN_LAG = 3` (2026-10, cambia el gatillo)
+Las condiciones de **giro** (histograma MACD subiendo/cayendo, marrón del Koncorde girando) se
+comparan contra la barra de **hace 3 ruedas**, no contra la anterior. Las condiciones de **zona**
+(hist <0/>0, RSI, marrón vs media) no cambiaron.
+- **Por qué**: con lag=1 el giro era casi un volado. Medido sobre 110 símbolos × 250 ruedas, el
+  marrón del Koncorde cambiaba de "subiendo" a "bajando" el **43.3%** de los días y el histograma
+  el **27.7%** (las de zona: RSI<30 el 2.3%, hist<0 el 8.3%, marrón<media el 14.2%). Efecto sobre
+  el producto: el `signal_label` cambiaba una **mediana de 30 veces en 60 ruedas**, solo ~7 de 110
+  símbolos calificaban por día, el **70% de las rachas de elegibilidad duraba 1 solo día** y el Top
+  Recomendaciones compartía **1.15 de 5** símbolos con el del día anterior (70 símbolos distintos
+  pasaron por el top-5 en 60 ruedas). Eso era lo que se veía como "el score cambia muchísimo de un
+  día al otro": no era el score moviéndose — era el **universo elegible renovándose entero**.
+- **Evidencia del gatillo** (217 símbolos × 10 años, mismo motor de ejecución intradía, cooldown y
+  costes del backtest; `scratchpad` → `lag.py`/`lag2.py`). COMPRA:
+
+  | lag | trades | win% | exp/trade | PF | t-stat |
+  |---|---|---|---|---|---|
+  | **1 (viejo)** | 1248 | 34.8 | **−0.172%** | 0.92 | −1.20 |
+  | 2 | 1141 | 37.9 | +0.319% | 1.16 | 2.11 |
+  | **3 (actual)** | 991 | 40.0 | **+0.621%** | 1.32 | **3.80** |
+  | 5 | 850 | 42.5 | +0.824% | 1.44 | 4.63 |
+  | 7 | 786 | 38.8 | +0.371% | 1.19 | 2.06 |
+  | 10 | 692 | 42.1 | +0.639% | 1.36 | 3.45 |
+
+  El lag=1 era **el peor de todos los probados** y tenía expectancy negativa. lag=3 es positivo y
+  significativo en las **dos mitades** de la década (+0.973% t=3.29 en 2016-21, +0.470% t=2.40 en
+  2021-26) y en los dos regímenes (con y contra SMA200). No es el pico de una curva ruidosa: 2, 3,
+  5, 7 y 10 son todos mejores que 1.
+- **El lado VENDEDOR sigue perdiendo plata en todos los lags** (−0.44%/trade y PF 0.80 con lag=1;
+  −0.30% y PF 0.85 con lag=3; t=−3.4 a −5.5, y peor en los últimos 5 años: t=−6.3). Cambiar el lag
+  **no lo arregla** — es una decisión pendiente del usuario, no un bug. No tocar sin decirlo.
+- **CUATRO copias del gatillo** (`config.SIGNAL_TURN_LAG` → `signals.TURN_LAG`, `backtester.py`
+  `turn_lag` en `run_backtest` Y en `run_calibration_trades`, `bridge/signals.py` y
+  `bridge/backtester.py` hardcodean 3). Si el backtest usa otra ventana que `signals.py`, **sus
+  estadísticas describen una estrategia que nadie opera** y el score rankea con números de otro
+  sistema. Tests: `tests/test_invariantes.py` §11 (paridad de las cuatro + el backtest dispara en
+  las MISMAS barras que `generate_signal` sobre una serie sintética + el ruido de una barra ya no
+  cuenta como giro).
+- **Espejos de display alineados a la misma ventana** (`signals.TURN_LAG`): los factores del
+  veredicto de Mi Cartera (MACD/RSI/Koncorde en `_compute_position_verdict`), `macd_hist_prev` del
+  deep analysis (local y `cloud/server.py`) y `market_pulse._condition_items`/`_build_pulse`. Si
+  leen otra ventana, el veredicto contradice al label de la misma tarjeta.
+- ⚠ **Requiere reinstalar el bridge** (`rm -rf ~/.ib-bridge && curl -sL .../install-bridge.sh | bash`);
+  hasta entonces el cloud sigue con el giro de 1 barra y muestra señales distintas del local.
+- **Lo que esto NO arregla**: la rotación del Top baja poco (1.15 → 1.39 de 5 coincidencias; los
+  cambios de label caen de 29 a 23 por 60 ruedas). La rotación es **estructural**: el sistema
+  rankea un EVENTO (un giro, que dura 1-2 días), no un ESTADO. Medido: rankear por estado puro
+  (niveles de sobreventa, sin condición de giro) da un Top estable (3.24/5) pero **sin edge**
+  (−0.08% a 10 días, 42% de aciertos); y sostener las recomendaciones N días (persistencia) sube
+  la coincidencia a 4.0/5 pero **diluye el retorno** (+1.46% → +0.52%). La frescura es parte de la
+  señal: no se puede comprar consistencia gratis.
+
 ### BUY (all must align):
 1. MACD histogram negative but rising (turning up)
 2. RSI < 30 (oversold)
@@ -171,6 +223,8 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
 - `STOP_LOSS_PCT = 3.0`, `TAKE_PROFIT_PCT = 8.0`
 - `MAX_OPEN_POSITIONS = 10`
 - MACD: 12/26/9, RSI: 14/21, Koncorde EMA: 255
+- `SIGNAL_TURN_LAG = 3` — ventana del giro (ver "VENTANA DEL GIRO" en Signal Logic). Tocarlo
+  obliga a tocar las 4 copias; con 1 el gatillo de compra tiene expectancy negativa.
 - Backtest: `BACKTEST_COST_PCT=0.10` (round-trip), `BACKTEST_COOLDOWN=True`,
   `BACKTEST_ROBUST_TRADES=12` (muestra para confianza plena), `BACKTEST_TREND_SMA=200`
 
@@ -511,6 +565,26 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   (10), señal activa (5), menos **penalización contra-tendencia** (hasta −15 si el precio va
   contra su SMA200). El fallback relajado en `compute_top3` usa la misma escala. Este 0-100 es
   el "Score" de las tarjetas de recomendación (con tooltip explicativo en el chip).
+- **RAMPAS, NO ESCALONES (2026-10)**: dos componentes saltaban enteros al cruzar un borde, y
+  producían diferencias grandes de score entre dos días en que no había cambiado nada real.
+  1. **Penalización contra-tendencia**: los hasta 15 puntos (el 15% de la escala) se cobraban en
+     cuanto el precio cruzaba la SMA200 por un centavo — y ahí es justo donde la etiqueta de
+     régimen es más dudosa. Ahora la pena se multiplica por `min(1, |precio − SMA200| / ATR)`:
+     pegado a la media ~0, a 1 ATR o más la pena completa. El `_why` dice a cuántos ATR está y
+     qué porcentaje de la pena se cobró. El `with_trend` del **backtest sigue siendo binario a
+     propósito**: ahí se clasifica un trade consumado; acá se pondera un prior sobre el presente.
+     Medido sobre 110 símbolos × 60 ruedas: el salto diario máximo de este componente pasó de
+     10.5 a 4.4 puntos.
+  2. **Bonus de señal activa**: eran 5 puntos secos al pasar de 2/3 a 3/3. Ahora un 2/3 cobra
+     crédito parcial (hasta 3 pts) **solo si lo que falta es el RSI**, proporcional a su distancia
+     al umbral (1.0 pegado a 30/70, 0 a 15 puntos de distancia). La asimetría no es arbitraria:
+     el RSI es la condición ESTABLE (cambia de estado el 2.3% de los días, contra 27.7% del giro
+     del MACD y 43.3% del Koncorde). Premiar la cercanía de un **giro** volvería a meter en el
+     score el ruido de una barra que `SIGNAL_TURN_LAG` acaba de sacar. Queda un escalón residual
+     de 2 puntos al cruzar el umbral y es irreducible: ahí el setup pasa a ser ejecutable.
+  Efecto conjunto sobre el |Δ| diario del score: mediana 2.02 → 1.68, p90 11.63 → 10.65. Los
+  saltos grandes que quedan son cambios REALES de label (ej. BAC: COMPRA FUERTE 3/3 fuerza 4.6 →
+  COMPRA INMINENTE 2/3 fuerza 2.0, −22.8 puntos, de los cuales −12.7 son la fuerza).
 - **El shrinkage tira al NEUTRAL de cada escala, no a cero (2026-09)**: `sample_w` multiplicaba
   el componente ENTERO, así que un símbolo sin ninguna señal histórica (`n=0`) sacaba 0 de
   expectancy y 0 de win_rate, **20 puntos menos** que uno con 12 trades y edge medido
