@@ -35,6 +35,7 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 | `backtester.py` | Historical backtest engine |
 | `patterns.py` | Motor compartido de figuras técnicas + Fibonacci (chartista, por reglas) |
 | `options_lab.py` | Options strategy engine (Black-Scholes, Greeks, IV analysis) |
+| `position_thesis.py` | Tesis de entrada de una posicion: que decia el sistema el dia que compraste vs. hoy |
 
 ## Signal Logic
 
@@ -408,6 +409,84 @@ here, not raw `signal`, since INMINENTE/VIRANDO/ZONA labels can be directional w
   `DASHBOARD_HTML`; chart colors (Lightweight Charts / canvas payoff) are passed via JS literals,
   NOT CSS — when changing palette, sweep both. Dark-theme colors must not be reintroduced (user explicitly
   chose light background for readability).
+
+## Mi Cartera — la ficha de posición (`position_thesis.py`, revamp 2026-11)
+Feedback que lo originó: *"la información está toda dispersa"*, *"necesito entender si cuando la
+compré los indicadores estaban dando una señal"*, *"si hoy estamos en la misma tesis o hubo muchas
+invalidaciones"*, *"el costo promedio no está marcado"*, y recomendaciones que *"no se sabe"*.
+
+- **Una sola ficha por posición.** El tablero `#port-verdicts` dejó de ser una segunda tarjeta
+  (tenía su propio veredicto, métricas y narrativa, distintas de las del acordeón de abajo: la
+  misma posición contada dos veces es el origen literal de "está todo disperso") y pasó a ser un
+  **índice** de chips (`.port-idx-chip`: ticker, P&L, veredicto, ⚠ si `urgency==='high'`, y un
+  punto con el color del estado de la tesis) que abre y scrollea la ficha. Todo el contenido vive
+  en `renderPortAnalysisList`, con **orden fijo**: `_posFacts` (tu posición) → `_thesisBlock` (la
+  tesis de entrada + qué pasó en el medio) → el cuadro técnico de hoy (con las 3 condiciones y su
+  lectura) → qué hacer (narrativa + `_verdictFactors`).
+- **`position_thesis.py` reconstruye el pasado con el MISMO motor del presente.** Módulo puro (sin
+  IO; el caller pasa el DataFrame), así que local y cloud narran idéntico y **el bridge no se
+  toca**. Tres identidades que lo hacen válido, y que hay que preservar:
+  1. `indicators.py` es **causal** ⇒ los indicadores se calculan UNA vez sobre los 5 años y para
+     una fecha pasada se **cortan las series ya calculadas** (`_slice_ind`). Test: cortar ==
+     recalcular desde cero en esa barra.
+  2. `signals.generate_signal` es **puro** (no importa `datetime`, lee todo de la última fila):
+     cortar la serie ES evaluar esa fecha. **No reimplementar las condiciones** — `backtester.py`
+     ya es una copia y CLAUDE.md advierte sobre las cuatro copias del gatillo; una quinta
+     desincronizada haría que la ficha narre una entrada que el sistema nunca habría disparado.
+  3. `patterns.detect(highs[:i+1], ...)` ancla todo en `closes[-1]`: cortar es la API del módulo,
+     es lo que ya hace `validate_history`.
+- **La serie sale SIEMPRE de yfinance a 5 años** (`_thesis_history`, cache por día), nunca de IB y
+  nunca de una ventana corta: con menos de ~90 barras de calentamiento el Koncorde devuelve
+  `verde`/`azul` en NaN y el MACD/RSI de la fecha de entrada salen sesgados (medido: rsi 56.70 vs
+  56.21, hist −1.294 vs −0.951). Una ficha con esos números describe una entrada que no existió.
+- **La fecha de entrada es la del EPISODIO vigente** (flat→flat), no el fill más viejo del símbolo:
+  `_entry_since_map` la toma de `build_trades_history()["open_positions"][].since`. Si compraste,
+  vendiste todo y volviste a entrar, la tesis es la de la segunda entrada. Respaldo:
+  `min(entry_fills.time)`. Sin ninguna de las dos ⇒ `status="sin_historial"` y la ficha **lo dice**
+  (con el CTA de Flex) en vez de inventar una entrada. En el cloud el mapa sale del mismo armado
+  flex+seed+live del tab de Trades, cacheado 10 min aparte (`_entry_since_for`) porque
+  `/api/portfolio` se refresca cada 15s.
+- **Estados de la tesis**: `sin_senal` (la compra no salió de una señal del sistema — es la
+  respuesta literal a la pregunta del usuario, y es el caso más frecuente en esta cartera),
+  `intacta` (con sufijo "aunque más floja" si cayeron condiciones o fuerza: mismo lado ≠ misma
+  convicción), `debilitada`, `invalidada` (la figura de la entrada perdió su nivel de anulación) y
+  `dada_vuelta`. Los hitos (`_walk`) registran giros de lado, señales 3/3, cruces de SMA200 y el
+  cumplimiento/ruptura de la figura de entrada. "Sin convicción" exige `flips>=3` **y** `held>=60`:
+  3 giros en 40 ruedas puede ser un mercado nervioso.
+- **`label_direction` duplica la regla de `_label_is_bearish`** (no puede importar `vista_web`:
+  ciclo). Ojo con la TRAMPA DE SUBCADENAS — hay test de paridad sobre los 11 labels.
+
+### Bugs que este revamp cerró (no reintroducir)
+1. **Los 4 párrafos del veredicto salían pegados en un bloque.** `DASHBOARD_HTML` es un raw string,
+   así que `split('\\n\\n')` llegaba al JS como backslash+n literal: el split **nunca partía**, no
+   había `white-space:pre-wrap` y el resaltado del bloque `Recomendacion:` nunca se disparaba.
+   Era la causa mecánica de "se lee raro". Test: §14c.
+2. **La rama que decía "no sé".** `"Recomendacion: MANTENER. Sin condiciones tecnicas cerca de
+   activarse; revisar en el proximo ciclo."` — y como `verdict_summary` es el ÚLTIMO párrafo, esa
+   frase era justo lo que se veía colapsado en la tarjeta. Ahora se dice con números cuánto falta
+   (RSI a sus dos umbrales, distancia a la SMA200 en ATR, techo/piso más cercano con sus toques) y
+   se cita el estado de la tesis de entrada. Hay test de que ninguna rama difiere la respuesta.
+3. **El veredicto calculaba el porqué y lo tiraba.** `_compute_position_verdict` pondera ~19
+   factores y el payload exportaba solo el string: la ficha mostraba una acción que no podía
+   explicar. Ahora viajan `verdict_factors`, `bull_score`, `bear_score` y `verdict_tech`.
+4. **La línea de costo promedio quedaba FUERA de la ventana visible.** Las `priceLine` de
+   Lightweight Charts **no participan del autoescalado**: en una posición bastante por debajo de su
+   costo la línea existía y no se veía — medido en vivo, rango 36.44–40.35 con el costo en 58.
+   Las priceLines marcadas `scale:true` ahora fuerzan el rango (`autoscaleInfoProvider` sobre la
+   serie de velas), con guarda contra unidades mezcladas (±10× el precio) para que una prima de
+   opción no aplaste el eje. El flag se borra antes de `createPriceLine` (LW lo rechaza).
+5. **`costo_promedio == 0` emitía "breakeven $0.00"** y `"Entraste en X"` sobre una orden pendiente
+   que nunca se ejecutó. Ahora `be_ref` degrada y la rama de pendiente le gana a la de entrada.
+6. **Cloud: no filtraba `secType`** (el local sí, `portfolio.py`), así que una posición de opciones
+   entraba con `averageCost` **por contrato (×100)** y con símbolo OCC que `analysis` nunca tiene
+   ⇒ línea de costo 100× fuera de escala y ficha sin gráfico.
+7. **Cloud: `win_rate`/`avg_return` ramificaban por `sig == "SELL"`** en vez de
+   `_label_is_bearish(signal_label)`. Con "VENTA INMINENTE" (signal = HOLD) el cloud mostraba los
+   números del lado contrario al local.
+
+Tests: `tests/test_invariantes.py` §14 (paridad de dirección, causalidad del corte, el snapshot de
+hoy == `generate_signal` sobre la serie completa, sin fecha no se inventa, y los 4 invariantes de
+presentación). ⚠ **No requiere reinstalar el bridge**: todo el cálculo nuevo es server-side.
 
 ## Figuras Técnicas (`patterns.py`, 2026-08)
 - **Motor compartido** de figuras chartistas por reglas, extraído del detector que nació en

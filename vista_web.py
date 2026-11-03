@@ -31,6 +31,7 @@ import options_lab
 import enrichment
 import patterns
 import market_pulse
+import position_thesis
 
 CHART_BARS = 252  # ~1 year of trading days
 MA_PERIODS = [200, 100, 50, 20]  # SMA periods
@@ -2854,34 +2855,58 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 /* Verdict dashboard grid */
 .port-verdicts{margin-bottom:28px}
 .port-verdicts-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;letter-spacing:-.2px}
-.port-verdicts-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
-.port-verdict-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px 16px;cursor:pointer;transition:all .2s ease;border-left:4px solid var(--border);position:relative}
-.port-verdict-card:hover{transform:translateY(-2px);border-color:rgba(36,86,230,.3);box-shadow:var(--shadow-md)}
-.port-verdict-card.v-sell{border-left-color:#c22436}
-.port-verdict-card.v-add{border-left-color:#0b7a4b}
-.port-verdict-card.v-hold{border-left-color:#2456e6}
-.port-verdict-card.v-reduce{border-left-color:#b45309}
-.port-verdict-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
-.port-verdict-sym{font-size:17px;font-weight:800;color:var(--text);letter-spacing:-.3px}
-.port-verdict-sub{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-top:3px}
-.port-verdict-action{font-size:11px;font-weight:800;padding:4px 10px;border-radius:6px;letter-spacing:.5px}
-.port-verdict-action.v-sell{background:rgba(194,36,54,.12);color:#cf3d4e}
-.port-verdict-action.v-add{background:rgba(11,122,75,.12);color:#0b7a4b}
-.port-verdict-action.v-hold{background:rgba(36,86,230,.12);color:#2456e6}
-.port-verdict-action.v-reduce{background:rgba(180,83,9,.12);color:#b45309}
-.port-verdict-metrics{display:flex;gap:16px;font-size:12px;color:var(--muted);flex-wrap:wrap;margin-bottom:8px}
-.port-verdict-metrics b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:700}
-.port-verdict-trend{display:flex;align-items:center;gap:5px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;font-weight:700}
-.port-verdict-trend.t-up{color:#0b7a4b}
-.port-verdict-trend.t-down{color:#c22436}
-.port-verdict-trend.t-flat{color:var(--muted)}
-.port-verdict-reason{font-size:12px;color:var(--muted);line-height:1.5}
-.port-verdict-indi{display:flex;gap:6px;margin-top:10px}
-.port-verdict-indi-chip{font-size:9px;padding:3px 8px;border-radius:5px;font-weight:700;letter-spacing:.4px}
-.port-verdict-indi-chip.ok{background:rgba(11,122,75,.1);color:#0b7a4b}
-.port-verdict-indi-chip.no{background:rgba(194,36,54,.1);color:#c22436}
+.port-verdicts-grid{display:flex;flex-wrap:wrap;gap:8px}
+/* Indice de posiciones: chips para ELEGIR cual abrir, no una segunda ficha */
+.port-idx-chip{display:inline-flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--border);border-radius:var(--radius);padding:7px 12px;cursor:pointer;font-family:inherit;transition:all .15s ease}
+.port-idx-chip:hover{border-color:rgba(36,86,230,.35);box-shadow:var(--shadow-sm);transform:translateY(-1px)}
+.port-idx-chip.v-sell{border-left-color:#c22436}
+.port-idx-chip.v-add{border-left-color:#0b7a4b}
+.port-idx-chip.v-hold{border-left-color:#2456e6}
+.port-idx-chip.v-reduce{border-left-color:#b45309}
+.pi-sym{font-weight:700;font-size:13px;color:var(--text);letter-spacing:-.2px}
+.pi-pnl{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.pi-act{font-size:10px;font-weight:700;letter-spacing:.3px;padding:2px 6px;border-radius:4px;background:var(--glass);color:var(--muted)}
+.pi-act.v-sell{color:#c22436}.pi-act.v-add{color:#0b7a4b}.pi-act.v-reduce{color:#b45309}.pi-act.v-hold{color:#2456e6}
+.pi-dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.pi-urg{font-size:12px;color:#b45309}
 
 /* Deep per-position analysis (accordions estilo Top 3 Pick) */
+/* Ficha de posicion: datos duros, tesis de entrada, condiciones y factores */
+.pfacts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.pf{display:flex;flex-direction:column;gap:2px;background:var(--card);border:1px solid var(--border-subtle);border-radius:8px;padding:7px 11px;min-width:92px}
+.pf-l{font-size:9px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted)}
+.pf-v{font-size:13px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.pth-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.pth-col{background:var(--card);border:1px solid var(--border-subtle);border-radius:8px;padding:10px 12px}
+.pth-col-h{font-size:9px;font-weight:700;letter-spacing:.5px;color:var(--muted);margin-bottom:6px}
+.pth-col-sub{font-weight:500;letter-spacing:0;color:var(--dim);text-transform:none}
+.pth-lab{font-size:12px;font-weight:700;margin-bottom:6px}
+.pth-row{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--muted);padding:1px 0}
+.pth-row b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:600}
+.pth-fig{margin-top:6px;padding-top:6px;border-top:1px solid var(--border-subtle);font-size:10px;color:var(--muted);line-height:1.35}
+.pth-na{font-size:11px;color:var(--dim);font-style:italic}
+.pth-mile{margin-top:12px;padding-top:10px;border-top:1px solid var(--border-subtle)}
+.pth-mile-h{font-size:9px;font-weight:700;letter-spacing:.5px;color:var(--muted);margin-bottom:6px;text-transform:uppercase}
+.pth-mi{display:flex;align-items:baseline;gap:8px;font-size:11px;padding:2px 0}
+.pth-mi-d{color:var(--dim);font-variant-numeric:tabular-nums;min-width:74px}
+.pth-mi-b{width:6px;height:6px;border-radius:50%;flex-shrink:0;align-self:center}
+.pth-mi-t{color:var(--text);line-height:1.4}
+.pth-conds{margin-top:10px;display:flex;flex-direction:column;gap:3px}
+.pth-cond{display:flex;align-items:baseline;gap:8px;font-size:11px}
+.pth-cond-s{font-weight:700;width:12px;flex-shrink:0}
+.pth-cond-s.ok{color:var(--buy)}.pth-cond-s.no{color:var(--dim)}
+.pth-cond-n{font-weight:600;color:var(--text);min-width:64px}
+.pth-cond-d{color:var(--muted);line-height:1.35}
+.vfacts{margin-top:12px;padding-top:10px;border-top:1px solid var(--border-subtle)}
+.vf-title{font-size:9px;font-weight:700;letter-spacing:.5px;color:var(--muted);text-transform:uppercase;margin-bottom:8px}
+.vf-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.vf-h{font-size:9px;font-weight:700;letter-spacing:.4px;margin-bottom:4px}
+.vf-r{display:grid;grid-template-columns:1fr 52px 22px;align-items:center;gap:6px;font-size:10px;padding:1px 0}
+.vf-n{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vf-bar{height:4px;background:var(--glass);border-radius:2px;overflow:hidden}
+.vf-bar i{display:block;height:100%;border-radius:2px}
+.vf-w{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+@media(max-width:700px){.pth-grid,.vf-grid{grid-template-columns:1fr}}
 .port-analysis{margin-top:12px}
 .port-analysis-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;letter-spacing:-.2px}
 .port-analysis-list-empty{font-size:13px;color:var(--muted);padding:24px;text-align:center;background:var(--card);border:1px dashed var(--border);border-radius:var(--radius)}
@@ -3378,13 +3403,13 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 
     <!-- Tablero de veredictos por posicion -->
     <div class="port-verdicts">
-      <div class="port-verdicts-title">Que hacer con cada posicion</div>
+      <div class="port-verdicts-title">Tus posiciones <span class="port-pending-hint">clic para abrir la ficha</span></div>
       <div class="port-verdicts-grid" id="port-verdicts"></div>
     </div>
 
     <!-- Análisis profundo por posicion (accordions estilo Top 3 Pick) -->
     <div class="port-analysis">
-      <div class="port-analysis-title">Análisis detallado por posicion</div>
+      <div class="port-analysis-title">Ficha de cada posici&oacute;n <span class="port-pending-hint">tu posici&oacute;n &middot; la tesis de entrada &middot; el cuadro de hoy &middot; qu&eacute; hacer</span></div>
       <div id="port-analysis-list"></div>
     </div>
 
@@ -3538,6 +3563,139 @@ function _portVerdictLabel(v){
   return 'HOLD';
 }
 
+// ===== Tesis de entrada: que decia el sistema el dia que compraste =====
+// El payload lo calcula position_thesis.py (server-side, local y cloud).
+const _TH_COLOR={intacta:'var(--buy)',debilitada:'var(--hold)',invalidada:'var(--sell)',
+                 dada_vuelta:'var(--sell)',sin_senal:'var(--muted)',
+                 recien_abierta:'var(--muted)',sin_historial:'var(--muted)'};
+
+function _thColor(et){return (et&&_TH_COLOR[et.status])||'var(--muted)';}
+
+function _thDot(et){
+  if(!et)return '';
+  return '<span class="pi-dot" style="background:'+_thColor(et)+'" title="Tesis de entrada: '+
+         (et.status_label||'').replace(/"/g,'&quot;')+'"></span>';
+}
+
+// Una columna del cuadro entrada-vs-hoy. `snap` es el snapshot del sistema en
+// esa fecha: mismos campos que el analisis de hoy, calculados sobre la serie
+// cortada a esa barra.
+function _thCol(title, snap, sub){
+  if(!snap)return '<div class="pth-col"><div class="pth-col-h">'+title+'</div>'+
+                  '<div class="pth-na">sin datos</div></div>';
+  let v=snap.values||{},k=v.koncorde||{},m=v.macd||{};
+  let h='<div class="pth-col"><div class="pth-col-h">'+title+
+        (sub?' <span class="pth-col-sub">'+sub+'</span>':'')+'</div>';
+  h+='<div class="pth-lab" style="color:'+_sigColor(snap.signal_label)+'">'+(snap.signal_label||'—')+'</div>';
+  h+='<div class="pth-row"><span>Condiciones</span><b>'+(snap.conditions_met||0)+'/3</b></div>';
+  h+='<div class="pth-row"><span>Fuerza</span><b>'+(snap.strength||0).toFixed(1)+'</b></div>';
+  if(v.rsi!=null)h+='<div class="pth-row"><span>RSI</span><b>'+v.rsi.toFixed(1)+'</b></div>';
+  if(m.hist!=null)h+='<div class="pth-row"><span>MACD hist</span><b>'+m.hist.toFixed(2)+'</b></div>';
+  if(k.marron!=null&&k.media!=null)
+    h+='<div class="pth-row"><span>Koncorde</span><b>'+k.marron.toFixed(1)+' vs '+k.media.toFixed(1)+'</b></div>';
+  let fg=snap.pattern;
+  h+='<div class="pth-fig"'+(fg&&fg.text?' title="'+fg.text.replace(/"/g,'&quot;')+'"':'')+'>'+
+     (fg?('Figura: '+fg.name+(fg.status?' ('+fg.status+')':'')):'Sin figura en punto de decision')+'</div>';
+  return h+'</div>';
+}
+
+function _sigColor(lab){
+  if(!lab)return 'var(--text)';
+  return _labelIsBearish(lab)?'var(--sell)':
+         ((lab.indexOf('COMPRA')>=0||lab.indexOf('SOBREVENTA')>=0)?'var(--buy)':'var(--muted)');
+}
+
+function _thesisBlock(et){
+  if(!et)return '';
+  let col=_thColor(et);
+  let h='<div class="rec-thesis pth" style="border-left:4px solid '+col+'">';
+  h+='<div class="rec-thesis-title">La tesis de entrada &mdash; <span style="color:'+col+'">'+
+     (et.status_label||'')+'</span></div>';
+  h+='<div class="rec-thesis-text">'+(et.summary||'')+'</div>';
+  if(et.entry||et.now){
+    h+='<div class="pth-grid">';
+    h+=_thCol('CUANDO COMPRASTE', et.entry, et.entry_date||'');
+    h+=_thCol('HOY', et.now, (et.bars_held!=null?(et.bars_held+' ruedas despues'):''));
+    h+='</div>';
+  }
+  let ms=et.milestones||[];
+  if(ms.length){
+    h+='<div class="pth-mile"><div class="pth-mile-h">Que paso en el medio'+
+       (et.milestones_total>ms.length?(' <span class="pth-col-sub">('+ms.length+' de '+
+        et.milestones_total+' hitos)</span>'):'')+'</div>';
+    for(let m of ms){
+      let mc=m.side==='bull'?'var(--buy)':(m.side==='bear'?'var(--sell)':'var(--muted)');
+      h+='<div class="pth-mi"><span class="pth-mi-d">'+m.date+'</span>'+
+         '<span class="pth-mi-b" style="background:'+mc+'"></span>'+
+         '<span class="pth-mi-t">'+m.text+'</span></div>';
+    }
+    h+='</div>';
+  }
+  return h+'</div>';
+}
+
+// Los datos duros de la posicion, juntos y arriba de todo. Estaban repartidos
+// entre el summary del acordeon, el panel de metricas y la tabla de niveles:
+// para saber cuantas acciones tenes y a cuanto habia que mirar tres lugares.
+function _posFacts(pos,rec){
+  if(!pos)return '';
+  let f=(v,n)=>(v==null?'—':'$'+v.toFixed(n==null?2:n));
+  let qty=pos.cantidad||0, cost=pos.costo_promedio||0;
+  let px=(pos.precio_actual||rec.price||0), pnl=pos.pnl||0, pnlPct=pos.pnl_pct||0;
+  let col=pnlPct>=0?'var(--buy)':'var(--sell)';
+  let et=rec.entry_thesis||null;
+  let h='<div class="pfacts">';
+  let add=(lab,val,style,tip)=>{h+='<div class="pf"'+(tip?' title="'+tip.replace(/"/g,'&quot;')+'"':'')+
+    '><span class="pf-l">'+lab+'</span><span class="pf-v"'+(style?' style="'+style+'"':'')+'>'+val+'</span></div>';};
+  add('Cantidad',qty.toFixed(0)+(pos.es_etf?' cuotas':' acciones'));
+  add('Costo prom.',cost>0?f(cost):'—',null,'Lo que te costo cada accion, segun IB');
+  add('Precio hoy',f(px));
+  add('P&L',(pnl>=0?'+':'-')+'$'+Math.abs(pnl).toFixed(2)+' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%)','color:'+col);
+  if(pos.valor_mercado!=null)add('Valor',f(pos.valor_mercado));
+  if(pos.peso_portafolio!=null)add('Peso',(pos.peso_portafolio*100).toFixed(1)+'%',null,'Cuanto pesa en tu cartera');
+  if(et&&et.entry_date)add('Entrada',et.entry_date+(et.bars_held!=null?(' · '+et.bars_held+'r'):''),null,
+                           'Fecha de apertura del episodio vigente (primer fill tras estar flat)');
+  if(pos.stop_loss)add('Stop en IB',f(pos.stop_loss),'color:var(--sell)','Orden de stop REAL activa en tu cuenta');
+  if(pos.take_profit)add('TP en IB',f(pos.take_profit),'color:var(--buy)','Orden de take-profit REAL activa en tu cuenta');
+  return h+'</div>';
+}
+
+// Una condicion del sistema con su lectura, no solo el si/no.
+function _condLine(name,ok,detail){
+  return '<div class="pth-cond"><span class="pth-cond-s '+(ok?'ok':'no')+'">'+(ok?'&#10003;':'&#215;')+
+         '</span><span class="pth-cond-n">'+name+'</span>'+
+         '<span class="pth-cond-d">'+(detail||'sin lectura')+'</span></div>';
+}
+
+// El PORQUE del veredicto. `_compute_position_verdict` ya pondera ~19 factores
+// y devolvia solo la palabra final: la ficha mostraba una accion que no podia
+// explicar. Se listan los que mas pesan de cada lado.
+function _verdictFactors(rec){
+  let fs=rec.verdict_factors||[];
+  if(!fs.length)return '';
+  let bull=fs.filter(f=>f.side==='bull').sort((a,b)=>b.weight-a.weight).slice(0,4);
+  let bear=fs.filter(f=>f.side==='bear').sort((a,b)=>b.weight-a.weight).slice(0,4);
+  if(!bull.length&&!bear.length)return '';
+  let mx=Math.max(1,...fs.map(f=>f.weight||0));
+  let colHtml=(arr,lab,color)=>{
+    let h='<div class="vf-col"><div class="vf-h" style="color:'+color+'">'+lab+'</div>';
+    if(!arr.length)h+='<div class="pth-na">nada de este lado</div>';
+    for(let f of arr){
+      h+='<div class="vf-r" title="'+(f.detail||'').replace(/"/g,'&quot;')+'">'+
+         '<span class="vf-n">'+f.name+'</span>'+
+         '<span class="vf-bar"><i style="width:'+Math.round((f.weight/mx)*100)+'%;background:'+color+'"></i></span>'+
+         '<span class="vf-w">'+(f.weight||0).toFixed(0)+'</span></div>';
+    }
+    return h+'</div>';
+  };
+  let h='<div class="vfacts"><div class="vf-title">Por que este veredicto'+
+        '<span class="pth-col-sub"> &middot; alcista '+(rec.bull_score||0).toFixed(0)+
+        ' vs bajista '+(rec.bear_score||0).toFixed(0)+'</span></div><div class="vf-grid">';
+  h+=colHtml(bull,'A FAVOR DE AGUANTAR','var(--buy)');
+  h+=colHtml(bear,'EN CONTRA','var(--sell)');
+  return h+'</div></div>';
+}
+
 // Estado de espera de datos del bridge (solo aplica al modo cloud —
 // en local `bridge_connected` no viene y este check es siempre false).
 function _isPortfolioWaiting(d){
@@ -3659,7 +3817,10 @@ function renderPortfolio(d){
   // Metricas agregadas de la cartera
   renderPortMetrics(d.metrics||{},d.positions||[]);
 
-  // Tablero de veredictos por posicion
+  // INDICE de posiciones (no una segunda ficha): la misma posicion contada
+  // dos veces, con metricas distintas en cada lugar, era el origen del "esta
+  // todo disperso". Aca solo queda lo que sirve para ELEGIR cual abrir; todo
+  // el contenido vive en la ficha de abajo.
   let vHtml='';
   let positions=d.positions||[];
   if(positions.length===0){
@@ -3667,36 +3828,20 @@ function renderPortfolio(d){
   }else{
     for(let p of positions){
       let deep=p.analysis||{};
-      let verdict=deep.verdict||'HOLD';
-      let cls=_portVerdictClass(verdict);
-      let label=_portVerdictLabel(verdict);
-      let head=deep.headline||label;
-      let reason=deep.verdict_summary||deep.verdict_reason||'';
-      let trend=deep.trend||'flat';
-      let trendIcon=trend==='up'?'&#9650;':(trend==='down'?'&#9660;':'&#8226;');
-      let trendLabel=trend==='up'?'Momentum alcista':(trend==='down'?'Momentum bajista':'Sin momentum claro');
-      let strength=(deep.strength||0);
-      let conds=(deep.conditions_met||0);
+      let cls=_portVerdictClass(deep.verdict||'HOLD');
+      let label=_portVerdictLabel(deep.verdict||'HOLD');
       let pnlPct=(p.pnl_pct||0);
-      let pnlCol2=pnlPct>=0?'#0b7a4b':'#c22436';
-      let indi='';
-      indi+='<span class="port-verdict-indi-chip '+(deep.macd_ok?'ok':'no')+'">MACD</span>';
-      indi+='<span class="port-verdict-indi-chip '+(deep.rsi_ok?'ok':'no')+'">RSI</span>';
-      indi+='<span class="port-verdict-indi-chip '+(deep.konc_ok?'ok':'no')+'">KONC</span>';
-      vHtml+='<div class="port-verdict-card '+cls+'" data-sym="'+p.symbol+'" onclick="scrollToPortPosition(\''+p.symbol+'\')">';
-      vHtml+='  <div class="port-verdict-head">';
-      vHtml+='    <div><div class="port-verdict-sym">'+p.symbol+'</div><div class="port-verdict-sub">'+p.sector+'</div></div>';
-      vHtml+='    <span class="port-verdict-action '+cls+'">'+label+'</span>';
-      vHtml+='  </div>';
-      vHtml+='  <div class="port-verdict-metrics">';
-      vHtml+='    <span>P&L <b style="color:'+pnlCol2+'">'+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%</b></span>';
-      vHtml+='    <span>Fuerza <b>'+strength.toFixed(1)+'</b></span>';
-      vHtml+='    <span>Indi <b>'+conds+'/3</b></span>';
-      vHtml+='  </div>';
-      vHtml+='  <div class="port-verdict-trend t-'+trend+'">'+trendIcon+' '+trendLabel+'</div>';
-      vHtml+='  <div class="port-verdict-reason">'+reason+'</div>';
-      vHtml+='  <div class="port-verdict-indi">'+indi+'</div>';
-      vHtml+='</div>';
+      let et=deep.entry_thesis||null;
+      let dot=_thDot(et);
+      vHtml+='<button class="port-idx-chip '+cls+'" onclick="scrollToPortPosition(\''+p.symbol+'\')"'+
+             ' title="'+(deep.headline||label).replace(/"/g,'&quot;')+'">';
+      if(deep.urgency==='high')vHtml+='<span class="pi-urg" title="Requiere decision">&#9888;</span>';
+      vHtml+='<span class="pi-sym">'+p.symbol+'</span>';
+      vHtml+='<span class="pi-pnl" style="color:'+(pnlPct>=0?'var(--buy)':'var(--sell)')+'">'+
+             (pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%</span>';
+      vHtml+='<span class="pi-act '+cls+'">'+label+'</span>';
+      if(dot)vHtml+=dot;
+      vHtml+='</button>';
     }
   }
   document.getElementById('port-verdicts').innerHTML=vHtml;
@@ -3809,7 +3954,10 @@ function scrollToPortPosition(sym){
   let el=document.getElementById('port-anal-'+sym);
   if(!el)return;
   if(!el.open)el.open=true;
+  // El stack de graficos se monta 50ms despues de abrir el <details> y cambia
+  // el alto de la ficha: un scroll suave lanzado antes queda a mitad de camino.
   el.scrollIntoView({behavior:'smooth',block:'start'});
+  setTimeout(()=>{try{el.scrollIntoView({behavior:'smooth',block:'start'});}catch(e){}},280);
 }
 
 // ===== Per-position deep analysis (Top3-style accordions) =====
@@ -3822,7 +3970,8 @@ function _portAnalDecorate(rec,pos,ch){
   let priceLines=[],markers=[];
   try{
     let avgCost=pos?pos.costo_promedio:null;
-    if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Costo Prom.',tip:'Tu costo promedio de compra'});
+    if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:3,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'TU COSTO',scale:true,
+      tip:'Tu costo promedio de compra: $'+avgCost.toFixed(2)});
     if(rec.target)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target',tip:'Objetivo del sistema'+(rec.target_basis?(' — '+rec.target_basis):'')});
     if(rec.stop_loss)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop',tip:'Invalidación del análisis'+(rec.stop_basis?(' — ubicado '+rec.stop_basis):'')});
     // SL/TP REALES cargados en IB (bracket order) — distintos de Target/Stop
@@ -3938,12 +4087,43 @@ function renderPortAnalysisList(positions){
     html+='</summary>';
     html+='<div class="rec-body">';
 
-    // Veredicto grande (call to action) — narrativa integral estilo tesis
+    // ORDEN FIJO DE LA FICHA: tu posicion -> la tesis de entrada -> el cuadro
+    // de hoy -> que hacer. Es la secuencia en que se lee una posicion ("¿sigue
+    // siendo la idea que me hizo comprarla?"), no el orden en que el server
+    // calcula las cosas.
+
+    // 1. TU POSICION
+    html+=_posFacts(p,rec);
+
+    // 2. LA TESIS DE ENTRADA (+ que paso en el medio)
+    html+=_thesisBlock(rec.entry_thesis);
+
+    // 3. EL CUADRO TECNICO HOY
+    if(rec.thesis){
+      html+='<div class="rec-thesis">';
+      html+='<div class="rec-thesis-title">El cuadro tecnico hoy</div>';
+      html+='<div class="rec-thesis-text">'+rec.thesis+'</div>';
+      // Las tres condiciones con su lectura: el payload ya las traia
+      // (macd_detail/rsi_detail/konc_detail) y la ficha solo mostraba chips
+      // binarios, que dicen "no" sin decir cuanto falta.
+      html+='<div class="pth-conds">';
+      html+=_condLine('MACD',rec.macd_ok,rec.macd_detail);
+      html+=_condLine('RSI',rec.rsi_ok,rec.rsi_detail);
+      html+=_condLine('Koncorde',rec.konc_ok,rec.konc_detail);
+      html+='</div>';
+      html+='<div class="rec-thesis-meta">';
+      if(rec.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+rec.horizon+'</span>';
+      if(rec.target_pct){let bearT=_labelIsBearish(rec.signal_label||sig);html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(rec.target_pct).toFixed(0)+'%</span>';}
+      html+=figChips(rec);
+      html+='</div></div>';
+    }
+
+    // 4. QUE HACER — la accion, con los factores que la sostienen
     if(rec.verdict_reason){
       let vColor=(verdict==='SELL'?'#c22436':(verdict==='ADD'||verdict==='BUY'?'#0b7a4b':(verdict==='REDUCE'?'#b45309':'#4262d9')));
       html+='<div class="rec-thesis" style="border-left:4px solid '+vColor+'">';
       html+='<div class="rec-thesis-title">Que hacer con esta posicion &mdash; <span style="color:'+vColor+'">'+vlabel+'</span></div>';
-      let paras=rec.verdict_reason.split('\\n\\n');
+      let paras=rec.verdict_reason.split('\n\n');
       for(let i2=0;i2<paras.length;i2++){
         let pTxt=paras[i2];
         if(!pTxt)continue;
@@ -3954,19 +4134,8 @@ function renderPortAnalysisList(positions){
           html+='<div class="rec-thesis-text"'+(i2>0?' style="margin-top:8px"':'')+'>'+pTxt+'</div>';
         }
       }
+      html+=_verdictFactors(rec);
       html+='</div>';
-    }
-
-    // Thesis
-    if(rec.thesis){
-      html+='<div class="rec-thesis">';
-      html+='<div class="rec-thesis-title">Tesis Tecnica</div>';
-      html+='<div class="rec-thesis-text">'+rec.thesis+'</div>';
-      html+='<div class="rec-thesis-meta">';
-      if(rec.horizon)html+='<span class="rec-thesis-horizon">Horizonte: '+rec.horizon+'</span>';
-      if(rec.target_pct){let bearT=_labelIsBearish(rec.signal_label||sig);html+='<span class="rec-thesis-target'+(bearT?' neg':'')+'">Objetivo: '+(bearT?'-':'+')+Math.abs(rec.target_pct).toFixed(0)+'%</span>';}
-      html+=figChips(rec);
-      html+='</div></div>';
     }
 
     // Period buttons
@@ -4547,7 +4716,7 @@ function destroyDetailCharts(idx){scDestroy(_scReg['scan_'+idx]);_scReg['scan_'+
    ======================================================================== */
 const SC_MA_COLORS={sma200:'#c22436',sma100:'#c2570b',sma50:'#d4a017',sma20:'#2563eb',ema9:'#7c3aed'};
 const SC_MA_LEGEND='<span><i style="background:#c22436"></i>SMA200</span><span><i style="background:#c2570b"></i>SMA100</span><span><i style="background:#d4a017"></i>SMA50</span><span><i style="background:#2563eb"></i>SMA20</span><span><i style="background:#7c3aed"></i>EMA9</span>';
-const SC_LEGEND_FULL='<span><i style="background:#2563eb"></i>Costo Prom.</span><span style="color:#2563eb;font-weight:700">&#9650; Compra</span><span><i style="background:#0b7a4b"></i>Target</span><span><i style="background:#c22436"></i>Stop</span>'+SC_MA_LEGEND;
+const SC_LEGEND_FULL='<span><i style="background:#2563eb"></i>Tu costo</span><span style="color:#2563eb;font-weight:700">&#9650; Compra</span><span><i style="background:#0b7a4b"></i>Target</span><span><i style="background:#c22436"></i>Stop</span>'+SC_MA_LEGEND;
 const SC_LEGEND_REC='<span><i style="background:#2563eb"></i>Entrada</span><span><i style="background:#0b7a4b"></i>Target</span><span><i style="background:#c22436"></i>Stop</span>'+SC_MA_LEGEND;
 const SC_LEGEND_TRADE='<span style="color:#0b7a4b;font-weight:700">&#9650; BUY</span><span style="color:#c22436;font-weight:700">&#9660; SELL</span><span><i style="background:#2563eb"></i>Entrada</span><span><i style="background:#d4a017"></i>SMA50</span><span><i style="background:#2563eb"></i>SMA20</span>';
 const SC_INTRADAY={'1M':'1h','1W':'30m','1D':'15m'};
@@ -4843,11 +5012,32 @@ function scBuild(key,data,decorate,heights){
       // Se capturan referencias de cada linea (priceLine o serie superpuesta)
       // para el hover: resaltar la linea bajo el cursor + tooltip descriptivo.
       let hoverables=[];
+      // Las priceLines de LW NO participan del autoescalado: en una posicion
+      // bastante por debajo de su costo (p.ej. costo $42.62 con el precio en
+      // $36.35) la linea "Costo Prom." quedaba FUERA del rango visible y
+      // simplemente no se veia — parecia que no estaba dibujada. Las marcadas
+      // `scale` fuerzan el rango para que siempre entren en la ventana.
+      let _mustSee=(decorate.priceLines||[]).filter(pl=>{
+        if(!pl||!pl.scale||pl.price==null||!(pl.price>0))return false;
+        // Guarda contra unidades mezcladas (una prima de opcion viene x100):
+        // estirar el eje 100x dejaria las velas aplastadas en una linea.
+        let ref=(ohlc.length&&ohlc[ohlc.length-1]&&ohlc[ohlc.length-1].close)||0;
+        return !ref||(pl.price<ref*10&&pl.price>ref*0.1);
+      }).map(pl=>pl.price);
+      if(_mustSee.length){
+        try{cs.applyOptions({autoscaleInfoProvider:orig=>{
+          let r=orig();
+          if(!r||!r.priceRange)return r;
+          let mn=r.priceRange.minValue,mx=r.priceRange.maxValue;
+          for(let v of _mustSee){if(v<mn)mn=v;if(v>mx)mx=v;}
+          return Object.assign({},r,{priceRange:{minValue:mn,maxValue:mx}});
+        }});}catch(e){}
+      }
       (decorate.priceLines||[]).forEach(pl=>{try{
         // Figuras/fib se forman en el grafico DIARIO (5y): en las vistas
         // intradia (1M/1W/1D) no se consideran — menos fiables en ese plazo
         if(data.timeVis&&pl.fig)return;
-        let opts=Object.assign({},pl);delete opts.tip;delete opts.fig;
+        let opts=Object.assign({},pl);delete opts.tip;delete opts.fig;delete opts.scale;
         let ref=cs.createPriceLine(opts);
         hoverables.push({kind:'pl',ref:ref,price:pl.price,w:pl.lineWidth||1,label:pl.title||'',tip:pl.tip||'',tipColor:pl.color});
       }catch(e){}});
@@ -8615,12 +8805,14 @@ def _compute_position_verdict(data, position, levels=None):
     }
 
 
-def _generate_position_recommendation(sym, data, position, levels, entry_fills, verdict):
+def _generate_position_recommendation(sym, data, position, levels, entry_fills,
+                                      verdict, entry_thesis=None):
     """Narrativa integral de la posicion, estilo Tesis de Inversión del escaner.
 
     4 partes en un solo texto coherente (separadas por \n\n):
-      1. Tu posicion — cuando compraste (del primer fill), a que precio,
-         cuanto tiempo llevas y como viene.
+      1. Tu posicion — cuando compraste (del episodio flat->flat si lo hay,
+         si no del primer fill conocido), a que precio, cuanto tiempo llevas
+         y como viene.
       2. El cuadro tecnico HOY — signal_label + que cumple / que falta
          (via _system_status, el mismo motor de la tesis del escaner) +
          tendencia de fondo coherente (precio vs SMA200 Y el cross juntos) +
@@ -8654,13 +8846,23 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
 
     action = verdict.get("verdict", "HOLD")
     parts = []
+    # Sin costo conocido no hay breakeven que citar: "$0.00" es peor que
+    # omitirlo (pasaba en toda orden pendiente, costo_promedio=0).
+    be_ref = f"breakeven ${avg_cost:.2f}" if avg_cost > 0 else ""
 
     # ── 1. TU POSICION ──
     tenure_txt = ""
     n_fills = len(entry_fills or [])
-    if entry_fills:
+    # La fecha del episodio vigente (flat->flat) le gana al fill mas viejo: si
+    # compraste, vendiste todo y volviste a entrar, la posicion de hoy nacio en
+    # la segunda entrada. `entry_thesis` ya la resolvio.
+    first_known = (entry_thesis or {}).get("entry_date")
+    if not first_known and entry_fills:
+        _t = [f.get("time") for f in entry_fills if f.get("time")]
+        first_known = min(_t) if _t else None
+    if first_known:
         try:
-            first = min(f["time"] for f in entry_fills if f.get("time"))
+            first = first_known
             d0 = datetime.strptime(first, "%Y-%m-%d")
             days = (datetime.now() - d0).days
             if days >= 60:
@@ -8671,23 +8873,42 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
                 tenure_txt = f"hace {days} dias ({first})"
         except Exception:
             tenure_txt = ""
-    p1 = f"Entraste en {sym}"
-    if tenure_txt:
+    # Una orden cargada sin fill no es una entrada: decir "Entraste en X" sobre
+    # un LMT que nunca se ejecuto es, directamente, falso.
+    if pos.get("is_pending"):
+        po = pos.get("pending_order") or {}
+        _acc = "COMPRA" if (po.get("action") or "BUY").upper() == "BUY" else "VENTA"
+        p1 = f"Todavia no entraste en {sym}: tenes una orden de {_acc} cargada en IB"
+        if po.get("price"):
+            p1 += f" a ${float(po['price']):.2f}"
+        if po.get("quantity"):
+            p1 += f" por {float(po['quantity']):.0f} acciones"
+        if price > 0:
+            _d = (price / float(po["price"]) - 1) * 100 if po.get("price") else None
+            p1 += f"; hoy cotiza ${price:.2f}"
+            if _d is not None:
+                p1 += f" ({_d:+.1f}% respecto de tu limite)"
+        parts.append(p1 + ".")
+        p1 = None
+    else:
+        p1 = f"Entraste en {sym}"
+    if p1 is not None and tenure_txt:
         p1 += f" {tenure_txt}"
         if n_fills > 1:
             p1 += f", en {n_fills} compras,"
-    if avg_cost > 0:
-        p1 += f" a un costo promedio de ${avg_cost:.2f}"
-    if price > 0:
-        p1 += f"; hoy cotiza ${price:.2f}"
+    if p1 is not None:
         if avg_cost > 0:
-            p1 += f", es decir {pnl_pct:+.1f}% sobre tu entrada"
-    p1 += "."
-    if pnl_pct <= -12 and tenure_txt:
-        p1 += " La posicion viene golpeada desde el inicio."
-    elif pnl_pct >= 15:
-        p1 += " Buen recorrido acumulado."
-    parts.append(p1)
+            p1 += f" a un costo promedio de ${avg_cost:.2f}"
+        if price > 0:
+            p1 += f"; hoy cotiza ${price:.2f}"
+            if avg_cost > 0:
+                p1 += f", es decir {pnl_pct:+.1f}% sobre tu entrada"
+        p1 += "."
+        if pnl_pct <= -12 and tenure_txt:
+            p1 += " La posicion viene golpeada desde el inicio."
+        elif pnl_pct >= 15:
+            p1 += " Buen recorrido acumulado."
+        parts.append(p1)
 
     # ── 2. EL CUADRO TECNICO HOY (integrado) ──
     try:
@@ -8826,7 +9047,8 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
         if pnl_pct >= 10:
             cond = f"tomar parcial cerca de ${target:.2f}" if (target and target > price) else "tomar una parte ahora"
             p4 = (f"Recomendacion: PROTEGER. El cuadro se esta dando vuelta con la posicion {pnl_pct:+.0f}% arriba: "
-                  f"{cond} y subir el stop a tu breakeven (${avg_cost:.2f}) mantiene la ganancia si el giro se confirma.")
+                  f"{cond} y subir el stop" + (f" a tu {be_ref}" if be_ref else "") +
+                  f" mantiene la ganancia si el giro se confirma.")
         else:
             floor_ref = protect or sl_ib
             p4 = (f"Recomendacion: REDUCIR. El peso de los indicadores esta del lado bajista y no hay "
@@ -8839,7 +9061,7 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
             p4 = (f"Recomendacion: MANTENER CON PLAN. La perdida es {pnl_pct:.1f}% pero el cuadro "
                   f"tecnico no da señal de venta")
             if not is_bearish and missing:
-                p4 += f" y hay condiciones de compra formandose ({missing[0] if missing else ''})"
+                p4 += f" y hay condiciones de compra formandose ({missing[0]})"
             floor_ref = protect or sl_ib
             if floor_ref:
                 p4 += f". Definir el limite: si pierde ${floor_ref:.2f} se corta; mientras lo sostenga, se aguanta"
@@ -8848,16 +9070,18 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
             if is_bearish and missing:
                 # Cuadro de venta ARMANDOSE sobre posicion ganadora — el matiz importa
                 p4 = (f"Recomendacion: PREPARAR LA SALIDA. Llevas {pnl_pct:+.0f}% y el cuadro de venta "
-                      f"se esta armando — solo falta {missing[0]}. Subir el stop ya "
-                      f"(breakeven ${avg_cost:.2f}" + (f" o ${protect:.2f}, {protect_txt}" if protect else "") + ") "
-                      f"y si la señal se completa, tomar la ganancia sin dudar.")
+                      f"se esta armando — solo falta {missing[0]}. Subir el stop ya"
+                      + (" (" + "; ".join(x for x in [be_ref, (f"${protect:.2f}, {protect_txt}" if protect else "")] if x) + ")"
+                         if (be_ref or protect) else "") +
+                      " y si la señal se completa, tomar la ganancia sin dudar.")
             elif protect:
                 p4 = (f"Recomendacion: MANTENER Y PROTEGER. Llevas {pnl_pct:+.0f}% y el cuadro no marca venta; "
-                      f"subir el stop (breakeven ${avg_cost:.2f} o ${protect:.2f}, {protect_txt}) deja correr la "
-                      f"ganancia sin regalarla.")
+                      "subir el stop (" + "; ".join(x for x in [be_ref, f"${protect:.2f}, {protect_txt}"] if x) +
+                      ") deja correr la ganancia sin regalarla.")
             else:
                 p4 = (f"Recomendacion: MANTENER Y PROTEGER. Llevas {pnl_pct:+.0f}% y el cuadro no marca venta; "
-                      f"considerar un stop en breakeven (${avg_cost:.2f}).")
+                      + (f"considerar un stop en {be_ref}." if be_ref
+                         else "considerar un stop de proteccion bajo el ultimo piso."))
         else:
             p4 = "Recomendacion: MANTENER. "
             if missing and not is_bearish:
@@ -8884,10 +9108,125 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills, 
                 if plan_bits:
                     p4 += " Plan: " + "; ".join(plan_bits) + "."
             else:
-                p4 += "Sin condiciones tecnicas cerca de activarse; revisar en el proximo ciclo."
+                # "Sin condiciones cerca; revisar en el proximo ciclo" era la
+                # frase mas vacia del modulo — y como verdict_summary es el
+                # ULTIMO parrafo, era justo lo que se veia colapsado en la
+                # tarjeta. Que no haya nada por activarse es un ESTADO, no una
+                # falta de informacion: se dice con numeros cuanto falta y
+                # contra que niveles se esta midiendo.
+                quiet = []
+                _rsi_v = ((data.get("values") or {}).get("rsi"))
+                if _rsi_v is not None:
+                    quiet.append(f"el RSI esta en {_rsi_v:.0f} (necesita <30 para compra "
+                                 f"o >70 para venta: faltan {abs(_rsi_v - 30):.0f} y "
+                                 f"{abs(70 - _rsi_v):.0f} puntos)")
+                _s200 = mas.get("sma200_val")
+                if _s200 and price and atr_v:
+                    _dist = (price - _s200) / atr_v
+                    quiet.append(f"el precio esta a {abs(_dist):.1f} ATR "
+                                 f"{'sobre' if _dist >= 0 else 'bajo'} su SMA200 (${_s200:.2f})")
+                if techo_f and techo_f.get("level", 0) > price:
+                    quiet.append(f"el techo mas cercano es ${techo_f['level']:.2f} "
+                                 f"({techo_f.get('touches', 0)} toques)")
+                elif piso_f and piso_f.get("level", 0) < price:
+                    quiet.append(f"el piso mas cercano es ${piso_f['level']:.2f} "
+                                 f"({piso_f.get('touches', 0)} toques)")
+                p4 += ("No hay ninguna condicion del sistema cerca de activarse: "
+                       + ("; ".join(quiet[:3]) if quiet else
+                          "los tres indicadores estan en zona media") + ". ")
+                _st = (entry_thesis or {}).get("status")
+                if _st == "intacta":
+                    p4 += "La lectura con la que entraste sigue vigente, asi que no hay nada que decidir hoy."
+                elif _st in ("debilitada", "invalidada", "dada_vuelta"):
+                    p4 += (f"Lo que si cambio es la tesis de entrada: "
+                           f"{(entry_thesis or {}).get('status_label', '').lower()}. "
+                           f"Revisar si la razon por la que compraste sigue en pie.")
+                else:
+                    p4 += "Es una posicion en compas de espera, no una señal sin resolver."
     parts.append(p4)
 
     return "\n\n".join(parts)
+
+
+# ══════════════════════════════════════════════════════════════
+#  TESIS DE ENTRADA (que decia el sistema el dia que compraste)
+# ══════════════════════════════════════════════════════════════
+# El motor vive en position_thesis.py (puro, sin IO). Aca va el pegamento:
+# de donde sale la serie historica y de donde sale la fecha de entrada.
+#
+# La serie se pide SIEMPRE a yfinance, no a IB: es una reconstruccion del
+# pasado, y asi el local y el cloud (que no tiene IB) narran exactamente lo
+# mismo. 5 años, no una ventana corta: con menos de ~90 barras de calentamiento
+# el Koncorde devuelve verde/azul en NaN y el MACD/RSI de la fecha de entrada
+# salen sesgados — o sea que la ficha mostraria una entrada que nunca existio.
+
+_THESIS_HIST = {}        # sym -> (dia, df)
+_THESIS_SINCE = {}       # trades_file -> (ts, {sym: since})
+_THESIS_SINCE_TTL = 600  # 10 min: las fechas de entrada no cambian seguido
+
+
+def _thesis_history(sym):
+    """DF diario de 5Y para reconstruir la tesis. Cacheado por dia."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    hit = _THESIS_HIST.get(sym)
+    if hit and hit[0] == today:
+        return hit[1]
+    df = _fetch_historical_yf(sym, "5 Y")
+    if df is not None and len(df) >= 60:
+        if len(_THESIS_HIST) > 200:
+            _THESIS_HIST.clear()
+        _THESIS_HIST[sym] = (today, df)
+        return df
+    return None
+
+
+def _entry_since_map(trades_file=None):
+    """{symbol: fecha de apertura del episodio vigente} desde el historial.
+
+    Usa `build_trades_history().open_positions`, que arma los episodios
+    flat->flat: esa fecha es el PRIMER fill de apertura de la posicion que
+    tenes hoy, no el fill mas viejo que exista del simbolo (si compraste,
+    vendiste todo y volviste a comprar, la tesis es la de la segunda entrada).
+    """
+    key = trades_file or "_local_"
+    hit = _THESIS_SINCE.get(key)
+    if hit and time.time() - hit[0] < _THESIS_SINCE_TTL:
+        return hit[1]
+    out = {}
+    try:
+        for op in (build_trades_history(trades_file) or {}).get("open_positions", []):
+            if op.get("kind") == "OPT":
+                continue  # el symbol es una etiqueta humana, no un ticker
+            if op.get("since"):
+                out[op["symbol"]] = op["since"]
+    except Exception as e:
+        print(f"[ENTRY_SINCE] no se pudo leer el historial: {e}")
+    _THESIS_SINCE[key] = (time.time(), out)
+    return out
+
+
+def build_entry_thesis(sym, position, entry_fills, since_map=None):
+    """Tesis de entrada vs. hoy para una posicion. None si no aplica."""
+    if (position or {}).get("tipo", "STK") != "STK":
+        return None   # opciones: el symbol es OCC, no hay serie del contrato
+    if (position or {}).get("is_pending"):
+        return None   # todavia no entraste: no hay nada que reconstruir
+    try:
+        since = (since_map or {}).get(sym)
+        if not since and entry_fills:
+            # Respaldo: el fill mas viejo que conozcamos del simbolo. Menos
+            # preciso que el episodio (no distingue una reentrada), pero es
+            # mejor que no mostrar nada.
+            times = [f.get("time") for f in entry_fills if f.get("time")]
+            since = min(times) if times else None
+        df = _thesis_history(sym)
+        if df is None:
+            return None
+        return position_thesis.build(
+            sym, since, df, avg_cost=(position or {}).get("costo_promedio"))
+    except Exception as e:
+        print(f"[ENTRY_THESIS] {sym}: {e}")
+        return None
 
 
 def _build_position_deep_analysis(sym, position, n_bars=90):
@@ -8979,11 +9318,16 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
     except Exception as e:
         print(f"  [Portfolio deep] Fills error para {sym}: {e}")
 
+    # 5c. Tesis de entrada: que decia el sistema el dia que compraste y que
+    # paso con esa lectura hasta hoy. Se calcula ANTES de la narrativa para que
+    # la recomendacion pueda citarla en vez de hablar solo del presente.
+    entry_thesis = build_entry_thesis(sym, position, entry_fills, _entry_since_map())
+
     # 5b. Verdict (scoring multi-factor decide la ACCION) + narrativa integral
     verdict = _compute_position_verdict(data, position, levels)
     try:
         narrative = _generate_position_recommendation(
-            sym, data, position, levels, entry_fills, verdict)
+            sym, data, position, levels, entry_fills, verdict, entry_thesis)
     except Exception as e:
         print(f"  [Portfolio deep] Narrative error para {sym}: {e}")
         narrative = verdict.get("reason", "")
@@ -9041,6 +9385,7 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
         "entry_fills": entry_fills,
+        "entry_thesis": entry_thesis,
         "fundamentals": fund,
         "verdict": verdict.get("verdict", "HOLD"),
         "urgency": verdict.get("urgency", "low"),
@@ -9048,6 +9393,12 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "verdict_reason": narrative,
         "verdict_summary": (narrative.split("\n\n")[-1] if narrative else verdict.get("reason", "")),
         "trend": verdict.get("trend", "flat"),
+        # El PORQUE del veredicto. Se calculaba y se tiraba: sin esto la ficha
+        # muestra una accion (HOLD/VENDER) que no puede explicar.
+        "verdict_factors": verdict.get("factors", []),
+        "bull_score": verdict.get("bull_score", 0),
+        "bear_score": verdict.get("bear_score", 0),
+        "verdict_tech": verdict.get("tech", {}),
         "macd_ok": data.get("macd_ok", False),
         "rsi_ok": data.get("rsi_ok", False),
         "konc_ok": data.get("konc_ok", False),

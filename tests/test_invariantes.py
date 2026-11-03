@@ -767,3 +767,184 @@ def test_con_el_flag_apagado_la_señal_sell_no_genera_orden():
     # y lo salteado se reporta: una salida ignorada en silencio es invisible
     assert "skipped_sells" in bloque
     assert "skipped_sells" in src[src.index("RESULTADOS:"):src.index("RESULTADOS:") + 600]
+
+
+# ── 14. Mi Cartera: la tesis de entrada ──────────────────────────────
+# El motor reconstruye el pasado con el MISMO codigo que evalua el presente
+# (indicators -> signals -> patterns, sobre la serie cortada). Si esa identidad
+# se rompe, la ficha narra una entrada que el sistema nunca habria disparado.
+
+def _serie_sintetica(n=400, seed=7):
+    """OHLCV con la forma que consume indicators.calculate_all."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    close = 100 + np.cumsum(rng.normal(0.05, 1.4, n))
+    close = np.maximum(close, 5.0)
+    high = close * (1 + abs(rng.normal(0, .008, n)))
+    low = close * (1 - abs(rng.normal(0, .008, n)))
+    dates = pd.date_range("2024-01-01", periods=n, freq="B").strftime("%Y%m%d")
+    return pd.DataFrame({"date": dates, "open": close, "high": high,
+                         "low": low, "close": close,
+                         "volume": rng.integers(1e6, 5e6, n).astype(float)})
+
+
+def test_la_direccion_del_label_espeja_a_label_is_bearish():
+    """TRAMPA DE SUBCADENAS: 'SOBREVENTA' contiene 'VENTA'. position_thesis no
+    puede importar vista_web (ciclo), asi que duplica la regla — y la copia
+    tiene que coincidir exactamente o la ficha pinta de bajista una lectura
+    alcista."""
+    import position_thesis as pt
+    labels = ["COMPRA FUERTE", "COMPRA", "VENTA FUERTE", "VENTA",
+              "COMPRA INMINENTE", "VENTA INMINENTE", "VIRANDO A COMPRA",
+              "VIRANDO A VENTA", "ZONA DE SOBREVENTA", "ZONA DE SOBRECOMPRA",
+              "NEUTRAL"]
+    for lab in labels:
+        assert (pt.label_direction(lab) == "bear") == vw._label_is_bearish(lab), lab
+    # y el caso que origino el bug, explicito en las dos direcciones
+    assert pt.label_direction("ZONA DE SOBREVENTA") == "bull"
+    assert pt.label_direction("ZONA DE SOBRECOMPRA") == "bear"
+
+
+def test_cortar_las_series_calculadas_es_igual_que_recalcular():
+    """Los indicadores son causales: el valor en la barra i no puede depender
+    de barras futuras. Es lo que permite calcular una sola vez y cortar — si
+    dejara de valer, los hitos entrada->hoy serian ficcion."""
+    import indicators
+    import position_thesis as pt
+    df = _serie_sintetica()
+    i = 300
+    entero = pt._slice_ind(indicators.calculate_all(df), i)
+    recortado = indicators.calculate_all(df.iloc[:i + 1].reset_index(drop=True))
+    for k in ("macd", "rsi", "koncorde"):
+        a, b = entero[k].iloc[-1], recortado[k].iloc[-1]
+        for col in a.index:
+            va, vb = float(a[col]), float(b[col])
+            if va != va and vb != vb:
+                continue          # NaN en los dos lados: calentamiento
+            assert abs(va - vb) < 1e-6, f"{k}.{col}: {va} vs {vb}"
+
+
+def test_la_senal_reconstruida_en_la_ultima_barra_es_la_de_hoy():
+    """El snapshot de 'hoy' que arma position_thesis tiene que coincidir con
+    generate_signal sobre la serie completa: si divergen, la columna HOY de la
+    ficha contradice al label de su propia tarjeta."""
+    import indicators
+    import signals
+    import position_thesis as pt
+    df = _serie_sintetica()
+    hoy = signals.generate_signal(indicators.calculate_all(df))
+    r = pt.build("TEST", None, df)
+    assert r["now"]["signal"] == hoy["signal"]
+    assert r["now"]["signal_label"] == hoy["signal_label"]
+    assert r["now"]["conditions_met"] == hoy["conditions_met"]
+
+
+def test_sin_fecha_de_entrada_se_dice_no_se_inventa():
+    import position_thesis as pt
+    r = pt.build("TEST", None, _serie_sintetica())
+    assert r["status"] == "sin_historial"
+    assert r["entry"] is None
+    assert "no se puede reconstruir" in r["summary"]
+    # pero el presente SI se informa: no hay motivo para ocultarlo
+    assert r["now"]["signal_label"]
+
+
+def test_la_tesis_distingue_intacta_de_dada_vuelta():
+    import position_thesis as pt
+    df = _serie_sintetica()
+    fecha = str(df["date"].iloc[150])
+    r = pt.build("TEST", fecha, df, avg_cost=float(df["close"].iloc[150]))
+    assert r["status"] in ("intacta", "debilitada", "invalidada",
+                           "dada_vuelta", "sin_senal")
+    assert r["bars_held"] == len(df) - 1 - 150
+    assert r["entry"]["as_of"] == pt._norm_date(fecha)
+    assert isinstance(r["flips"], int) and r["flips"] >= 0
+    # los hitos nunca son anteriores a la entrada
+    for m in r["milestones"]:
+        assert m["date"] >= r["entry_date"], m
+
+
+# ── 14b. La narrativa no puede decir "no se" ─────────────────────────
+
+def test_ninguna_rama_difiere_la_respuesta_al_proximo_ciclo():
+    """'Sin condiciones cerca de activarse; revisar en el proximo ciclo' era el
+    verdict_summary — o sea, justo lo que se veia colapsado en la tarjeta."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index("def _generate_position_recommendation")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    # solo puede aparecer en el comentario que explica por que se saco
+    for linea in cuerpo.splitlines():
+        if "revisar en el proximo ciclo" in linea:
+            assert linea.strip().startswith("#"), linea
+
+
+def test_sin_costo_conocido_no_se_inventa_un_breakeven():
+    """costo_promedio=0 (toda orden pendiente) emitia 'breakeven ($0.00)'."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index("def _generate_position_recommendation")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    assert "be_ref" in cuerpo
+    # avg_cost solo puede aparecer detras de "breakeven" en UN lugar: la
+    # definicion de be_ref, que esta guardada por `if avg_cost > 0`.
+    ocurrencias = [l for l in cuerpo.splitlines() if "breakeven ${avg_cost" in l]
+    assert len(ocurrencias) == 1, ocurrencias
+    assert "if avg_cost > 0 else" in ocurrencias[0], ocurrencias[0]
+    assert "breakeven (${avg_cost" not in cuerpo
+
+
+def test_una_orden_pendiente_no_dice_que_ya_entraste():
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index("def _generate_position_recommendation")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    assert 'Todavia no entraste en {sym}' in cuerpo
+    j = cuerpo.index('if pos.get("is_pending"):')
+    k = cuerpo.index('p1 = f"Entraste en {sym}"')
+    assert j < k, "la rama de pendiente tiene que ganarle a la de entrada"
+
+
+# ── 14c. Lo que el dashboard muestra ─────────────────────────────────
+
+def test_los_parrafos_del_veredicto_se_separan_de_verdad():
+    """DASHBOARD_HTML es un raw string: '\\\\n\\\\n' llegaba al JS como
+    backslash+n literal, el split nunca partia y los 4 parrafos salian pegados
+    en un solo <div> (ademas, el resaltado de 'Recomendacion:' nunca corria)."""
+    h = vw.DASHBOARD_HTML
+    assert "rec.verdict_reason.split('\\n\\n')" in h
+    assert "rec.verdict_reason.split('\\\\n\\\\n')" not in h
+
+
+def test_el_porque_del_veredicto_viaja_al_frontend():
+    """_compute_position_verdict pondera ~19 factores y el payload exportaba
+    solo la palabra final: la ficha mostraba una accion que no podia explicar."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index("def _build_position_deep_analysis")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    for campo in ("verdict_factors", "bull_score", "bear_score", "entry_thesis"):
+        assert f'"{campo}"' in cuerpo, campo
+
+
+def test_la_linea_de_costo_entra_en_el_autoescalado():
+    """Las priceLines de Lightweight Charts NO escalan el eje: con el precio
+    bastante bajo el costo, la linea quedaba fuera de la ventana visible."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("function _portAnalDecorate")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "scale:true" in cuerpo, "la linea de costo no pide entrar en escala"
+    assert "autoscaleInfoProvider" in h
+    # y el flag no puede filtrarse a createPriceLine (LW lo rechaza)
+    assert "delete opts.scale;" in h
+
+
+def test_el_cloud_exporta_los_mismos_campos_nuevos():
+    """Paridad: el usuario mira el cloud. Si el espejo no manda estos campos,
+    la ficha se degrada en silencio justo donde el usuario la usa."""
+    src = open(os.path.join(os.path.dirname(__file__), "..",
+                            "cloud", "server.py")).read()
+    i = src.index("def _build_cloud_position_analysis")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    for campo in ("entry_thesis", "verdict_factors", "bull_score", "bear_score"):
+        assert f'"{campo}"' in cuerpo, campo
+    # y el lado del backtest lo decide el LABEL, no el signal crudo
+    assert "_label_is_bearish(data.get(\"signal_label\", sig))" in cuerpo
+    assert 'if sig == "SELL"' not in cuerpo

@@ -775,7 +775,8 @@ def api_bars(symbol, period):
     return Response(to_json(result), mimetype="application/json")
 
 
-def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars=90):
+def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars=90,
+                                   since_map=None):
     """Cloud equivalent of vista_web._build_position_deep_analysis(), but takes
     the analysis dict explicitly (from this user's bridge-fed store) instead of
     reading vista_web's own module-global analysis_cache."""
@@ -783,7 +784,8 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         _compute_price_levels, _generate_rationale, _generate_thesis,
         _score_stock, _extract_chart_data, _compute_signal_markers,
         _compute_position_verdict, _generate_position_recommendation,
-        _fetch_fundamentals, fundamentals_cache,
+        _fetch_fundamentals, fundamentals_cache, build_entry_thesis,
+        _label_is_bearish,
     )
 
     if data is None or not (data.get("chart") or {}).get("ohlc"):
@@ -860,10 +862,12 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
                 })
         entry_fills.sort(key=lambda x: x["time"])
 
+    entry_thesis = build_entry_thesis(sym, position, entry_fills, since_map)
+
     verdict = _compute_position_verdict(data, position, levels)
     try:
         narrative = _generate_position_recommendation(
-            sym, data, position, levels, entry_fills, verdict)
+            sym, data, position, levels, entry_fills, verdict, entry_thesis)
     except Exception as e:
         print(f"[PORTFOLIO_DEEP] Narrative error for {sym}: {e}", flush=True)
         narrative = verdict.get("reason", "")
@@ -907,9 +911,9 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "pattern": data.get("pattern"),
         "fib": data.get("fib"),
         "candles": data.get("candles"),
-        "win_rate": (bt.get("sell_win_rate", 0) if sig == "SELL"
+        "win_rate": (bt.get("sell_win_rate", 0) if _label_is_bearish(data.get("signal_label", sig))
                      else bt.get("buy_win_rate", 0)) or 0,
-        "avg_return": (bt.get("sell_avg_return") if sig == "SELL"
+        "avg_return": (bt.get("sell_avg_return") if _label_is_bearish(data.get("signal_label", sig))
                        else bt.get("buy_avg_return")),
         "rationale": rationale,
         "chart_ohlc": ohlc_slice,
@@ -920,6 +924,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
         "entry_fills": entry_fills,
+        "entry_thesis": entry_thesis,
         "fundamentals": fund,
         "verdict": verdict.get("verdict", "HOLD"),
         "urgency": verdict.get("urgency", "low"),
@@ -927,6 +932,10 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "verdict_reason": narrative,
         "verdict_summary": (narrative.split("\n\n")[-1] if narrative else verdict.get("reason", "")),
         "trend": verdict.get("trend", "flat"),
+        "verdict_factors": verdict.get("factors", []),
+        "bull_score": verdict.get("bull_score", 0),
+        "bear_score": verdict.get("bear_score", 0),
+        "verdict_tech": verdict.get("tech", {}),
         "macd_ok": data.get("macd_ok", False),
         "rsi_ok": data.get("rsi_ok", False),
         "konc_ok": data.get("konc_ok", False),
@@ -957,8 +966,17 @@ def api_portfolio():
     open_orders = store.get("open_orders", [])
     # Fills en vivo del bridge (para marcar en el chart las compras)
     live_trades = store.get("live_trades", [])
+    since_map = _entry_since_for(request.user_id)
 
-    active_positions = [p for p in raw_positions if p.get("position", 0) != 0]
+    # Paridad con el local (portfolio.py): la ficha es de ACCIONES/ETFs. Una
+    # posicion de opciones entra con `averageCost` POR CONTRATO (x100) — la
+    # linea de costo se iba 100x fuera de escala — y su symbol es OCC, que
+    # `analysis` nunca tiene, asi que la tarjeta salia sin grafico. Si no queda
+    # ninguna STK se muestran todas, igual que el local.
+    active_positions = [p for p in raw_positions
+                        if p.get("position", 0) != 0 and p.get("secType", "STK") == "STK"]
+    if not active_positions:
+        active_positions = [p for p in raw_positions if p.get("position", 0) != 0]
 
     sl_tp_map = extract_sl_tp_by_symbol(open_orders)
 
@@ -979,7 +997,8 @@ def api_portfolio():
             "is_pending": True, "pending_order": pe,
         }
         try:
-            deep = _build_cloud_position_analysis(sym, stub, analysis.get(sym), live_trades)
+            deep = _build_cloud_position_analysis(sym, stub, analysis.get(sym), live_trades,
+                                                  since_map=since_map)
             if deep:
                 stub["analysis"] = deep
                 if not stub["precio_actual"]:
@@ -1071,7 +1090,8 @@ def api_portfolio():
         if sym in indicators_data:
             p["indicadores"] = indicators_data[sym]
         try:
-            deep = _build_cloud_position_analysis(sym, p, analysis.get(sym), live_trades)
+            deep = _build_cloud_position_analysis(sym, p, analysis.get(sym), live_trades,
+                                                  since_map=since_map)
             if deep:
                 p["analysis"] = deep
                 ind = p.get("indicadores") or {}
@@ -1521,6 +1541,30 @@ def _merged_trades_file_path(user_id):
     with open(tmp_path, "w") as f:
         json.dump({"trades": combined}, f)
     return tmp_path
+
+
+_entry_since_cache = {}      # user_id -> (ts, {sym: fecha de apertura})
+_ENTRY_SINCE_TTL = 600       # 10 min
+
+
+def _entry_since_for(user_id):
+    """{symbol: fecha de apertura del episodio vigente} para este usuario.
+
+    Sale del MISMO armado flat->flat que Trades Historicos (flex + seed +
+    fills del bridge). Cacheado aparte porque /api/portfolio se refresca cada
+    15s y rearmar el archivo de trades en cada pasada seria absurdo: una fecha
+    de entrada no cambia hasta que el usuario opera."""
+    hit = _entry_since_cache.get(user_id)
+    if hit and time.time() - hit[0] < _ENTRY_SINCE_TTL:
+        return hit[1]
+    out = {}
+    try:
+        from vista_web import _entry_since_map
+        out = _entry_since_map(_merged_trades_file_path(user_id))
+    except Exception as e:
+        print(f"[ENTRY_SINCE] User {user_id}: {e}", flush=True)
+    _entry_since_cache[user_id] = (time.time(), out)
+    return out
 
 
 @app.route("/api/trades-history")
