@@ -787,7 +787,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         _score_stock, _extract_chart_data, _compute_signal_markers,
         _compute_position_verdict, _generate_position_recommendation,
         _fetch_fundamentals, fundamentals_cache, build_entry_thesis,
-        _label_is_bearish,
+        _label_is_bearish, _analysis_as_of,
     )
 
     if data is None or not (data.get("chart") or {}).get("ohlc"):
@@ -940,6 +940,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "chart_macd": chart_macd,
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
+        "as_of": _analysis_as_of(data),
         "entry_fills": entry_fills,
         "entry_thesis": entry_thesis,
         "fundamentals": fund,

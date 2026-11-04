@@ -4623,6 +4623,8 @@ function renderPortAnalysisList(positions){
     let sl2=rec.signal_label||sig;
     let bc2=sig==='BUY'?'rb-buy':(sig==='SELL'?'rb-sell':(sl2.includes('INMINENTE')&&sl2.includes('COMPRA')?'rb-buy-near':(sl2.includes('INMINENTE')&&sl2.includes('VENTA')?'rb-sell-near':'rb-hold')));
     html+='<span class="rec-badge '+bc2+'">'+sl2+'</span>';
+    // Foto vieja: el mismo badge ambar que ya usa Top Recomendaciones.
+    html+=_asOfBadge(rec.as_of,(typeof _data!=='undefined'&&_data)?_data.signals_as_of:'');
     html+='<span class="rec-sum-metrics">';
     html+='<span class="rec-sm"><span class="lab">P&L</span><span class="val" style="color:'+pnlCol+'">'+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%</span></span>';
     html+='<span class="rec-sm"><span class="lab">Fuerza</span><span class="val">'+(rec.strength||0).toFixed(1)+'</span></span>';
@@ -10596,6 +10598,9 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "chart_macd": chart_macd,
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
+        # Fecha del cierre sobre el que corrio ESTE analisis: sin esto la ficha
+        # no puede avisar que esta mirando una foto vieja (ver "foto congelada").
+        "as_of": _analysis_as_of(data),
         "entry_fills": entry_fills,
         "entry_thesis": entry_thesis,
         "fundamentals": fund,
