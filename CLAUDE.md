@@ -37,6 +37,7 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 | `options_lab.py` | Options strategy engine (Black-Scholes, Greeks, IV analysis) |
 | `position_thesis.py` | Tesis de entrada de una posicion: que decia el sistema el dia que compraste vs. hoy |
 | `option_position.py` | Una tenencia de OPCIONES normalizada: direccion (call/put x largo/corto), DTE, breakeven, moneyness |
+| `option_strategy.py` | Agrupa patas en la estrategia que son (spread, collar, straddle) y lee su payoff |
 
 ## Signal Logic
 
@@ -573,6 +574,64 @@ revalorice"*.
 Tests: `tests/test_invariantes.py` §16 (exposición de cada pata, unidades de la prima, breakeven de
 call y put, reconstrucción desde el OCC, claves distintas, el caso ROP del usuario y su espejo, el
 reloj, la acción larga sin cambios, la alerta por veredicto y el degradado).
+
+## Estrategias de opciones: varias patas = UNA apuesta (`option_strategy.py`, 2026-11)
+`option_position.py` arregló la lectura de **una** pata. Pero una pata rara vez es la apuesta: con
+un bull call spread (CAT **+C750 / −C850**) la ficha mostraba **dos tarjetas que se contradecían** —
+"gana si CAT SUBE" y "gana si CAT CAE" — cuando son una sola posición alcista con techo. El mismo
+descalce que el bug original, un nivel más arriba.
+
+- **La lectura sale del PAYOFF, no de un catálogo de spreads.** `analyze_payoff` evalúa
+  `Σ qty_i · mult_i · (intrínseco_i(S) − prima_i)` con `qty` **con signo**, y de ahí derivan sin
+  casos especiales: breakevens, ganancia y pérdida máximas, si alguna es ilimitada, y la
+  **dirección** (pendiente del payoff a cada lado del precio). El nombre ("Bull call spread",
+  "Collar", "Strangle") se reconoce aparte y es **solo una etiqueta**: si no se reconoce, la
+  lectura sigue siendo correcta.
+- **Nada de grilla uniforme: el payoff es lineal a trozos con quiebres EXACTAMENTE en los
+  strikes.** Se evalúa en `0`, en cada strike y en un punto lejano; máximos, mínimos y breakevens
+  caen todos ahí y la interpolación entre quiebres es exacta. La grilla uniforme daba **dos
+  lecturas falsas**: "pérdida ILIMITADA" en 15 calls comprados (el tramo plano de abajo tocaba el
+  borde) y "ganancia ILIMITADA" en un put comprado (la grilla cortaba antes de S=0). **Hacia abajo
+  el precio tiene piso (cero); el único lado realmente abierto es el alza**, y lo dice la pendiente
+  del último tramo.
+- **Una estrategia ES, para el motor, lo mismo que una pata**: una dirección, un reloj y un
+  breakeven. `as_option()` la devuelve con la forma de `option_position.describe` (con
+  `strike`/`right` en `None`, que `enrich` ahora saltea) ⇒ **el veredicto y la narrativa no tienen
+  un camino nuevo**. `collapse()` reemplaza las patas por una posición fusionada; la usan el local
+  y el cloud, misma función.
+- **El riesgo abierto es lo más importante y NO se ve mirando las patas de a una.** Un call vendido
+  con acciones que lo cubran es una covered call; sin ellas, pérdida **ILIMITADA**. Pesa como factor
+  del veredicto (−10), sale en rojo en la ficha y se dice en la narrativa. Caso real medido: WMT
+  +P116/−C127 **sin acciones de WMT** no es un collar, es un short sintético desnudo.
+- **La acción NO se absorbe en el grupo**: sigue siendo su propia ficha (es una tenencia real con
+  su propia tesis) y el grupo solo la **usa como contexto** para distinguir collar de short
+  sintético y covered call de call desnudo. Una pata sola tampoco se fusiona, pero igual lleva
+  `strategy` adjunta: ahí vive esa advertencia.
+- **Contratos**: en un spread cada pata es un lado del MISMO contrato (3×750/850 = 3 spreads); en
+  varios tramos de la misma apuesta se SUMAN (3+12 calls = 15). `max` vs `sum` según si todas las
+  patas van para el mismo lado.
+- **Totales de la cartera**: se acumulaban pata por pata y en un spread las patas se compensan —
+  sumar sus valores absolutos inflaba la cartera. `total_value`/`total_cost` se recalculan después
+  del `collapse`.
+- **Estrategia NO direccional** (straddle, strangle, cóndor): el sistema lee DIRECCIÓN y la apuesta
+  es sobre AMPLITUD, así que puntuar bull vs bear sería inventar. El veredicto dice
+  "HOLD — NO DIRECCIONAL" y explica que su lectura no decide nada ahí.
+- **Límites asumidos**: se agrupa por **(subyacente, vencimiento)**, así que un calendar/diagonal
+  queda en patas sueltas en vez de mal clasificado (hay test); y la detección de mariposa/cóndor
+  por strikes no está afinada (caen en "Estructura de N patas", con el payoff igual de correcto).
+
+### Posiciones CORTAS en acciones (mismo bug, sin opciones de por medio)
+`bot.py` nunca abre cortos, pero la cuenta puede tenerlos (caso real: **BRK B −160**). El veredicto
+asumía un tenedor LARGO, así que una lectura alcista contaba como favorable y el chain decía
+"VENDER" — que sobre un corto es la tesis cumpliéndose, y además es ambiguo (¿vender más, o
+cerrar?). Ahora `cantidad < 0` en una acción da `exposure="bajista"`, fav/adv se dan vuelta igual
+que con un put, y hay una rama propia de decisión con el vocabulario correcto (**CUBRIR**, que es
+comprar). Una acción larga sigue **sin** `exposure` y su camino no cambió (hay test).
+
+Tests: `tests/test_invariantes.py` §17 (fusión del spread, payoff exacto del vertical, el call
+comprado sin pérdida ilimitada, el put con ganancia acotada, el call vendido desnudo vs collar vs
+covered call, el factor de riesgo abierto, la narrativa del paquete, el corto en acciones y el
+calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es server-side.
 
 ## Figuras Técnicas (`patterns.py`, 2026-08)
 - **Motor compartido** de figuras chartistas por reglas, extraído del detector que nació en

@@ -3793,15 +3793,40 @@ function _thesisBlock(et){
 // entre el summary del acordeon, el panel de metricas y la tabla de niveles:
 // para saber cuantas acciones tenes y a cuanto habia que mirar tres lugares.
 // El contrato, en una linea: "PUT · $500 · 16-01-2027 · 73d".
-function _optBadge(o){
+function _optBadge(o,st){
   if(!o)return '';
-  let c=o.exposure==='bajista'?'var(--sell)':'var(--buy)';
+  let dir=(st&&st.direction)||o.exposure;
+  let c=dir==='bajista'?'var(--sell)':(dir==='alcista'?'var(--buy)':'var(--hold)');
   let dte=(o.dte!=null)?(' · '+o.dte+'d'):'';
-  let tip=(o.side_label||'')+' — gana si '+(o.underlying||'')+' '+
-          (o.exposure==='bajista'?'CAE':'SUBE')+
+  let gana=dir==='bajista'?'CAE':(dir==='alcista'?'SUBE':
+           (dir==='volatilidad'?'se mueve FUERTE':'se queda quieto'));
+  let tip=(o.side_label||'')+' — gana si '+(o.underlying||'')+' '+gana+
           (o.dte!=null?('. Vence en '+o.dte+' dias.'):'');
+  // Una ESTRATEGIA no tiene un strike: lleva su nombre y los strikes de las patas.
+  let txt=o.is_strategy
+    ?((st&&st.name)||'ESTRATEGIA')+((st&&st.legs)?(' '+st.legs.map(l=>'$'+_n(l.strike,0)).join('/')):'')
+    :((o.right_label||'OPT')+' $'+o.strike.toFixed(0));
   return '<span class="rec-badge" style="background:'+c+'18;color:'+c+';border:1px solid '+c+'44" title="'+
-         tip.replace(/"/g,'&quot;')+'">'+(o.right_label||'OPT')+' $'+o.strike.toFixed(0)+dte+'</span>';
+         tip.replace(/"/g,'&quot;')+'">'+txt+dte+'</span>';
+}
+
+// Las patas del paquete, para que se vea DE QUE esta hecho. Es el detalle que
+// antes estaba repartido en varias tarjetas contradiciendose.
+function _legsTable(st){
+  if(!st||!st.legs||st.legs.length<2)return '';
+  let h='<div class="rec-levels" style="margin-top:8px"><div class="rec-lt">Las patas de la estrategia</div>';
+  for(let l of st.legs){
+    let long=(l.contracts||0)>0;
+    let c=long?'var(--buy)':'var(--sell)';
+    h+='<div class="rec-lr"><span class="rec-ll" style="color:'+c+'">'+
+       (long?'COMPRADA':'VENDIDA')+' '+Math.abs(l.contracts||0)+'x '+l.right_label+' $'+_n(l.strike,2)+
+       '</span><span class="rec-lv">'+
+       (l.premium!=null?('prima $'+_n(l.premium,2)):'')+
+       (l.moneyness?(' <span style="color:var(--muted)">'+l.moneyness+'</span>'):'')+
+       '</span></div>';
+  }
+  if(st.note)h+='<div class="rec-why">'+st.note+'</div>';
+  return h+'</div>';
 }
 
 function _posFacts(pos,rec){
@@ -3812,10 +3837,35 @@ function _posFacts(pos,rec){
   let col=pnlPct>=0?'var(--buy)':'var(--sell)';
   let et=rec.entry_thesis||null;
   let opt=pos.option||rec.option||null;
+  let st=pos.strategy||rec.strategy||null;
   let h='<div class="pfacts">';
   let add=(lab,val,style,tip)=>{h+='<div class="pf"'+(tip?' title="'+tip.replace(/"/g,'&quot;')+'"':'')+
     '><span class="pf-l">'+lab+'</span><span class="pf-v"'+(style?' style="'+style+'"':'')+'>'+val+'</span></div>';};
-  if(opt){
+  if(opt&&opt.is_strategy&&st){
+    // VARIAS PATAS = UNA APUESTA. Primero el nombre de la estructura y su
+    // direccion; las patas van abajo, como detalle.
+    let dirc=st.direction==='bajista'?'var(--sell)':(st.direction==='alcista'?'var(--buy)':'var(--hold)');
+    let gana=st.direction==='bajista'?' CAE':(st.direction==='alcista'?' SUBE':
+             (st.direction==='volatilidad'?' se mueve FUERTE':' se queda quieto'));
+    add('Estrategia',st.name+' &middot; '+st.contracts+'x','color:'+dirc,st.note||'');
+    add('Gana si',(st.underlying||pos.symbol)+gana,'color:'+dirc,
+        'Direccion del paquete completo, no de una pata. Todo el analisis tecnico de la ficha es de la ACCION.');
+    if(st.expiry)add('Vence',st.expiry+(st.dte!=null?(' &middot; '+st.dte+'d'):''),
+        (st.dte!=null&&st.dte<=21)?'color:var(--sell)':null);
+    add(st.is_debit?'Pagaste (neto)':'Cobraste (neto)','$'+fmtN(Math.abs(st.net_cost||0)),null,
+        st.is_debit?'Debito neto del paquete':'Credito neto cobrado al armarlo');
+    let bes=st.breakevens||[];
+    if(bes.length)add('Breakeven'+(bes.length>1?'s':''),bes.map(b=>'$'+_n(b,2)).join(' / '),null,
+        'Precio(s) del subyacente donde el paquete no gana ni pierde al vencimiento');
+    add('Ganancia max.',st.profit_unbounded?'sin techo':('$'+fmtN(st.max_profit||0)),
+        st.profit_unbounded?'color:var(--buy)':null);
+    // La perdida sin tope es lo mas importante de la ficha y no se ve mirando
+    // las patas de a una: va en rojo y con aviso.
+    add('Perdida max.',st.loss_unbounded?'SIN TOPE &#9888;':('$'+fmtN(Math.abs(st.max_loss||0))),
+        st.loss_unbounded?'color:var(--sell);font-weight:700':null,
+        st.loss_unbounded?'Hay una pata vendida sin acciones que la cubran: un salto en contra no tiene piso':'');
+    if(opt.underlying_price)add((st.underlying||'Subyacente')+' hoy','$'+_n(opt.underlying_price,2));
+  }else if(opt){
     // Un contrato se describe por lo que es: cuantos, de que tipo, a que
     // strike, hasta cuando y cuanto se pago de prima. "Costo promedio" y
     // "precio hoy" sin mas son la prima, y leidos al lado de un grafico de
@@ -4061,7 +4111,10 @@ function renderPortfolio(d){
       if(deep.urgency==='high')vHtml+='<span class="pi-urg" title="Requiere decision">&#9888;</span>';
       // El chip de una opcion tiene que decir QUE contrato es: dos puts del
       // mismo activo se veian como dos chips "ROP" identicos.
-      vHtml+='<span class="pi-sym">'+(_o?(p.symbol+' '+_o.right_label+' '+_o.strike.toFixed(0)):p.symbol)+'</span>';
+      let _st=p.strategy||null;
+      vHtml+='<span class="pi-sym">'+(_o?(_o.is_strategy
+                ?(p.symbol+' '+((_st&&_st.name)||'estrategia'))
+                :(p.symbol+' '+_o.right_label+' '+_o.strike.toFixed(0))):p.symbol)+'</span>';
       vHtml+='<span class="pi-pnl" style="color:'+(pnlPct>=0?'var(--buy)':'var(--sell)')+'">'+
              (pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%</span>';
       vHtml+='<span class="pi-act '+cls+'">'+label+'</span>';
@@ -4196,7 +4249,20 @@ function _portAnalDecorate(rec,pos,ch){
   try{
     let _opt=(pos&&pos.option)||(rec&&rec.option)||null;
     let avgCost=pos?pos.costo_promedio:null;
-    if(_opt){
+    let _str=(pos&&pos.strategy)||(rec&&rec.strategy)||null;
+    if(_opt&&_opt.is_strategy&&_str){
+      // Un paquete tiene varios strikes y puede tener dos breakevens. Todos
+      // viven en la escala de la ACCION, que es lo que muestra el grafico.
+      for(let l of (_str.legs||[])){
+        let lg=(l.contracts||0)>0;
+        priceLines.push({price:l.strike,color:'#7c3aed',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,
+          title:(lg?'+':'-')+l.right_label+' '+_n(l.strike,0),
+          tip:(lg?'COMPRADA ':'VENDIDA ')+Math.abs(l.contracts||0)+'x '+l.right_label+' $'+_n(l.strike,2)});
+      }
+      for(let b of (_str.breakevens||[]))
+        priceLines.push({price:b,color:'#2563eb',lineWidth:3,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'BREAKEVEN',
+          tip:'Al vencimiento el paquete no gana ni pierde con '+(_str.underlying||'el subyacente')+' en $'+_n(b,2)});
+    }else if(_opt){
       // El grafico es del SUBYACENTE: la linea de "costo" de un contrato es
       // su PRIMA ($12 sobre una accion de $480) y, como las priceLine con
       // scale:true fuerzan el autoescalado, aplastaba el panel entero. Lo que
@@ -4324,7 +4390,7 @@ function renderPortAnalysisList(positions){
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge '+vc+'" style="min-width:70px;text-align:center">'+vlabel+'</span>';
     html+='<span class="rec-sym">'+disp+'</span>';
-    if(opt)html+=_optBadge(opt);
+    if(opt)html+=_optBadge(opt,p.strategy);
     else if(p.option_unresolved)html+='<span class="rec-badge rb-hold" title="No llegaron los datos del contrato: reinstalar el bridge">OPCION &#9888;</span>';
     let _coName=(rec.fundamentals&&rec.fundamentals.name)?rec.fundamentals.name:'';
     if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
@@ -4352,6 +4418,7 @@ function renderPortAnalysisList(positions){
 
     // 1. TU POSICION
     html+=_posFacts(p,rec);
+    html+=_legsTable(p.strategy);
 
     // 2. LA TESIS DE ENTRADA (+ que paso en el medio)
     html+=_thesisBlock(rec.entry_thesis);
@@ -4416,7 +4483,17 @@ function renderPortAnalysisList(positions){
     let bearPos=_labelIsBearish(rec.signal_label||sig);
     html+=scoreBreakdownHTML(rec.score_parts);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio'+(opt?(' &middot; '+usym):'')+'</div>';
-    if(opt){
+    if(opt&&opt.is_strategy){
+      // Un paquete no tiene strike ni prima unica: lo que lo define son los
+      // breakevens y los topes del payoff.
+      let _st2=p.strategy||{};
+      let _bes=_st2.breakevens||[];
+      for(let i2=0;i2<_bes.length;i2++)
+        html+='<div class="rec-lr"><span class="rec-ll" title="Precio del subyacente donde el paquete no gana ni pierde al vencimiento">Breakeven'+(_bes.length>1?(' '+(i2+1)):'')+'</span><span class="rec-lv">$'+_n(_bes[i2],2)+'</span></div>';
+      html+='<div class="rec-lr"><span class="rec-ll">Ganancia max.</span><span class="rec-lv" style="color:var(--buy)">'+(_st2.profit_unbounded?'sin techo':('$'+fmtN(_st2.max_profit||0)))+'</span></div>';
+      html+='<div class="rec-lr"><span class="rec-ll">Perdida max.</span><span class="rec-lv" style="color:var(--sell)">'+(_st2.loss_unbounded?'SIN TOPE':('$'+fmtN(Math.abs(_st2.max_loss||0))))+'</span></div>';
+      if(opt.underlying_price)html+='<div class="rec-lr"><span class="rec-ll">'+usym+' hoy</span><span class="rec-lv">$'+opt.underlying_price.toFixed(2)+'</span></div>';
+    }else if(opt){
       // Target/Stop/techos/pisos son del SUBYACENTE. Mezclarlos en la misma
       // lista con la prima del contrato (unidades distintas, ordenes de
       // magnitud distintos) es justo lo que hacia ilegible la ficha.
@@ -8977,7 +9054,11 @@ def _compute_position_verdict(data, position, levels=None):
     # eso no es lo mismo: con un PUT comprado (exposure bajista) cada factor
     # bajista juega A FAVOR. Para una accion larga fav==bull y adv==bear, asi
     # que el camino de siempre no se mueve ni un punto.
-    _inv = bool(opt) and opt.get("exposure") == "bajista"
+    # Una posicion CORTA en acciones tiene exposicion bajista igual que un put
+    # comprado: el mismo bug, sin opciones de por medio. `bot.py` nunca abre
+    # cortos, pero la cuenta puede tenerlos (BRK B -160).
+    _short_stock = (not opt) and (pos.get("cantidad") or 0) < 0
+    _inv = (opt.get("exposure") == "bajista") if opt else _short_stock
     for _fac in factors:
         _fac["for_holder"] = ("neutral" if _fac["side"] == "neutral"
                               else (("adv" if _fac["side"] == "bull" else "fav") if _inv
@@ -9036,6 +9117,21 @@ def _compute_position_verdict(data, position, levels=None):
             else:
                 adv += _of("Breakeven", f"faltan {_need:.1f}% hasta ${_be:.2f}: {_bim:.1f} movimientos tipicos — lejos{_vs}", "adv", 10)
 
+        # Forma del payoff. En una estrategia de varias patas es lo primero
+        # que hay que saber: un call vendido sin acciones que lo cubran tiene
+        # perdida ILIMITADA, y eso no se ve mirando las patas de a una.
+        _st = pos.get("strategy") or {}
+        if _st.get("loss_unbounded"):
+            adv += _of("Riesgo abierto",
+                       "la perdida no tiene tope: hay una pata vendida sin cobertura",
+                       "adv", 10)
+        elif _st.get("max_loss") is not None and _st.get("capped"):
+            _mp = _st.get("max_profit")
+            fav += _of("Riesgo acotado",
+                       f"perdida maxima ${abs(_st['max_loss']):,.0f}"
+                       + (f" y ganancia maxima ${_mp:,.0f}" if _mp is not None else "")
+                       + ": el paquete ya esta topeado de los dos lados", "fav", 4)
+
         _mny = opt.get("moneyness")
         _pts = opt.get("pct_to_strike")
         if _mny and _pts is not None:
@@ -9089,9 +9185,26 @@ def _compute_position_verdict(data, position, levels=None):
         _dte = opt.get("dte")
         _long = opt.get("is_long", True)
         _what = opt.get("right_label", "OPCION")
+        if opt.get("is_strategy"):
+            _what = "EL PAQUETE"
         _fav_dom = fav >= 50 and fav >= adv + 10
         _adv_dom = adv >= 50 and adv >= fav + 10
-        if _long and _dte is not None and _dte <= 5:
+        _nodir = opt.get("is_strategy") and not opt.get("exposure")
+        if _nodir:
+            # Straddle/strangle/condor: el sistema lee DIRECCION y esta apuesta
+            # es sobre AMPLITUD. Puntuar bull vs bear aca seria inventar.
+            _sh = (pos.get("strategy") or {}).get("direction")
+            verdict = "HOLD"
+            urgency = "high" if (_dte is not None and _dte <= 7) else "low"
+            headline = ("VENCE YA" if (_dte is not None and _dte <= 5)
+                        else "HOLD — NO DIRECCIONAL")
+            override_reason = (
+                f"Este paquete gana por {'amplitud' if _sh == 'volatilidad' else 'quietud'}, "
+                f"no por direccion: el sistema (MACD/RSI/Koncorde) lee hacia donde va el "
+                f"precio, no cuanto se mueve, asi que su lectura no decide nada aca. "
+                f"{_pnl_text()}." +
+                (f" Quedan {_dte} dias." if _dte is not None else ""))
+        elif _long and _dte is not None and _dte <= 5:
             verdict = "SELL"; urgency = "high"
             headline = f"CERRAR — VENCE EN {_dte}D" if _dte > 0 else "VENCE HOY"
             override_reason = (
@@ -9104,7 +9217,7 @@ def _compute_position_verdict(data, position, levels=None):
             verdict = "SELL" if pnl_pct <= -40 else "REDUCE"
             urgency = "high" if pnl_pct <= -40 else "medium"
             headline = ("CERRAR — TESIS DADA VUELTA" if pnl_pct <= -40
-                        else f"REDUCIR — EL {_what} JUEGA EN CONTRA")
+                        else f"REDUCIR — {_what.upper()} JUEGA EN CONTRA")
         elif pnl_pct >= 80:
             verdict = "REDUCE"; urgency = "medium"
             headline = "TOMAR GANANCIAS"
@@ -9117,6 +9230,30 @@ def _compute_position_verdict(data, position, levels=None):
         else:
             verdict = "HOLD"; urgency = "low"
             headline = "HOLD"
+
+    # ── ACCION EN CORTO ────────────────────────────────────────────────────
+    # El chain de abajo dice "VENDER" cuando la señal es SELL: sobre un corto
+    # eso es la tesis cumpliendose, y ademas "vender" es ambiguo (¿vender mas,
+    # o cerrar?). Lo que se cierra un corto es COMPRANDO.
+    elif _short_stock:
+        _decided = True
+        if adv >= 55 and adv >= fav + 12:
+            verdict = "SELL"; urgency = "high"
+            headline = ("CUBRIR — TOMAR GANANCIAS" if pnl_pct >= 10
+                        else "CUBRIR — LA TESIS SE DIO VUELTA")
+        elif fav >= 55 and fav >= adv + 12:
+            verdict = "HOLD"; urgency = "low"
+            headline = "HOLD — EL CORTO VA A FAVOR"
+        elif pnl_pct <= -15 and fav < 30:
+            verdict = "REDUCE"; urgency = "medium"
+            headline = "REVISAR — PERDIDA EN EL CORTO"
+            override_reason = (
+                f"El corto pierde {abs(pnl_pct):.1f}% y el cuadro no lo respalda "
+                f"(a favor {fav:.0f} vs en contra {adv:.0f}). En un corto la perdida "
+                f"no tiene techo: definir hasta donde se aguanta. {_pnl_text()}.")
+        else:
+            verdict = "HOLD"; urgency = "low"
+            headline = "HOLD (corto)"
 
     if _decided:
         pass
@@ -9222,7 +9359,10 @@ def _compute_position_verdict(data, position, levels=None):
         # la ficha deberia mostrar (el usuario no tiene la accion, tiene el put).
         "fav_score": round(fav, 1),
         "adv_score": round(adv, 1),
-        "exposure": (opt or {}).get("exposure"),
+        # Una accion LARGA no lleva exposure (la UI mantiene su texto de
+        # siempre); un corto y una opcion si.
+        "exposure": ((opt or {}).get("exposure")
+                     or ("bajista" if _short_stock else None)),
         "factors": factors,
         # Estructura tecnica del grafico — la narrativa la reutiliza para no
         # recomputar S/R y canal (mismos numeros en veredicto y recomendacion)
@@ -9321,7 +9461,47 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
             tenure_txt = ""
     # Una orden cargada sin fill no es una entrada: decir "Entraste en X" sobre
     # un LMT que nunca se ejecuto es, directamente, falso.
-    if opt:
+    strat = pos.get("strategy") if opt and opt.get("is_strategy") else None
+    if strat:
+        # Varias patas = UNA apuesta. Narrar cada pata por separado era mostrar
+        # "gana si CAT SUBE" y "gana si CAT CAE" en dos tarjetas del mismo
+        # spread. Lo que se describe es el paquete.
+        _u = strat.get("underlying") or sym
+        _nc = strat.get("contracts") or 0
+        _nm = strat.get("name", "paquete de opciones")
+        # "Tenes un 15 CALLs comprados" no se dice: el nombre ya trae el numero.
+        _art = "" if _nm[:1].isdigit() else "un "
+        p1 = f"Tenes {_art}{_nm} de {_u} "
+        p1 += "/".join(f"${l['strike']:g}" for l in strat.get("legs", []))
+        if _nc and not _art == "":
+            p1 += f", {_nc:.0f} contrato{'s' if _nc != 1 else ''}"
+        if strat.get("expiry"):
+            p1 += f", vencimiento {option_position._fmt_date(strat['expiry'])}"
+            if strat.get("dte") is not None:
+                p1 += f" (faltan {strat['dte']} dias)"
+        _net = strat.get("net_cost") or 0
+        if _net:
+            p1 += (f". Lo armaste a {'debito' if _net > 0 else 'credito'}: "
+                   f"${abs(_net):,.0f} {'pagados' if _net > 0 else 'cobrados'} en neto")
+        p1 += "."
+        _d = strat.get("direction")
+        if _d in ("alcista", "bajista"):
+            p1 += (f" El paquete gana si {_u} "
+                   f"{'SUBE' if _d == 'alcista' else 'CAE'}: todo el analisis tecnico "
+                   f"de abajo es de la ACCION, y hay que leerlo con ese signo.")
+        elif _d == "volatilidad":
+            p1 += (f" El paquete gana si {_u} se mueve FUERTE, para cualquier lado: "
+                   f"la direccion del analisis importa menos que la amplitud.")
+        elif _d == "rango":
+            p1 += (f" El paquete gana si {_u} NO se mueve: cualquier movimiento "
+                   f"grande, para cualquier lado, juega en contra.")
+        if strat.get("note"):
+            p1 += f" ({strat['note']})."
+        if pnl_pct:
+            p1 += f" Vas {pnl_pct:+.1f}% sobre lo que pusiste."
+        parts.append(p1)
+        p1 = None
+    elif opt:
         # "Entraste en ROP a $480" sobre un PUT es falso dos veces: ni el
         # precio es el de la accion ni la tenencia es alcista. Lo primero que
         # tiene que quedar claro es QUE contrato es y EN QUE DIRECCION gana.
@@ -9354,6 +9534,23 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
                 p1 += (f"; el breakeven al vencimiento esta en "
                        f"${opt['breakeven']:.2f} y la accion cotiza ${price:.2f}")
             p1 += "."
+        parts.append(p1)
+        p1 = None
+    elif (not opt) and cantidad < 0:
+        # "Entraste en BRK B ... hoy cotiza mas caro, +X% sobre tu entrada" es
+        # exactamente al reves en un corto: subir te hace perder.
+        p1 = f"Estas CORTO {abs(cantidad):.0f} acciones de {sym}"
+        if tenure_txt:
+            p1 += f", desde {tenure_txt}"
+        if avg_cost > 0:
+            p1 += f", vendidas a un promedio de ${avg_cost:.2f}"
+        if price > 0:
+            p1 += f"; hoy cotiza ${price:.2f}"
+            if avg_cost > 0:
+                p1 += (f", o sea {pnl_pct:+.1f}% "
+                       f"{'a tu favor' if pnl_pct >= 0 else 'en contra'}")
+        p1 += (f". Esta posicion gana si {sym} CAE: todo el analisis de abajo hay "
+               f"que leerlo con ese signo, y la perdida de un corto no tiene techo.")
         parts.append(p1)
         p1 = None
     elif pos.get("is_pending"):
@@ -9500,7 +9697,32 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
             p3_bits.append(f"la tesis se invalida si el precio pierde ${stop_sug:.2f}{sb_txt}")
     if sl_ib:
         p3_bits.append(f"tu stop activo en IB esta en ${sl_ib:.2f}")
-    if opt:
+    if strat:
+        # Lo que decide un paquete: hasta donde puede ganar, hasta donde puede
+        # perder, y donde estan los breakevens.
+        _sb = []
+        _bes = strat.get("breakevens") or []
+        if _bes and price:
+            _txt = " y ".join(f"${b:,.2f}" for b in _bes)
+            _dd = [f"{(b / price - 1) * 100:+.1f}%" for b in _bes]
+            _sb.append(f"el breakeven al vencimiento esta en {_txt} "
+                       f"({', '.join(_dd)} desde ${price:,.2f})")
+        if strat.get("loss_unbounded"):
+            _sb.append("OJO: la perdida NO tiene tope — hay una pata vendida sin "
+                       "acciones que la cubran, asi que un salto fuerte en contra "
+                       "no tiene piso")
+        elif strat.get("max_loss") is not None:
+            _sb.append(f"la perdida maxima es ${abs(strat['max_loss']):,.0f}")
+        if strat.get("profit_unbounded"):
+            _sb.append("la ganancia no tiene techo")
+        elif strat.get("max_profit") is not None:
+            _sb.append(f"la ganancia maxima es ${strat['max_profit']:,.0f}")
+        if opt.get("expected_move_pct"):
+            _sb.append(f"el movimiento tipico de {sym} en los {strat.get('dte')} dias "
+                       f"que quedan es {opt['expected_move_pct']:.1f}%")
+        if _sb:
+            parts.append("Del paquete: " + "; ".join(_sb) + ".")
+    elif opt:
         # Los niveles que deciden un contrato no son el target del sistema
         # sino el breakeven y el strike, medidos contra lo que el subyacente
         # suele moverse en los dias que quedan.
@@ -9562,7 +9784,16 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
         _dirw = "caiga" if _mine == "bajista" else "suba"
         _aligned = (_mine == ("bajista" if is_bearish else "alcista"))
         _bim = opt.get("breakeven_in_moves")
-        if action == "SELL":
+        if strat and not _mine:
+            _sh = strat.get("direction")
+            p4 = (f"Recomendacion: SEGUIR POR AMPLITUD, NO POR SEÑAL. Este paquete gana si "
+                  f"{_u} {'se mueve fuerte' if _sh == 'volatilidad' else 'se queda quieto'}, "
+                  f"asi que la señal del sistema no es la vara: lo que importa es el rango "
+                  f"recorrido contra los breakevens")
+            if _dte is not None:
+                p4 += f" y los {_dte} dias que quedan"
+            p4 += "."
+        elif action == "SELL":
             if _dte is not None and _dte <= 5:
                 p4 = (f"Recomendacion: CERRAR O ROLAR. Faltan {_dte} dias: el valor temporal "
                       f"que quede se va a cero esta semana, y a esta altura solo paga el "
@@ -9609,6 +9840,29 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
             if pnl_pct <= -40:
                 p4 += (f" La posicion ya perdio {abs(pnl_pct):.0f}% de la prima: una opcion no "
                        f"'vuelve' como una accion, el reloj corre en una sola direccion.")
+    elif (not opt) and cantidad < 0:
+        _al = is_bearish
+        if action == "SELL":
+            p4 = (f"Recomendacion: CUBRIR. " +
+                  (f"El corto acumula {pnl_pct:+.0f}% y el cuadro de {sym} se dio vuelta al alza: "
+                   f"recomprar las acciones cierra la posicion con la ganancia hecha."
+                   if pnl_pct >= 10 else
+                   f"El cuadro de {sym} juega en contra del corto y la perdida de un corto no "
+                   f"tiene techo: recomprar y salir."))
+        elif action == "REDUCE":
+            p4 = (f"Recomendacion: ACHICAR EL CORTO. El peso de la evidencia dejo de acompañar "
+                  f"(a favor {fav_sc:.0f} vs en contra {adv_sc:.0f}); recomprar una parte baja la "
+                  f"exposicion sin cerrar la idea.")
+        elif _al:
+            p4 = (f"Recomendacion: MANTENER EL CORTO. La lectura de {sym} sigue bajista, que es "
+                  f"la direccion que el corto necesita")
+            if stop_sug and price and stop_sug > price:
+                p4 += f"; si el precio supera ${stop_sug:.2f} la lectura se anula y conviene cubrir"
+            p4 += "."
+        else:
+            p4 = (f"Recomendacion: MANTENER CON PLAN. El cuadro de {sym} no acompaña al corto hoy. "
+                  f"Definir a que precio se recompra: en un corto la perdida no tiene techo, "
+                  f"asi que el limite se fija ANTES, no cuando duele.")
     elif action == "SELL":
         if pnl_pct >= 15:
             p4 = (f"Recomendacion: VENDER. El mismo sistema que uso el escaner para detectar la entrada "

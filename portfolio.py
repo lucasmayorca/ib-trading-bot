@@ -21,6 +21,7 @@ import pandas as pd
 
 import config
 import option_position
+import option_strategy
 
 # ══════════════════════════════════════════════════════════════
 #  CONSTANTES
@@ -1482,6 +1483,22 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
             enriched["stop_loss"] = None
             enriched["take_profit"] = None
         positions_enriched.append(enriched)
+
+    # Las patas de una misma estrategia son UNA posicion. Dos tarjetas que se
+    # contradicen ("gana si CAT SUBE" / "gana si CAT CAE") son en realidad un
+    # bull call spread: ver option_strategy.py.
+    try:
+        _before = len(positions_enriched)
+        positions_enriched = option_strategy.collapse(positions_enriched)
+        if len(positions_enriched) != _before:
+            # Los totales se acumularon pata por pata y en un spread las patas
+            # se compensan: sumar sus valores absolutos infla la cartera.
+            total_value = sum(p["valor_mercado"] for p in positions_enriched)
+            total_cost = sum(p["costo_total"] for p in positions_enriched)
+            print(f"  [Portfolio] {_before} posiciones -> {len(positions_enriched)} "
+                  f"(patas agrupadas en estrategias)")
+    except Exception as e:
+        print(f"  [Portfolio] Error agrupando estrategias de opciones: {e}")
 
     # Calcular peso de cada posicion
     for p in positions_enriched:

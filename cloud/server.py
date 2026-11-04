@@ -33,6 +33,7 @@ import enrichment
 import market_pulse
 import signals as _signals   # solo para signals.TURN_LAG (ventana del giro)
 import option_position
+import option_strategy
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -1097,6 +1098,20 @@ def api_portfolio():
             "stop_loss": round(sl_price, 2) if sl_price else None,
             "take_profit": round(tp_price, 2) if tp_price else None,
         })
+
+    # Espejo del local: las patas de una misma estrategia son UNA posicion
+    # (ver option_strategy.py). Misma funcion en los dos, para que la ficha
+    # diga lo mismo en el cloud y en el dashboard local.
+    try:
+        _before = len(positions_enriched)
+        positions_enriched = option_strategy.collapse(positions_enriched)
+        if len(positions_enriched) != _before:
+            # Los totales se acumularon pata por pata y en un spread las patas
+            # se compensan: sumar sus valores absolutos infla la cartera.
+            total_value = sum(p["valor_mercado"] for p in positions_enriched)
+            total_cost = sum(p["costo_total"] for p in positions_enriched)
+    except Exception as e:
+        print(f"[PORTFOLIO] Error agrupando estrategias: {e}", flush=True)
 
     for p in positions_enriched:
         if total_value > 0:

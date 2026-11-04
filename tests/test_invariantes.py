@@ -1340,3 +1340,165 @@ def test_una_opcion_sin_contrato_dice_que_no_puede_leerla():
     txt = vw._generate_position_recommendation(
         "ROP", data, pos, vw._compute_price_levels(data), [], v, None)
     assert "Entraste en ROP" not in txt
+
+
+# ── 17. ESTRATEGIAS DE OPCIONES (varias patas = UNA apuesta) ─────────
+# §16 arreglo la lectura de UNA pata. Pero una pata rara vez es la apuesta: un
+# bull call spread (CAT +C750 / -C850) salia como DOS tarjetas que se
+# contradecian ("gana si CAT SUBE" y "gana si CAT CAE"). El mismo descalce, un
+# nivel mas arriba.
+
+import option_strategy as ost
+
+
+def _leg(right, strike, qty, premium, expiry="20261120", sym="CAT"):
+    """Pata ya enriquecida como la deja portfolio.py."""
+    raw = {"symbol": sym, "tipo": "OPT", "cantidad": qty,
+           "costo_promedio": premium * 100, "precio_actual": premium,
+           "right": right, "strike": strike, "expiry": expiry, "multiplier": "100"}
+    o = op.describe(raw)
+    cost = abs(qty) * premium * 100
+    return {"symbol": sym, "tipo": "OPT", "cantidad": qty, "option": o,
+            "costo_promedio": premium, "precio_actual": premium,
+            "costo_total": cost, "valor_mercado": cost, "pnl": 0.0,
+            "pnl_realizado": 0.0, "underlying": sym, "es_etf": False,
+            "key": op.position_key(raw)}
+
+
+def test_las_patas_de_un_spread_son_UNA_posicion():
+    """EL BUG: dos fichas del mismo bull call spread, una diciendo 'gana si CAT
+    SUBE' y la otra 'gana si CAT CAE'."""
+    legs = [_leg("C", 750.0, 3, 10.0), _leg("C", 850.0, -3, 7.09)]
+    out = ost.collapse(legs)
+    assert len(out) == 1
+    st = out[0]["strategy"]
+    assert st["name"] == "Bull call spread"
+    assert st["direction"] == "alcista"
+    assert out[0]["option"]["exposure"] == "alcista"
+    assert out[0]["key"].endswith("_STRAT")
+
+
+def test_el_payoff_de_un_vertical_sale_exacto():
+    """3 spreads de ancho 100: maximo (100 - debito) x 3 x 100, perdida = debito."""
+    legs = [_leg("C", 750.0, 3, 10.0), _leg("C", 850.0, -3, 7.09)]
+    st = ost.collapse(legs)[0]["strategy"]
+    debito = (10.0 - 7.09) * 3 * 100
+    assert round(st["net_cost"], 2) == round(debito, 2)
+    assert round(abs(st["max_loss"]), 2) == round(debito, 2)
+    assert round(st["max_profit"], 2) == round(100 * 3 * 100 - debito, 2)
+    assert st["capped"] and not st["loss_unbounded"]
+    assert len(st["breakevens"]) == 1
+    assert abs(st["breakevens"][0] - (750.0 + 2.91)) < 0.05
+
+
+def test_un_call_comprado_no_tiene_perdida_ilimitada():
+    """Bug de la grilla uniforme: el tramo plano de abajo tocaba el borde y se
+    reportaba 'perdida ILIMITADA' en 15 calls comprados."""
+    legs = [_leg("C", 110.0, 3, 0.20, sym="XLC"), _leg("C", 109.5, 12, 0.14, sym="XLC")]
+    st = ost.collapse(legs)[0]["strategy"]
+    assert st["profit_unbounded"] is True
+    assert st["loss_unbounded"] is False
+    assert round(abs(st["max_loss"]), 2) == round(st["net_cost"], 2)
+    assert st["contracts"] == 15     # dos tramos SUMAN; un spread no
+
+
+def test_un_put_comprado_tiene_ganancia_acotada():
+    """El otro lado del mismo bug: hacia abajo el precio TIENE piso (cero), asi
+    que la ganancia de un put no es ilimitada."""
+    legs = [_leg("P", 440.0, 1, 12.0103, sym="ROP")]
+    g = ost.build(legs)[0]["strategy"]
+    assert g["profit_unbounded"] is False
+    assert round(g["max_profit"], 0) == round((440.0 - 12.0103) * 100, 0)
+    assert round(abs(g["max_loss"]), 2) == round(12.0103 * 100, 2)
+
+
+def test_call_vendido_sin_acciones_es_riesgo_ILIMITADO():
+    """Lo mas importante que no se ve mirando las patas de a una: con acciones
+    es un collar (cubierto); sin ellas, un short sintetico desnudo."""
+    legs = [_leg("P", 116.0, 10, 1.9769, sym="WMT"),
+            _leg("C", 127.0, -10, 2.0531, sym="WMT")]
+    sin = ost.collapse(list(legs))[0]["strategy"]
+    assert "sintetico" in sin["name"].lower()
+    assert sin["loss_unbounded"] is True
+    assert sin["direction"] == "bajista"
+
+    con = ost.build(legs, stock_positions=[{"symbol": "WMT", "cantidad": 1000}])[0]["strategy"]
+    assert con["name"] == "Collar"
+
+
+def test_covered_call_vs_call_desnudo_en_una_pata_sola():
+    """Una pata sola no se fusiona, pero igual lleva la advertencia: es lo que
+    distingue cobrar prima de tener riesgo abierto."""
+    leg = _leg("C", 850.0, -3, 7.09)
+    ost.collapse([leg])
+    assert "ILIMITADO" in leg["strategy"]["note"]
+    leg2 = _leg("C", 850.0, -3, 7.09)
+    g = ost.build([leg2], stock_positions=[{"symbol": "CAT", "cantidad": 300}])[0]
+    assert g["strategy"]["name"] == "Covered call"
+
+
+def test_el_veredicto_avisa_cuando_la_perdida_no_tiene_tope():
+    data = _ana(124.0, "ZONA DE SOBRECOMPRA", "HOLD", 68.0, 0.5, 110.0, 118.0)
+    legs = [_leg("P", 116.0, 10, 1.9769, sym="WMT"),
+            _leg("C", 127.0, -10, 2.0531, sym="WMT")]
+    pos = ost.collapse(legs)[0]
+    pos["option"] = op.enrich(pos["option"], underlying_price=124.0, atr=2.0)
+    pos["pnl_pct"] = 0.0
+    v = vw._compute_position_verdict(data, pos, vw._compute_price_levels(data))
+    riesgo = [f for f in v["factors"] if f["name"] == "Riesgo abierto"]
+    assert riesgo and riesgo[0]["for_holder"] == "adv"
+    txt = vw._generate_position_recommendation(
+        "WMT", data, pos, vw._compute_price_levels(data), [], v, None)
+    assert "no tiene tope" in txt.lower() or "NO tiene tope" in txt
+
+
+def test_la_narrativa_describe_el_paquete_no_la_pata():
+    data = _ana(760.0, "COMPRA INMINENTE", "HOLD", 38.0, -1.0, 700.0, 740.0)
+    pos = ost.collapse([_leg("C", 750.0, 3, 10.0), _leg("C", 850.0, -3, 7.09)])[0]
+    pos["option"] = op.enrich(pos["option"], underlying_price=760.0, atr=15.0)
+    pos["pnl_pct"] = 0.0
+    lv = vw._compute_price_levels(data)
+    v = vw._compute_position_verdict(data, pos, lv)
+    txt = vw._generate_position_recommendation("CAT", data, pos, lv, [], v, None)
+    assert "Bull call spread" in txt and "gana si CAT SUBE" in txt
+    assert "Del paquete" in txt
+    # y NO la frase de una pata suelta
+    assert "Compraste 3 CALLS" not in txt
+
+
+def test_una_accion_corta_no_se_narra_como_larga():
+    """Mismo bug sin opciones de por medio: BRK B -160 acciones. Una lectura
+    alcista es MALA para un corto, y lo que cierra un corto es COMPRAR."""
+    data = _ana(545.0, "COMPRA FUERTE", "BUY", 25.0, -1.5, 500.0, 520.0)
+    pos = {"symbol": "BRK B", "tipo": "STK", "cantidad": -160,
+           "costo_promedio": 545.31, "precio_actual": 545.0, "pnl_pct": 0.0}
+    lv = vw._compute_price_levels(data)
+    v = vw._compute_position_verdict(data, pos, lv)
+    assert v["exposure"] == "bajista"
+    assert v["fav_score"] == v["bear_score"] and v["adv_score"] == v["bull_score"]
+    assert v["verdict"] != "ADD"            # "SUMAR" sobre un corto es absurdo
+    txt = vw._generate_position_recommendation("BRK B", data, pos, lv, [], v, None)
+    assert "Estas CORTO 160 acciones" in txt
+    assert "Entraste en BRK B" not in txt
+    assert "CUBRIR" in txt or "CORTO" in txt
+
+
+def test_una_accion_larga_sigue_sin_exposure():
+    """Red de seguridad: el camino normal no se movio."""
+    data = _ana(545.0, "COMPRA FUERTE", "BUY", 25.0, -1.5, 500.0, 520.0)
+    pos = {"symbol": "BRK B", "tipo": "STK", "cantidad": 160,
+           "costo_promedio": 500.0, "precio_actual": 545.0, "pnl_pct": 9.0}
+    v = vw._compute_position_verdict(data, pos, vw._compute_price_levels(data))
+    assert v["exposure"] is None
+    assert v["fav_score"] == v["bull_score"]
+    assert v["verdict"] == "ADD"
+
+
+def test_un_calendar_no_se_inventa_como_vertical():
+    """Limite asumido: se agrupa por (subyacente, vencimiento), asi que patas
+    de vencimientos distintos quedan separadas en vez de mal clasificadas."""
+    legs = [_leg("C", 750.0, 3, 10.0, expiry="20261120"),
+            _leg("C", 750.0, -3, 6.0, expiry="20261218")]
+    out = ost.collapse(legs)
+    assert len(out) == 2
+    assert all(not p.get("option", {}).get("is_strategy") for p in out)

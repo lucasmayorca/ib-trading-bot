@@ -305,18 +305,22 @@ def enrich(option, underlying_price=None, atr=None, today=None):
     premium_now = o.get("premium_now")
     if o.get("dte") is None or today is not None:
         o["dte"] = _dte(o.get("expiry"), today)
-    if not (spot and spot > 0 and strike):
+    if not (spot and spot > 0):
         return o
-    intrinsic = max(0.0, spot - strike) if right == CALL else max(0.0, strike - spot)
     o["underlying_price"] = spot
-    o["intrinsic"] = round(intrinsic, 4)
-    if premium_now is not None:
-        extr = max(0.0, premium_now - intrinsic)
-        o["extrinsic"] = round(extr, 4)
-        o["extrinsic_pct"] = round(extr / premium_now * 100, 1) if premium_now else None
-    o["moneyness"] = ("ITM" if intrinsic > 0
-                      else ("ATM" if abs(spot - strike) / spot <= 0.01 else "OTM"))
-    o["pct_to_strike"] = round((strike - spot) / spot * 100, 2)
+    # Strike/right no generalizan a una ESTRATEGIA de varias patas (option_
+    # strategy.as_option los manda en None): intrinseco y moneyness se saltean,
+    # pero el breakeven y el movimiento tipico valen igual y son lo que decide.
+    if strike and right in (CALL, PUT):
+        intrinsic = max(0.0, spot - strike) if right == CALL else max(0.0, strike - spot)
+        o["intrinsic"] = round(intrinsic, 4)
+        if premium_now is not None:
+            extr = max(0.0, premium_now - intrinsic)
+            o["extrinsic"] = round(extr, 4)
+            o["extrinsic_pct"] = round(extr / premium_now * 100, 1) if premium_now else None
+        o["moneyness"] = ("ITM" if intrinsic > 0
+                          else ("ATM" if abs(spot - strike) / spot <= 0.01 else "OTM"))
+        o["pct_to_strike"] = round((strike - spot) / spot * 100, 2)
     if be is not None:
         pct_to_be = (be - spot) / spot * 100
         o["pct_to_breakeven"] = round(pct_to_be, 2)
