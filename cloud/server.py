@@ -32,6 +32,7 @@ import calibration
 import enrichment
 import market_pulse
 import signals as _signals   # solo para signals.TURN_LAG (ventana del giro)
+import option_position
 
 # ══════════════════════════════════════════════════════════════
 #  APP SETUP
@@ -843,9 +844,12 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "media": (konc_full.get("media") or [])[start:],
     }
 
-    # Entry fills (BUY) del bridge/flex/seed — para el chart Y la narrativa
+    # Entry fills (BUY) del bridge/flex/seed — para el chart Y la narrativa.
+    # En una ficha de OPCIONES no entran: el bridge los reporta con el symbol
+    # OCC de la pata y su precio es la PRIMA — dibujarla sobre el grafico del
+    # subyacente aplasta la escala. La fecha de entrada sale del episodio.
     entry_fills = []
-    if live_trades:
+    if live_trades and not (position or {}).get("option"):
         for t in live_trades:
             if (t.get("symbol") or "").upper() != sym.upper():
                 continue
@@ -863,6 +867,18 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         entry_fills.sort(key=lambda x: x["time"])
 
     entry_thesis = build_entry_thesis(sym, position, entry_fills, since_map)
+
+    # OPCIONES: el contrato se completa recien aca, con el precio del
+    # subyacente y su ATR (moneyness, breakeven, movimiento tipico). Espejo de
+    # vista_web._build_position_deep_analysis — in place, porque la MISMA
+    # posicion viaja al payload que renderiza la ficha.
+    if (position or {}).get("option"):
+        try:
+            position["option"] = option_position.enrich(
+                position["option"], underlying_price=data.get("price"),
+                atr=levels.get("atr"))
+        except Exception as e:
+            print(f"[PORTFOLIO_DEEP] Option enrich {sym}: {e}", flush=True)
 
     verdict = _compute_position_verdict(data, position, levels)
     try:
@@ -935,6 +951,10 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "verdict_factors": verdict.get("factors", []),
         "bull_score": verdict.get("bull_score", 0),
         "bear_score": verdict.get("bear_score", 0),
+        "fav_score": verdict.get("fav_score", verdict.get("bull_score", 0)),
+        "adv_score": verdict.get("adv_score", verdict.get("bear_score", 0)),
+        "exposure": verdict.get("exposure"),
+        "option": (position or {}).get("option"),
         "verdict_tech": verdict.get("tech", {}),
         "macd_ok": data.get("macd_ok", False),
         "rsi_ok": data.get("rsi_ok", False),
@@ -968,13 +988,14 @@ def api_portfolio():
     live_trades = store.get("live_trades", [])
     since_map = _entry_since_for(request.user_id)
 
-    # Paridad con el local (portfolio.py): la ficha es de ACCIONES/ETFs. Una
-    # posicion de opciones entra con `averageCost` POR CONTRATO (x100) — la
-    # linea de costo se iba 100x fuera de escala — y su symbol es OCC, que
-    # `analysis` nunca tiene, asi que la tarjeta salia sin grafico. Si no queda
-    # ninguna STK se muestran todas, igual que el local.
+    # Paridad con el local (portfolio.py): acciones/ETFs Y opciones. El
+    # contrato se analiza contra su SUBYACENTE (`symbol` ya lo es) pero con la
+    # direccion del tenedor — un PUT comprado gana cuando el subyacente cae.
+    # Ver option_position.py. Las unidades del contrato (averageCost POR
+    # CONTRATO vs marketPrice por accion) se normalizan mas abajo.
     active_positions = [p for p in raw_positions
-                        if p.get("position", 0) != 0 and p.get("secType", "STK") == "STK"]
+                        if p.get("position", 0) != 0
+                        and p.get("secType", "STK") in ("STK", "OPT")]
     if not active_positions:
         active_positions = [p for p in raw_positions if p.get("position", 0) != 0]
 
@@ -1037,13 +1058,33 @@ def api_portfolio():
         sl_price = order_info.get("stop_loss")
         tp_price = order_info.get("take_profit")
 
+        # Opciones: `averageCost` viene POR CONTRATO (prima x multiplicador) y
+        # `marketPrice` POR ACCION. El total en dolares ya se calculo con el de
+        # contrato; lo que se muestra tiene que ser la prima por accion.
+        opt = option_position.describe(p)
+        _is_opt = option_position.is_option(p)
+        cost_show = costo_prom
+        if _is_opt:
+            cost_show = (costo_prom / ((opt or {}).get("multiplier") or 100)
+                         if costo_prom else 0.0)
+            # El SL/TP que IB tenga para el TICKER no es de este contrato.
+            sl_price = tp_price = None
+
         positions_enriched.append({
             "symbol": sym,
             "tipo": p.get("secType", "STK"),
+            "key": option_position.position_key(p),
+            "underlying": opt["underlying"] if opt else sym,
+            "option": opt,
+            # Opcion sin contrato resoluble (bridge viejo): la ficha lo DICE
+            # en vez de narrarla como una tenencia larga de la accion.
+            "option_unresolved": option_position.unresolved(p),
+            "display_symbol": (opt["label"] if opt
+                               else (f"{sym} (opcion)" if option_position.unresolved(p) else sym)),
             "cuenta": "",
             "moneda": "USD",
             "cantidad": cantidad,
-            "costo_promedio": round(costo_prom, 4),
+            "costo_promedio": round(cost_show, 4),
             "precio_actual": round(precio_actual, 2) if precio_actual else None,
             "costo_total": round(costo_total, 2),
             "valor_mercado": round(valor_mercado, 2),
@@ -1090,7 +1131,10 @@ def api_portfolio():
         if sym in indicators_data:
             p["indicadores"] = indicators_data[sym]
         try:
-            deep = _build_cloud_position_analysis(sym, p, analysis.get(sym), live_trades,
+            # El analisis es siempre del SUBYACENTE (para una opcion, `symbol`
+            # ya lo es; explicito para que no se rompa en silencio)
+            usym = p.get("underlying") or sym
+            deep = _build_cloud_position_analysis(usym, p, analysis.get(usym), live_trades,
                                                   since_map=since_map)
             if deep:
                 p["analysis"] = deep
@@ -1139,6 +1183,17 @@ def api_portfolio():
             "metrics": metrics,
             "bridge_connected": store.get("connected", False),
             "portfolio_received": store.get("portfolio_received", False),
+            # "Nunca conectaste un bridge" vs "se cayo el socket hace 4s" son
+            # dos estados MUY distintos y el dashboard los mostraba igual: el
+            # CTA "instala el bridge" aparecia en cada microcorte, al lado de
+            # un header verde que decia Conectado (el header refresca cada 10s,
+            # este panel cada 15s). Si el store tiene datos, el bridge existio.
+            "has_data": bool(
+                store.get("portfolio_received")
+                or store.get("stocks")
+                or store.get("analysis")
+                or store.get("etf_analysis")
+            ),
             "warnings": [],
         }),
         mimetype="application/json",
@@ -1563,7 +1618,11 @@ def _entry_since_for(user_id):
         out = _entry_since_map(_merged_trades_file_path(user_id))
     except Exception as e:
         print(f"[ENTRY_SINCE] User {user_id}: {e}", flush=True)
-    _entry_since_cache[user_id] = (time.time(), out)
+    # Un mapa VACIO casi siempre es un arranque en frio (Flex todavia sin
+    # responder), no "este usuario no tiene historial": clavarlo 10 minutos
+    # deja toda la cartera en "sin historial de entrada" sin motivo.
+    ttl_mark = time.time() if out else time.time() - (_ENTRY_SINCE_TTL - 60)
+    _entry_since_cache[user_id] = (ttl_mark, out)
     return out
 
 
@@ -2443,7 +2502,15 @@ async function fetchStatus(){
     let r=await fetch('/api/status');
     if(r.status===401){window.location='/login';return;}
     let d=await r.json();
+    let _was=_bridgeConnected;
     _bridgeConnected=d.bridge_connected;
+    // El header sabe que el bridge volvio hasta 15s antes que Mi Cartera, que
+    // reintenta con su propio timer. En ese hueco convivian un punto verde
+    // "Conectado" y un cartel diciendo que el bridge no estaba: avisarle al
+    // panel apenas cambia el estado cierra la ventana.
+    if(_bridgeConnected!==_was&&typeof _activeTab!=='undefined'&&_activeTab==='portfolio'){
+      try{loadPortfolio();}catch(e){}
+    }
     document.getElementById('bridge-dot').style.background=_bridgeConnected?'var(--buy)':'var(--sell)';
     document.getElementById('bridge-status-text').textContent=_bridgeConnected
       ?'Conectado — '+d.stocks_count+' acciones'+(d.last_update?' ('+d.last_update+')':'')

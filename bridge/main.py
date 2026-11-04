@@ -143,6 +143,15 @@ class BridgeIB(EWrapper, EClient):
                 "position": float(position), "marketPrice": marketPrice,
                 "marketValue": marketValue, "averageCost": averageCost,
                 "unrealizedPNL": unrealizedPNL, "realizedPNL": realizedPNL,
+                # Datos del CONTRATO. Para una opcion `contract.symbol` es el
+                # SUBYACENTE: sin right/strike/expiry el server no puede saber
+                # si la tenencia gana cuando el subyacente sube o baja, y Mi
+                # Cartera terminaba narrando un PUT como una tenencia larga.
+                "localSymbol": getattr(contract, "localSymbol", "") or "",
+                "right": getattr(contract, "right", "") or "",
+                "strike": float(getattr(contract, "strike", 0) or 0) or None,
+                "expiry": getattr(contract, "lastTradeDateOrContractMonth", "") or "",
+                "multiplier": getattr(contract, "multiplier", "") or "",
             })
 
     def updateAccountValue(self, key, val, currency, accountName):
@@ -342,8 +351,14 @@ def split_held(positions):
 
     Un ETF conocido se manda al universo de ETFs; uno que no esta en la lista
     curada sigue yendo a acciones para que igual tenga historicos/chart en Mi
-    Cartera (ese era el motivo original del merge de tenencias)."""
-    held = {p["symbol"] for p in positions if p.get("secType") == "STK"}
+    Cartera (ese era el motivo original del merge de tenencias).
+
+    OPCIONES: `contract.symbol` de un contrato ES el subyacente, asi que la
+    tenencia tambien tiene que mergearse — si no, Mi Cartera no tiene analisis
+    de la accion y la ficha del contrato sale sin grafico ni veredicto (el
+    mismo agujero que tenia IBIT antes del merge)."""
+    held = {p["symbol"] for p in positions
+            if p.get("secType") in ("STK", "OPT") and p.get("symbol")}
     etfs = {s for s in held if s in _ETF_SET}
     return held - etfs, etfs
 

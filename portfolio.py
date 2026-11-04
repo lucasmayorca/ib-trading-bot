@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import option_position
 
 # ══════════════════════════════════════════════════════════════
 #  CONSTANTES
@@ -130,6 +131,15 @@ class PortfolioMixin:
             "exchange": contract.exchange,
             "moneda": contract.currency,
             "con_id": contract.conId,
+            # Datos del CONTRATO. Para una opcion `contract.symbol` es el
+            # subyacente: sin right/strike/expiry no hay forma de saber si la
+            # tenencia gana cuando el subyacente sube o cuando baja, y la ficha
+            # terminaba narrandola como una accion larga.
+            "local_symbol": getattr(contract, "localSymbol", "") or "",
+            "right": getattr(contract, "right", "") or "",
+            "strike": float(getattr(contract, "strike", 0) or 0) or None,
+            "expiry": getattr(contract, "lastTradeDateOrContractMonth", "") or "",
+            "multiplier": getattr(contract, "multiplier", "") or "",
             "cantidad": float(position),
             "costo_promedio": float(averageCost),
             "precio_mercado": float(marketPrice),
@@ -667,6 +677,10 @@ def get_executions_for_symbol(symbol, all_executions=None):
             "price": float(e.get("price", 0) or 0),
             "qty": float(e.get("shares", 0) or 0),
             "side": (e.get("side") or "").upper(),
+            # IB reporta las opciones con el symbol del SUBYACENTE: sin esto
+            # los fills de un contrato (precio = prima) se mezclaban con los
+            # de la accion y terminaban dibujados sobre su grafico.
+            "sec_type": (e.get("sec_type") or "STK").upper(),
         })
     result.sort(key=lambda x: x["time"])
     return result
@@ -843,6 +857,8 @@ def _classify_position(symbol, sec_type="STK"):
         (es_etf: bool, sector: str)
     """
     symbol_upper = symbol.upper()
+    if str(sec_type).upper() in ("OPT", "FOP"):
+        return False, "Opciones"
     if symbol_upper in ETF_TICKERS:
         sector = ETF_SECTOR_MAP.get(symbol_upper, "ETF Otro")
         return True, sector
@@ -1347,17 +1363,21 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
             portfolio_cache_ts = now
         return result
 
-    # Filtrar posiciones de acciones USD con cantidad > 0
+    # Acciones/ETFs Y OPCIONES. Las opciones se analizan contra su SUBYACENTE
+    # (`contract.symbol` ya ES el subyacente) pero con la direccion del
+    # tenedor: un PUT comprado gana cuando el subyacente cae. Ver
+    # option_position.py y _compute_position_verdict.
     active_positions = [
         p for p in raw_positions
-        if p["cantidad"] != 0 and p["tipo"] == "STK"
+        if p["cantidad"] != 0 and p["tipo"] in ("STK", "OPT")
     ]
 
     if not active_positions:
-        print("  [Portfolio] No hay posiciones activas de tipo STK.")
+        print("  [Portfolio] No hay posiciones activas de tipo STK/OPT.")
         active_positions = [p for p in raw_positions if p["cantidad"] != 0]
 
     # 2. Enriquecer posiciones (precios y P&L ya vienen de IB via updatePortfolio)
+    # Para una opcion el simbolo del analisis es el SUBYACENTE.
     symbols = list(set(p["symbol"] for p in active_positions))
 
     # 2b. SL / TP por simbolo (open_orders ya se pidio arriba, antes del
@@ -1413,13 +1433,23 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
         sl_price = order_info.get("stop_loss")
         tp_price = order_info.get("take_profit")
 
+        # Opciones: `costo_promedio` de IB viene POR CONTRATO (prima x100) y
+        # `precio_mercado` POR ACCION. El total en dolares usa el de contrato
+        # (ya calculado arriba); lo que se MUESTRA y lo que se compara contra
+        # el strike tiene que ser la prima por accion.
+        opt = option_position.describe(p)
+        cost_show = costo_prom
+        if option_position.is_option(p):
+            mult = (opt or {}).get("multiplier") or 100
+            cost_show = costo_prom / mult if costo_prom else 0.0
+
         enriched = {
             "symbol": sym,
             "tipo": p.get("tipo", "STK"),
             "cuenta": p.get("cuenta", ""),
             "moneda": p.get("moneda", "USD"),
             "cantidad": cantidad,
-            "costo_promedio": round(costo_prom, 4),
+            "costo_promedio": round(cost_show, 4),
             "precio_actual": round(precio_actual, 2) if precio_actual else None,
             "costo_total": round(costo_total, 2),
             "valor_mercado": round(valor_mercado, 2),
@@ -1432,6 +1462,25 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
             "stop_loss": round(sl_price, 2) if sl_price else None,
             "take_profit": round(tp_price, 2) if tp_price else None,
         }
+        # Identidad de la tenencia. `symbol` de una opcion es el subyacente,
+        # asi que dos contratos del mismo activo (o la accion y una opcion
+        # sobre ella) compartian id de acordeon y key de chart.
+        enriched["key"] = option_position.position_key(p)
+        enriched["underlying"] = opt["underlying"] if opt else sym
+        if opt:
+            enriched["option"] = opt
+            enriched["display_symbol"] = opt["label"]
+            # El SL/TP que IB tenga para el TICKER no es de este contrato.
+            enriched["stop_loss"] = None
+            enriched["take_profit"] = None
+        elif option_position.is_option(p):
+            # Opcion sin contrato resoluble (bridge viejo, sin right/strike).
+            # Se marca para que la ficha lo DIGA en vez de narrarla como una
+            # tenencia larga de la accion.
+            enriched["option_unresolved"] = True
+            enriched["display_symbol"] = f"{sym} (opcion)"
+            enriched["stop_loss"] = None
+            enriched["take_profit"] = None
         positions_enriched.append(enriched)
 
     # Calcular peso de cada posicion
@@ -1513,7 +1562,10 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
         print(f"  [Portfolio] Construyendo analisis profundo para {len(positions_enriched)} posiciones...")
         for p in positions_enriched:
             try:
-                deep = build_position_analysis_fn(p["symbol"], p)
+                # El analisis corre sobre el SUBYACENTE (para una opcion,
+                # `symbol` ya lo es, pero dejarlo explicito evita que un
+                # cambio futuro lo rompa en silencio).
+                deep = build_position_analysis_fn(p.get("underlying") or p["symbol"], p)
                 if deep:
                     p["analysis"] = deep
                     # Refrescar indicadores basicos con lo profundo (mantiene compat)
@@ -1729,6 +1781,27 @@ def _generate_portfolio_alerts(positions, composition, indicators):
         sym = p["symbol"]
         deep = p.get("analysis") or {}
         ind = indicators.get(sym, {}) or {}
+        opt = p.get("option")
+        # Una opcion no se alerta por la señal del SUBYACENTE: con un PUT
+        # comprado, "VENTA 3/3" en el ticker es la tesis cumpliendose, y la
+        # alerta decia "VENDER ROP". El unico criterio valido es el veredicto,
+        # que ya pondera la direccion del tenedor y el reloj del contrato.
+        if opt:
+            v = deep.get("verdict") or ""
+            if v in ("SELL", "REDUCE"):
+                alerts.append({
+                    "level": "danger" if v == "SELL" else "warning",
+                    "action": "SELL" if v == "SELL" else "REDUCE",
+                    "symbol": p.get("key") or sym,
+                    "price": p.get("precio_actual") or 0,
+                    "headline": (deep.get("headline") or "REVISAR") + " — " +
+                                (p.get("display_symbol") or sym),
+                    "reason": (deep.get("verdict_summary")
+                               or deep.get("verdict_reason") or ""),
+                    "strength": round(deep.get("strength", 0) or 0, 1),
+                    "pnl_pct": round(p.get("pnl_pct", 0) or 0, 2),
+                })
+            continue
         signal = deep.get("signal") or ind.get("signal", "HOLD")
         strength = deep.get("strength") or ind.get("strength", 0)
         conds = deep.get("conditions_met") or ind.get("conditions_met", 0)

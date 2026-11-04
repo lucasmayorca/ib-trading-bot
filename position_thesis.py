@@ -293,7 +293,7 @@ def _status_of(entry, now, pat_broken, flips):
     return "debilitada"
 
 
-def _summary(sym, entry, now, status, flips, held, pnl_pct, dd_pct, degraded):
+def _summary(sym, entry, now, status, flips, held, degraded):
     e_lab, n_lab = entry["signal_label"], now["signal_label"]
     e_day = entry["as_of"]
     bits = []
@@ -349,20 +349,28 @@ def _summary(sym, entry, now, status, flips, held, pnl_pct, dd_pct, degraded):
         else:
             bits.append(f"En {held} ruedas el cuadro no cambio de lado ni una vez.")
 
-    if pnl_pct is not None and dd_pct is not None and dd_pct < -1:
-        bits.append(f"Vas {pnl_pct:+.1f}% desde tu costo, con una caida maxima de "
-                    f"{dd_pct:.1f}% en el camino.")
-    elif pnl_pct is not None:
-        bits.append(f"Vas {pnl_pct:+.1f}% desde tu costo.")
-
     return " ".join(bits)
+
+
+def _pnl_bit(pnl_pct, dd_pct):
+    """La frase del P&L va APARTE del resumen cacheado: el resto de la tesis se
+    calcula una vez por dia, pero el P&L depende del precio vivo de IB. Y tiene
+    que coincidir con el del header de la ficha — mezclar el cierre del analisis
+    con el precio vivo es el bug que CLAUDE.md ya documento en Mi Cartera."""
+    if pnl_pct is None:
+        return ""
+    if dd_pct is not None and dd_pct < -1:
+        return (f" Vas {pnl_pct:+.1f}% desde tu costo, con una caida maxima de "
+                f"{dd_pct:.1f}% en el camino.")
+    return f" Vas {pnl_pct:+.1f}% desde tu costo." 
 
 
 # ══════════════════════════════════════════════════════════════
 #  API publica
 # ══════════════════════════════════════════════════════════════
 
-def build(sym, entry_date, df, avg_cost=None, today=None, max_milestones=6):
+def build(sym, entry_date, df, avg_cost=None, today=None, max_milestones=6,
+          pnl_pct=None):
     """Tesis de entrada vs. hoy para una posicion abierta.
 
     df: DataFrame OHLCV diario (idealmente 5Y) con columnas
@@ -379,7 +387,7 @@ def build(sym, entry_date, df, avg_cost=None, today=None, max_milestones=6):
     key = (sym, _norm_date(entry_date) if entry_date else None,
            today or _norm_date(df["date"].iloc[-1]), round(float(avg_cost or 0), 4))
     if key in _cache:
-        return _cache[key]
+        return _with_pnl(_cache[key], pnl_pct)
 
     try:
         out = _build(sym, entry_date, df, avg_cost, max_milestones)
@@ -390,7 +398,18 @@ def build(sym, entry_date, df, avg_cost=None, today=None, max_milestones=6):
     if len(_cache) > _CACHE_MAX:
         _cache.clear()
     _cache[key] = out
-    return out
+    return _with_pnl(out, pnl_pct)
+
+
+def _with_pnl(out, pnl_pct):
+    """Copia con la frase del P&L vivo pegada al resumen (el cacheado no la lleva)."""
+    if not out:
+        return out
+    r = dict(out)
+    live = pnl_pct if pnl_pct is not None else out.get("pnl_pct")
+    r["pnl_pct"] = live
+    r["summary"] = (out.get("summary") or "") + _pnl_bit(live, out.get("drawdown_pct"))
+    return r
 
 
 def _build(sym, entry_date, df, avg_cost, max_milestones):
@@ -475,6 +494,7 @@ def _build(sym, entry_date, df, avg_cost, max_milestones):
         "milestones": _trim(events, max_milestones),
         "milestones_total": len(events),
         "degraded": degraded,
-        "summary": _summary(sym, entry, now, status, flips, held,
-                            _num(pnl_pct, 1), _num(dd_pct, 1), degraded),
+        "summary": _summary(sym, entry, now, status, flips, held, degraded),
+        # el resumen se guarda SIN la frase del P&L: _with_pnl la pega con el
+        # precio vivo cada vez que se sirve
     }

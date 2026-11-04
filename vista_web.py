@@ -32,6 +32,7 @@ import enrichment
 import patterns
 import market_pulse
 import position_thesis
+import option_position
 
 CHART_BARS = 252  # ~1 year of trading days
 MA_PERIODS = [200, 100, 50, 20]  # SMA periods
@@ -757,6 +758,70 @@ def _recent_swing(ohlc, lookback=20):
             min(b["low"] for b in recent))
 
 
+#: Ventana de la confluencia con una media mayor, en ATR. Credito pleno hasta
+#: MA_NEAR_FULL_ATR y rampa lineal hasta cero en MA_NEAR_ZERO_ATR.
+MA_NEAR_FULL_ATR = 1.0
+MA_NEAR_ZERO_ATR = 2.0
+#: Puntos de bonus: la media mas cercana + el extra si la otra tambien confluye.
+MA_CONFLUENCE_PTS = 4.0
+MA_CONFLUENCE_EXTRA_PTS = 2.0
+
+
+def _major_ma_proximity(mas, price, atr):
+    """Cercania del precio a las medias MAYORES (SMA200 y SMA100), en ATR.
+
+    La 200 y la 100 son las referencias que mas gente mira, asi que el precio
+    tiende a reaccionar ahi: entrar apoyado en una de ellas (como soporte si el
+    precio esta encima, como techo si esta debajo) no es lo mismo que entrar en
+    el aire a 6 ATR de toda estructura. El ROL no cambia el credito — la media
+    importa como nivel, de los dos lados — pero si se nombra, porque el usuario
+    necesita saber si la media esta abajo sosteniendo o arriba tapando.
+
+    Credito por media: 1.0 mientras |precio - media| <= MA_NEAR_FULL_ATR,
+    rampa lineal hasta 0 en MA_NEAR_ZERO_ATR. Es una RAMPA y no un escalon por
+    el mismo motivo que la penalizacion contra-tendencia: un umbral duro parte
+    en dos dias consecutivos que no se distinguen.
+
+    EVIDENCIA (217 simbolos x 10 años, mismo motor de ejecucion que el
+    backtest; `tools/medir_ma.py`): las entradas de señal a menos de
+    1 ATR de la 200 o la 100 rinden +0.90% por trade (n=94) contra +0.63% del
+    total comprando; ponderando por el credito de la rampa, +1.06% vs +0.63%
+    (p=0.136 por permutacion, NO significativo) comprando y +0.38% vs -0.31%
+    vendiendo (p=0.022). Sobre entradas INCONDICIONALES (95.107 por
+    lado) la cercania no aporta nada (-0.03 pp comprando, t=-0.95): no es una
+    propiedad de la media, es una interaccion con la señal — y por eso el
+    bonus es acotado y no un componente de peso completo.
+
+    Devuelve lista de dicts {key, name, dist_atr, role, credit}, ordenada por
+    credito descendente, con solo las medias que aportan algo (credit > 0).
+    """
+    out = []
+    if not price or price <= 0 or not atr or atr <= 0:
+        return out
+    for key, name in (("sma200_val", "SMA200"), ("sma100_val", "SMA100")):
+        v = (mas or {}).get(key)
+        if not v or v <= 0:
+            continue
+        dist = abs(price - v) / atr
+        if dist <= MA_NEAR_FULL_ATR:
+            credit = 1.0
+        elif dist >= MA_NEAR_ZERO_ATR:
+            credit = 0.0
+        else:
+            credit = ((MA_NEAR_ZERO_ATR - dist) /
+                      (MA_NEAR_ZERO_ATR - MA_NEAR_FULL_ATR))
+        if credit <= 0:
+            continue
+        out.append({"key": key, "name": name, "level": float(v),
+                    "dist_atr": dist, "credit": credit,
+                    "role": "soporte" if price > v else "techo"})
+    # Por credito y, a igual credito (las dos dentro de la banda plana), por
+    # distancia: la que se nombra primero tiene que ser la que el precio esta
+    # tocando, no la que figura primero en la lista.
+    out.sort(key=lambda d: (-d["credit"], d["dist_atr"]))
+    return out
+
+
 def _label_is_bearish(label):
     """True if a signal_label represents bearish/sell-side positioning.
 
@@ -1165,14 +1230,14 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     mas = (data.get("chart") or {}).get("mas", {})
     sma200 = mas.get("sma200_val")
     price = data.get("price", 0) or 0
+    _ohlc_sc = (data.get("chart") or {}).get("ohlc", [])
+    _atr_sc = _compute_atr(_ohlc_sc) if len(_ohlc_sc) >= 15 else None
+    if not _atr_sc or _atr_sc <= 0:
+        _atr_sc = price * 0.02          # mismo fallback que _compute_price_levels
     if sma200 and price > 0:
         # Counter-trend = buying below the 200-SMA (downtrend) or selling above it
         # (uptrend). Mirrors the backtest's `with_trend` tagging.
         counter_trend = (is_bearish and price > sma200) or (not is_bearish and price < sma200)
-        _ohlc_sc = (data.get("chart") or {}).get("ohlc", [])
-        _atr_sc = _compute_atr(_ohlc_sc) if len(_ohlc_sc) >= 15 else None
-        if not _atr_sc or _atr_sc <= 0:
-            _atr_sc = price * 0.02      # mismo fallback que _compute_price_levels
         _ramp = min(1.0, abs(price - sma200) / _atr_sc)
         if counter_trend and _ramp > 0:
             # Base penalty; deepen it when trend-aligned trades won < 50%.
@@ -1213,6 +1278,47 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
                              f"{n_side} trades medidos fueron contra-tendencia")
             score -= pen
             _part("Penalizacion contra-tendencia", -pen, None, _why)
+
+    # Confluencia con una MEDIA MAYOR (SMA200 / SMA100): bonus ACOTADO.
+    #
+    # Entrar apoyado en la 200 o la 100 — como soporte si el precio esta encima,
+    # como techo si esta debajo — no es lo mismo que entrar en el aire a 6 ATR
+    # de toda estructura: son las dos referencias que mas gente mira y el precio
+    # reacciona ahi. El credito sale de `_major_ma_proximity` (rampa, no
+    # escalon) y el bonus es la media mas cercana + un extra si la OTRA tambien
+    # confluye (la 100 y la 200 pegadas son una zona, no dos niveles sueltos).
+    #
+    # Es un BONUS, nunca un castigo: estar lejos de las medias es el caso normal
+    # (el 76% de las señales de compra medidas), no un defecto. Y queda acotado
+    # a 6 puntos a proposito — la evidencia es de signo consistente pero NO
+    # significativa del lado comprador (ver `_major_ma_proximity`): +0.43 pp
+    # por trade con p=0.136 comprando, +0.69 pp con p=0.022 vendiendo, y cero
+    # efecto sobre entradas incondicionales. Un peso de componente completo
+    # (20-30 pts) estaria describiendo una certeza que la muestra no da.
+    #
+    # Interaccion con la penalizacion contra-tendencia (arriba): las dos miran
+    # la distancia a la SMA200 y las dos se suavizan cerca de la media, pero no
+    # cuentan lo mismo dos veces — aquella dice "pegado a la media el regimen no
+    # esta definido, no castigues el lado"; esta dice "pegado a la media hay un
+    # nivel de referencia, suma". De hecho el bucket que mejor rindio comprando
+    # (-1.5 a -0.5 ATR de la SMA200: +2.13% por trade, n=63) es justo el que la
+    # pena contra-tendencia golpeaba casi entero.
+    _ma_near = _major_ma_proximity(mas, price, _atr_sc)
+    if _ma_near:
+        _ma_bonus = MA_CONFLUENCE_PTS * _ma_near[0]["credit"]
+        if len(_ma_near) > 1:
+            _ma_bonus += MA_CONFLUENCE_EXTRA_PTS * _ma_near[1]["credit"]
+        score += _ma_bonus
+        _ma_txt = " y ".join(
+            f"{d['name']} ${d['level']:,.2f} a {d['dist_atr']:.1f} ATR "
+            f"({d['role']})" for d in _ma_near)
+        _part("Confluencia con media mayor", _ma_bonus,
+              MA_CONFLUENCE_PTS + MA_CONFLUENCE_EXTRA_PTS,
+              f"precio apoyado en {_ma_txt} — las señales dentro de esta banda "
+              f"(<2 ATR de la 200 o la 100) rindieron +0.81% vs +0.59% del resto "
+              f"comprando (NO significativo, t=0.6) y +0.42% vs -0.37% vendiendo "
+              f"(t=2.1), 217 simbolos x 10A; sobre entradas al azar la cercania "
+              f"no aporta nada, es una interaccion con la señal")
 
     # Confluencia con figura tecnica (patterns.py): bonus/malus ACOTADO — una
     # figura chartista alineada con el label refuerza el setup; una confirmada
@@ -1731,8 +1837,17 @@ def _generate_rationale(sym, data, levels=None):
     if trend:
         parts.append("Tendencia: " + ", ".join(trend))
 
-    # 4. Volatility
     atr_val = _compute_atr(ohlc) if len(ohlc) >= 15 else None
+
+    # 3b. Confluencia con una media mayor (la misma que suma en _score_stock):
+    # si el score la premia, la tesis tiene que decir por que.
+    for _m in _major_ma_proximity(mas, price, atr_val)[:1]:
+        parts.append(
+            f"Media mayor: el precio opera a {_m['dist_atr']:.1f} ATR de su "
+            f"{_m['name']} (${_m['level']:,.2f}), que queda como {_m['role']} "
+            f"— es la referencia que mas se mira para entrar y suma en el score")
+
+    # 4. Volatility
     if atr_val and price > 0:
         atr_pct = (atr_val / price) * 100
         vlabel = "baja" if atr_pct < 1.5 else ("moderada" if atr_pct < 3.0 else "alta")
@@ -2085,6 +2200,21 @@ def _generate_thesis(sym, data, levels, fund):
     if ma_parts:
         lines.append("Medias móviles: " + ", ".join(ma_parts) + "." + cross_txt)
 
+    # Confluencia con una media mayor: el mismo calculo que suma en
+    # `_score_stock` (`_major_ma_proximity`), dicho con palabras. Si el score
+    # la premia, la tesis tiene que explicar por que — y de que lado queda la
+    # media, que es lo que el usuario necesita para decidir la entrada.
+    _near = _major_ma_proximity(mas, price, levels.get("atr") or 0)
+    if _near:
+        _n0 = _near[0]
+        _txt = (f"Confluencia: el precio esta a {_n0['dist_atr']:.1f} ATR de la "
+                f"{_n0['name']} (${_n0['level']:,.2f}), que opera como "
+                f"{_n0['role']}")
+        if len(_near) > 1:
+            _txt += (f", con la {_near[1]['name']} (${_near[1]['level']:,.2f}) "
+                     f"tambien en zona")
+        lines.append(_txt + " — entrar apoyado en una media mayor suma en el score.")
+
     # --- Line 4: Institutional flow (Koncorde azul) ---
     if azul is not None:
         if azul > 5:
@@ -2303,16 +2433,35 @@ def compute_top3(cache, min_target_pct=None, universe=None):
             # conviction (25) + robustness (15) components, no edge credit.
             c1 = min(strength / 5.1, 1.0) * 25
             c2 = min(confidence / 100, 1.0) * 15
-            s = c1 + c2
+            # La confluencia con una media mayor tambien va aca: es un hecho
+            # ESTRUCTURAL del grafico, no una estimacion de edge, y si cambiara
+            # de peso segun que rama armo el Top el mismo setup tendria dos
+            # scores distintos sin que cambie nada real.
+            _p_px = data.get("price", 0) or 0
+            _p_atr = _compute_atr(ohlc) if len(ohlc) >= 15 else None
+            _near = _major_ma_proximity((data.get("chart") or {}).get("mas", {}),
+                                        _p_px, _p_atr or _p_px * 0.02)
+            c3 = 0.0
+            if _near:
+                c3 = MA_CONFLUENCE_PTS * _near[0]["credit"]
+                if len(_near) > 1:
+                    c3 += MA_CONFLUENCE_EXTRA_PTS * _near[1]["credit"]
+            s = c1 + c2 + c3
             if s > 0:
                 scored.append((sym, data, round(s, 1), [
                     {"lab": "Fuerza de la señal", "pts": round(c1, 1), "max": 25,
                      "why": f"{strength:.1f} de 5.1"},
                     {"lab": "Confianza del backtest", "pts": round(c2, 1), "max": 15,
                      "why": f"{confidence:.0f}/100"},
+                ] + ([{"lab": "Confluencia con media mayor", "pts": round(c3, 1),
+                       "max": MA_CONFLUENCE_PTS + MA_CONFLUENCE_EXTRA_PTS,
+                       "why": "precio apoyado en " + " y ".join(
+                           f"{d['name']} ${d['level']:,.2f} a {d['dist_atr']:.1f} ATR "
+                           f"({d['role']})" for d in _near)}] if c3 else []) + [
                     {"lab": "TOTAL", "pts": round(s, 1), "max": 100,
                      "why": "score relajado: el setup no califica para el ranking "
-                            "completo, se puntua solo conviccion + robustez"},
+                            "completo, se puntua conviccion + robustez (+ la "
+                            "confluencia con una media mayor si la hay)"},
                 ]))
         scored.sort(key=lambda x: x[2], reverse=True)
 
@@ -2906,6 +3055,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .vf-bar{height:4px;background:var(--glass);border-radius:2px;overflow:hidden}
 .vf-bar i{display:block;height:100%;border-radius:2px}
 .vf-w{text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+.pth-grid.pth-solo{grid-template-columns:1fr}
 @media(max-width:700px){.pth-grid,.vf-grid{grid-template-columns:1fr}}
 .port-analysis{margin-top:12px}
 .port-analysis-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;letter-spacing:-.2px}
@@ -3612,11 +3762,16 @@ function _thesisBlock(et){
   h+='<div class="rec-thesis-title">La tesis de entrada &mdash; <span style="color:'+col+'">'+
      (et.status_label||'')+'</span></div>';
   h+='<div class="rec-thesis-text">'+(et.summary||'')+'</div>';
-  if(et.entry||et.now){
+  // Sin entrada reconstruida no se dibuja una columna vacia que dice "sin
+  // datos": el mensaje de arriba ya explica por que falta, y una caja hueca al
+  // lado de otra llena parece un render roto.
+  if(et.entry){
     h+='<div class="pth-grid">';
     h+=_thCol('CUANDO COMPRASTE', et.entry, et.entry_date||'');
     h+=_thCol('HOY', et.now, (et.bars_held!=null?(et.bars_held+' ruedas despues'):''));
     h+='</div>';
+  }else if(et.now){
+    h+='<div class="pth-grid pth-solo">'+_thCol('EL CUADRO DE HOY', et.now, '')+'</div>';
   }
   let ms=et.milestones||[];
   if(ms.length){
@@ -3637,6 +3792,18 @@ function _thesisBlock(et){
 // Los datos duros de la posicion, juntos y arriba de todo. Estaban repartidos
 // entre el summary del acordeon, el panel de metricas y la tabla de niveles:
 // para saber cuantas acciones tenes y a cuanto habia que mirar tres lugares.
+// El contrato, en una linea: "PUT · $500 · 16-01-2027 · 73d".
+function _optBadge(o){
+  if(!o)return '';
+  let c=o.exposure==='bajista'?'var(--sell)':'var(--buy)';
+  let dte=(o.dte!=null)?(' · '+o.dte+'d'):'';
+  let tip=(o.side_label||'')+' — gana si '+(o.underlying||'')+' '+
+          (o.exposure==='bajista'?'CAE':'SUBE')+
+          (o.dte!=null?('. Vence en '+o.dte+' dias.'):'');
+  return '<span class="rec-badge" style="background:'+c+'18;color:'+c+';border:1px solid '+c+'44" title="'+
+         tip.replace(/"/g,'&quot;')+'">'+(o.right_label||'OPT')+' $'+o.strike.toFixed(0)+dte+'</span>';
+}
+
 function _posFacts(pos,rec){
   if(!pos)return '';
   let f=(v,n)=>(v==null?'—':'$'+v.toFixed(n==null?2:n));
@@ -3644,13 +3811,45 @@ function _posFacts(pos,rec){
   let px=(pos.precio_actual||rec.price||0), pnl=pos.pnl||0, pnlPct=pos.pnl_pct||0;
   let col=pnlPct>=0?'var(--buy)':'var(--sell)';
   let et=rec.entry_thesis||null;
+  let opt=pos.option||rec.option||null;
   let h='<div class="pfacts">';
   let add=(lab,val,style,tip)=>{h+='<div class="pf"'+(tip?' title="'+tip.replace(/"/g,'&quot;')+'"':'')+
     '><span class="pf-l">'+lab+'</span><span class="pf-v"'+(style?' style="'+style+'"':'')+'>'+val+'</span></div>';};
+  if(opt){
+    // Un contrato se describe por lo que es: cuantos, de que tipo, a que
+    // strike, hasta cuando y cuanto se pago de prima. "Costo promedio" y
+    // "precio hoy" sin mas son la prima, y leidos al lado de un grafico de
+    // la accion parecen el precio de la accion.
+    let dirc=opt.exposure==='bajista'?'var(--sell)':'var(--buy)';
+    add('Contrato',Math.abs(qty).toFixed(0)+'x '+(opt.right_label||'OPT')+' $'+opt.strike.toFixed(2)+
+        ' '+(opt.side_label||''),'color:'+dirc,'Posicion en opciones sobre '+(opt.underlying||''));
+    add('Gana si',(opt.underlying||'')+(opt.exposure==='bajista'?' CAE':' SUBE'),'color:'+dirc,
+        'La direccion del subyacente que necesita tu posicion. Todo el analisis tecnico de la ficha es de la ACCION.');
+    if(opt.expiry)add('Vence',opt.expiry+(opt.dte!=null?(' · '+opt.dte+'d'):''),
+        (opt.dte!=null&&opt.dte<=21)?'color:var(--sell)':null,
+        'Dias al vencimiento. En una opcion el tiempo juega: el valor temporal se consume solo.');
+    add('Prima',cost>0?f(cost):'—',null,'Lo que pagaste por accion (IB informa el costo POR CONTRATO: aca ya esta dividido por '+(opt.multiplier||100)+')');
+    add('Prima hoy',f(px));
+    if(opt.breakeven!=null)add('Breakeven',f(opt.breakeven),null,
+        'Precio del subyacente al que no ganas ni perdes al vencimiento');
+    if(opt.underlying_price)add((opt.underlying||'Subyacente')+' hoy',f(opt.underlying_price),null,
+        'Precio de la ACCION — es contra este que se leen el strike, el breakeven y todos los niveles del grafico');
+    if(opt.moneyness)add('Moneyness',opt.moneyness+(opt.pct_to_strike!=null?(' · strike '+(opt.pct_to_strike>0?'+':'')+opt.pct_to_strike.toFixed(1)+'%'):''),
+        null,'ITM = tiene valor intrinseco. OTM = toda la prima es valor temporal.');
+  }else if(pos.option_unresolved){
+    // Bridge viejo: sabemos que es una opcion y nada mas. Decirlo es mejor
+    // que mostrar "2 acciones a $12.40" al lado de un grafico de $480.
+    add('Contrato',qty.toFixed(0)+' contratos de opciones','color:var(--hold)',
+        'No llegaron los datos del contrato (tipo, strike, vencimiento): reinstalar el bridge');
+    add('Prima',cost>0?f(cost):'—');
+    add('Prima hoy',f(px));
+  }else{
   add('Cantidad',qty.toFixed(0)+(pos.es_etf?' cuotas':' acciones'));
   add('Costo prom.',cost>0?f(cost):'—',null,'Lo que te costo cada accion, segun IB');
   add('Precio hoy',f(px));
-  add('P&L',(pnl>=0?'+':'-')+'$'+Math.abs(pnl).toFixed(2)+' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%)','color:'+col);
+  }
+  add('P&L',(pnl>=0?'+':'-')+'$'+Math.abs(pnl).toFixed(2)+' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%)','color:'+col,
+      opt?'Sobre la prima pagada, no sobre el precio del subyacente':null);
   if(pos.valor_mercado!=null)add('Valor',f(pos.valor_mercado));
   if(pos.peso_portafolio!=null)add('Peso',(pos.peso_portafolio*100).toFixed(1)+'%',null,'Cuanto pesa en tu cartera');
   if(et&&et.entry_date)add('Entrada',et.entry_date+(et.bars_held!=null?(' · '+et.bars_held+'r'):''),null,
@@ -3673,8 +3872,13 @@ function _condLine(name,ok,detail){
 function _verdictFactors(rec){
   let fs=rec.verdict_factors||[];
   if(!fs.length)return '';
-  let bull=fs.filter(f=>f.side==='bull').sort((a,b)=>b.weight-a.weight).slice(0,4);
-  let bear=fs.filter(f=>f.side==='bear').sort((a,b)=>b.weight-a.weight).slice(0,4);
+  // `for_holder` ya viene resuelto del server: para una accion larga es
+  // bull->fav / bear->adv, y para un PUT comprado esta dado vuelta. Agrupar
+  // por bull/bear mostraba los factores bajistas bajo "EN CONTRA" cuando son
+  // exactamente la tesis del tenedor cumpliendose.
+  let _h=f=>f.for_holder||(f.side==='bull'?'fav':(f.side==='bear'?'adv':'neutral'));
+  let bull=fs.filter(f=>_h(f)==='fav').sort((a,b)=>b.weight-a.weight).slice(0,5);
+  let bear=fs.filter(f=>_h(f)==='adv').sort((a,b)=>b.weight-a.weight).slice(0,5);
   if(!bull.length&&!bear.length)return '';
   let mx=Math.max(1,...fs.map(f=>f.weight||0));
   let colHtml=(arr,lab,color)=>{
@@ -3688,10 +3892,12 @@ function _verdictFactors(rec){
     }
     return h+'</div>';
   };
+  let _fav=(rec.fav_score!=null?rec.fav_score:(rec.bull_score||0));
+  let _adv=(rec.adv_score!=null?rec.adv_score:(rec.bear_score||0));
   let h='<div class="vfacts"><div class="vf-title">Por que este veredicto'+
-        '<span class="pth-col-sub"> &middot; alcista '+(rec.bull_score||0).toFixed(0)+
-        ' vs bajista '+(rec.bear_score||0).toFixed(0)+'</span></div><div class="vf-grid">';
-  h+=colHtml(bull,'A FAVOR DE AGUANTAR','var(--buy)');
+        '<span class="pth-col-sub"> &middot; a favor '+_fav.toFixed(0)+
+        ' vs en contra '+_adv.toFixed(0)+'</span></div><div class="vf-grid">';
+  h+=colHtml(bull,(rec.exposure?'A FAVOR DE TU POSICION':'A FAVOR DE AGUANTAR'),'var(--buy)');
   h+=colHtml(bear,'EN CONTRA','var(--sell)');
   return h+'</div></div>';
 }
@@ -3732,6 +3938,13 @@ function _renderPortWaitingState(d){
   if(disconnected && (typeof _bridgeConnected!=='undefined' && _bridgeConnected)){
     disconnected=false;
   }
+  // El CTA de "instala el bridge" es para quien NUNCA conectó uno. Si el
+  // servidor ya tiene datos de esta cuenta (has_data), el bridge existe y
+  // esto es un microcorte del socket — que flapea de verdad: se vieron
+  // sockets reconectando cada pocos minutos. Mostrar ahi el instalador
+  // hacia parecer que el sistema se habia desconfigurado solo.
+  let reconnecting=disconnected && d.has_data===true;
+  if(reconnecting)disconnected=false;
   if(disconnected){
     html='<div class="tab-loading" style="padding:60px 20px">'+
       '<div class="tab-loading-text" style="color:var(--text);max-width:520px;line-height:1.5">'+
@@ -3741,6 +3954,14 @@ function _renderPortWaitingState(d){
       '</div>'+
       '</div>';
     _schedulePortWaitingRetry(15000);
+  }else if(reconnecting){
+    html='<div class="tab-loading" style="padding:60px 20px">'+
+      '<div class="tab-loading-spinner"></div>'+
+      '<div class="tab-loading-text" style="max-width:480px">Reconectando con tu bridge...<br>'+
+      '<span style="color:var(--muted);font-size:11px">El enlace con el servidor se corto un momento. '+
+      'Tu bridge sigue instalado y los datos vuelven solos en cuanto se restablezca.</span></div>'+
+      '</div>';
+    _schedulePortWaitingRetry(5000);
   }else{
     html='<div class="tab-loading" style="padding:60px 20px">'+
       '<div class="tab-loading-spinner"></div>'+
@@ -3833,10 +4054,14 @@ function renderPortfolio(d){
       let pnlPct=(p.pnl_pct||0);
       let et=deep.entry_thesis||null;
       let dot=_thDot(et);
-      vHtml+='<button class="port-idx-chip '+cls+'" onclick="scrollToPortPosition(\''+p.symbol+'\')"'+
-             ' title="'+(deep.headline||label).replace(/"/g,'&quot;')+'">';
+      let _k=p.key||p.symbol;
+      let _o=p.option||deep.option||null;
+      vHtml+='<button class="port-idx-chip '+cls+'" onclick="scrollToPortPosition(\''+_k+'\')"'+
+             ' title="'+((_o?(_o.label_full+' — '):'')+(deep.headline||label)).replace(/"/g,'&quot;')+'">';
       if(deep.urgency==='high')vHtml+='<span class="pi-urg" title="Requiere decision">&#9888;</span>';
-      vHtml+='<span class="pi-sym">'+p.symbol+'</span>';
+      // El chip de una opcion tiene que decir QUE contrato es: dos puts del
+      // mismo activo se veian como dos chips "ROP" identicos.
+      vHtml+='<span class="pi-sym">'+(_o?(p.symbol+' '+_o.right_label+' '+_o.strike.toFixed(0)):p.symbol)+'</span>';
       vHtml+='<span class="pi-pnl" style="color:'+(pnlPct>=0?'var(--buy)':'var(--sell)')+'">'+
              (pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%</span>';
       vHtml+='<span class="pi-act '+cls+'">'+label+'</span>';
@@ -3969,8 +4194,19 @@ function _portAnalDecorate(rec,pos,ch){
   // del sistema + SL/TP REALES activos en IB + orden pendiente + fills)
   let priceLines=[],markers=[];
   try{
+    let _opt=(pos&&pos.option)||(rec&&rec.option)||null;
     let avgCost=pos?pos.costo_promedio:null;
-    if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:3,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'TU COSTO',scale:true,
+    if(_opt){
+      // El grafico es del SUBYACENTE: la linea de "costo" de un contrato es
+      // su PRIMA ($12 sobre una accion de $480) y, como las priceLine con
+      // scale:true fuerzan el autoescalado, aplastaba el panel entero. Lo que
+      // SI vive en la escala de la accion es el strike y el breakeven.
+      if(_opt.strike)priceLines.push({price:_opt.strike,color:'#7c3aed',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'Strike',
+        tip:'Strike de tu '+(_opt.right_label||'opcion')+': $'+_opt.strike.toFixed(2)});
+      if(_opt.breakeven!=null)priceLines.push({price:_opt.breakeven,color:'#2563eb',lineWidth:3,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'BREAKEVEN',
+        tip:'Al vencimiento no ganas ni perdes si '+(_opt.underlying||'el subyacente')+' esta en $'+_opt.breakeven.toFixed(2)+
+            ' (strike '+(_opt.right_label==='CALL'?'+':'-')+' prima $'+(_opt.premium!=null?_opt.premium.toFixed(2):'?')+')'});
+    }else if(avgCost!=null&&avgCost>0)priceLines.push({price:avgCost,color:'#2563eb',lineWidth:3,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'TU COSTO',scale:true,
       tip:'Tu costo promedio de compra: $'+avgCost.toFixed(2)});
     if(rec.target)priceLines.push({price:rec.target,color:'#0b7a4b',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Target',tip:'Objetivo del sistema'+(rec.target_basis?(' — '+rec.target_basis):'')});
     if(rec.stop_loss)priceLines.push({price:rec.stop_loss,color:'#c22436',lineWidth:2,lineStyle:LightweightCharts.LineStyle.Solid,axisLabelVisible:true,title:'Stop',tip:'Invalidación del análisis'+(rec.stop_basis?(' — ubicado '+rec.stop_basis):'')});
@@ -3991,11 +4227,17 @@ function _portAnalDecorate(rec,pos,ch){
     let fills=(rec&&rec.entry_fills)||[];
     let byDay={};
     for(let f of fills){
-      if(!f||!f.time||!f.price)continue;let d=f.time;
-      if(!byDay[d]){byDay[d]={time:d,price:f.price,qty:f.qty||0,n:1};}
-      else{let g=byDay[d];let tot=g.qty+(f.qty||0);g.price=tot>0?((g.price*g.qty)+(f.price*(f.qty||0)))/tot:f.price;g.qty=tot;g.n++;}
+      // En un contrato el fill viaja con `premium` y sin `price`: el marcador
+      // marca la FECHA de entrada (LW los ubica por tiempo, no por precio).
+      if(!f||!f.time)continue;
+      if(f.price==null&&f.premium==null)continue;
+      let d=f.time;
+      let v=(f.price!=null?f.price:f.premium);
+      if(!byDay[d]){byDay[d]={time:d,price:v,qty:f.qty||0,n:1,prem:f.price==null};}
+      else{let g=byDay[d];let tot=g.qty+(f.qty||0);g.price=tot>0?((g.price*g.qty)+(v*(f.qty||0)))/tot:v;g.qty=tot;g.n++;}
     }
-    for(let d in byDay){let g=byDay[d];markers.push({time:g.time,position:'belowBar',color:'#2563eb',shape:'arrowUp',text:'C '+g.qty.toFixed(0)+' @ $'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':'')});}
+    for(let d in byDay){let g=byDay[d];markers.push({time:g.time,position:'belowBar',color:'#2563eb',shape:'arrowUp',
+      text:'C '+g.qty.toFixed(0)+' @ '+(g.prem?'prima ':'')+'$'+g.price.toFixed(2)+(g.n>1?' ('+g.n+')':'')});}
   }catch(e){}
   try{markers=markers.concat(_figDrawMarkers(rec&&rec.pattern,ch&&ch.ohlc));}catch(e){}
   try{markers=markers.concat(_candleMarkers(rec&&rec.candles,ch&&ch.ohlc));}catch(e){}
@@ -4010,20 +4252,23 @@ function _portAnalDestroy(sym){scDestroy(_scReg['port_'+sym]);_scReg['port_'+sym
 
 function renderPortAnalCharts(sym,rec,pos,period){
   if(!rec)return;
-  if(!period)period=_portAnalPeriods[sym]||'1Y';
-  _portAnalPeriods[sym]=period;
-  let bar=document.getElementById('portanal_pb_'+sym);
+  // `sym` es la CLAVE de la tenencia (para una opcion, no es un ticker). El
+  // grafico y los datos son siempre del SUBYACENTE.
+  let key=(pos&&pos.key)||sym, usym=(pos&&pos.underlying)||sym;
+  if(!period)period=_portAnalPeriods[key]||'1Y';
+  _portAnalPeriods[key]=period;
+  let bar=document.getElementById('portanal_pb_'+key);
   if(bar)bar.querySelectorAll('.rec-period-btn').forEach(b=>b.classList.toggle('active',b.dataset.p===period));
 
   // Preferir cache del escáner (5Y completo), sino datos pre-sliceados del rec
-  let fullData=(_data&&_data.results)?_data.results[sym]:null;
+  let fullData=(_data&&_data.results)?_data.results[usym]:null;
   let ch=fullData?fullData.chart:null;
   if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
 
-  scRenderStack({key:'port_'+sym,symbol:sym,chart:ch,period:period,
+  scRenderStack({key:'port_'+key,symbol:usym,chart:ch,period:period,
     decorate:_portAnalDecorate(rec,pos,ch),heights:{candle:380,ind:124},
-    getPeriod:()=>_portAnalPeriods[sym]});
-  _portAnalCharts[sym]=1;
+    getPeriod:()=>_portAnalPeriods[key]});
+  _portAnalCharts[key]=1;
 }
 
 function setPortAnalPeriod(sym,period){
@@ -4035,6 +4280,9 @@ function setPortAnalPeriod(sym,period){
 
 function _findPortPosition(sym){
   if(!_portData||!_portData.positions)return null;
+  // `symbol` de una opcion es el SUBYACENTE: dos contratos del mismo activo
+  // (o la accion y una opcion sobre ella) devolvian siempre el primero.
+  for(let p of _portData.positions){if((p.key||p.symbol)===sym)return p;}
   for(let p of _portData.positions){if(p.symbol===sym)return p;}
   return null;
 }
@@ -4050,7 +4298,12 @@ function renderPortAnalysisList(positions){
   let periods=['ALL','5Y','1Y','3M','1M','1W','1D'];
   let html='';
   for(let p of positions){
-    let sym=p.symbol;
+    // La CLAVE de la tenencia manda en el DOM y en los charts; el subyacente
+    // manda en los datos; `display_symbol` es lo que se lee.
+    let sym=p.key||p.symbol;
+    let usym=p.underlying||p.symbol;
+    let disp=p.display_symbol||p.symbol;
+    let opt=p.option||(p.analysis&&p.analysis.option)||null;
     let rec=p.analysis||{};
     let sig=rec.signal||'HOLD';
     let verdict=rec.verdict||'HOLD';
@@ -4070,10 +4323,15 @@ function renderPortAnalysisList(positions){
     html+='<summary>';
     html+='<span class="rec-arrow">&#9654;</span>';
     html+='<span class="rec-rank-badge '+vc+'" style="min-width:70px;text-align:center">'+vlabel+'</span>';
-    html+='<span class="rec-sym">'+sym+'</span>';
+    html+='<span class="rec-sym">'+disp+'</span>';
+    if(opt)html+=_optBadge(opt);
+    else if(p.option_unresolved)html+='<span class="rec-badge rb-hold" title="No llegaron los datos del contrato: reinstalar el bridge">OPCION &#9888;</span>';
     let _coName=(rec.fundamentals&&rec.fundamentals.name)?rec.fundamentals.name:'';
     if(_coName)html+='<span class="rec-name" title="'+_coName.replace(/"/g,'&quot;')+'">'+_coName+'</span>';
-    html+='<span class="rec-price">$'+curPrice.toFixed(2)+'</span>';
+    // En una opcion `curPrice` es la PRIMA del contrato: el precio del
+    // subyacente, que es contra el que se leen todos los niveles, va aparte.
+    html+='<span class="rec-price"'+(opt?' title="Prima del contrato"':'')+'>$'+curPrice.toFixed(2)+'</span>';
+    if(opt&&opt.underlying_price)html+='<span class="rec-name" title="Precio del subyacente">'+usym+' $'+opt.underlying_price.toFixed(2)+'</span>';
     let sl2=rec.signal_label||sig;
     let bc2=sig==='BUY'?'rb-buy':(sig==='SELL'?'rb-sell':(sl2.includes('INMINENTE')&&sl2.includes('COMPRA')?'rb-buy-near':(sl2.includes('INMINENTE')&&sl2.includes('VENTA')?'rb-sell-near':'rb-hold')));
     html+='<span class="rec-badge '+bc2+'">'+sl2+'</span>';
@@ -4157,9 +4415,20 @@ function renderPortAnalysisList(positions){
     html+='</div>';
     let bearPos=_labelIsBearish(rec.signal_label||sig);
     html+=scoreBreakdownHTML(rec.score_parts);
-    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
-    html+='<div class="rec-lr"><span class="rec-ll">Costo Prom.</span><span class="rec-lv lv-entry">$'+avgCost.toFixed(2)+'</span></div>';
-    html+='<div class="rec-lr"><span class="rec-ll">Precio Actual</span><span class="rec-lv">$'+curPrice.toFixed(2)+'</span></div>';
+    html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio'+(opt?(' &middot; '+usym):'')+'</div>';
+    if(opt){
+      // Target/Stop/techos/pisos son del SUBYACENTE. Mezclarlos en la misma
+      // lista con la prima del contrato (unidades distintas, ordenes de
+      // magnitud distintos) es justo lo que hacia ilegible la ficha.
+      html+='<div class="rec-lr"><span class="rec-ll">Prima pagada</span><span class="rec-lv lv-entry">$'+avgCost.toFixed(2)+'</span></div>';
+      html+='<div class="rec-lr"><span class="rec-ll">Prima hoy</span><span class="rec-lv">$'+curPrice.toFixed(2)+'</span></div>';
+      html+='<div class="rec-lr"><span class="rec-ll">Strike</span><span class="rec-lv">$'+opt.strike.toFixed(2)+(opt.moneyness?(' <span style="color:var(--muted)">'+opt.moneyness+'</span>'):'')+'</span></div>';
+      if(opt.breakeven!=null)html+='<div class="rec-lr"><span class="rec-ll" title="Precio del subyacente al que la posicion no gana ni pierde al vencimiento">Breakeven</span><span class="rec-lv">$'+opt.breakeven.toFixed(2)+'</span></div>';
+      if(opt.underlying_price)html+='<div class="rec-lr"><span class="rec-ll">'+usym+' hoy</span><span class="rec-lv">$'+opt.underlying_price.toFixed(2)+'</span></div>';
+    }else{
+      html+='<div class="rec-lr"><span class="rec-ll">Costo Prom.</span><span class="rec-lv lv-entry">$'+avgCost.toFixed(2)+'</span></div>';
+      html+='<div class="rec-lr"><span class="rec-ll">Precio Actual</span><span class="rec-lv">$'+curPrice.toFixed(2)+'</span></div>';
+    }
     if(rec.target){
       let tSign=bearPos?'-':'+';
       let tPct=rec.target_pct?(' ('+tSign+Math.abs(rec.target_pct).toFixed(0)+'%)'):'';
@@ -5733,7 +6002,7 @@ function renderTop3(top3,asOfRef){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades entre si — NO es probabilidad de acierto ni retorno esperado. Suma: fuerza de la señal (25) + expectancy historica del setup (30) + profit factor (15) + confianza del backtest (15) + win rate (10) + señal activa 3/3 (5); menos penalizacion si opera contra la SMA200, mas/menos la figura tecnica si tiene edge medido. Con pocos trades historicos los componentes de backtest se acercan a su valor NEUTRAL (sin evidencia no es lo mismo que evidencia de que es malo). El desglose completo esta al abrir la tarjeta."><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades entre si — NO es probabilidad de acierto ni retorno esperado. Suma: fuerza de la señal (25) + expectancy historica del setup (30) + profit factor (15) + confianza del backtest (15) + win rate (10) + señal activa 3/3 (5); menos penalizacion si opera contra la SMA200, mas hasta 6 por confluencia con la SMA200/SMA100 (soporte o techo), mas/menos la figura tecnica si tiene edge medido. Con pocos trades historicos los componentes de backtest se acercan a su valor NEUTRAL (sin evidencia no es lo mismo que evidencia de que es malo). El desglose completo esta al abrir la tarjeta."><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
     html+='<span class="rec-sm" title="Fuerza de la señal (0-5.1): 1 punto por cada indicador que confirma (MACD, RSI, Koncorde) mas bonus por condiciones extremas. 3.0 = los tres alineados; arriba de 3 = ademas intensos. Es la foto de HOY, no tiene nada de historico."><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     let cf=r.confidence!=null?r.confidence:null;
     let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
@@ -6630,7 +6899,7 @@ function renderEtfTop3(top3,asOfRef){
     html+='<span class="rec-sum-metrics">';
     let obj=recObjetivo(r);
     if(obj)html+='<span class="rec-sm" title="Movimiento esperado al objetivo'+(r.horizon?' · horizonte '+r.horizon:'')+'"><span class="lab">Objetivo</span><span class="val" style="color:'+obj.col+'">'+obj.txt+'</span></span>';
-    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades entre si — NO es probabilidad de acierto ni retorno esperado. Suma: fuerza de la señal (25) + expectancy historica del setup (30) + profit factor (15) + confianza del backtest (15) + win rate (10) + señal activa 3/3 (5); menos penalizacion si opera contra la SMA200, mas/menos la figura tecnica si tiene edge medido. Con pocos trades historicos los componentes de backtest se acercan a su valor NEUTRAL (sin evidencia no es lo mismo que evidencia de que es malo). El desglose completo esta al abrir la tarjeta."><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
+    html+='<span class="rec-sm" title="Ranking 0-100 para ordenar oportunidades entre si — NO es probabilidad de acierto ni retorno esperado. Suma: fuerza de la señal (25) + expectancy historica del setup (30) + profit factor (15) + confianza del backtest (15) + win rate (10) + señal activa 3/3 (5); menos penalizacion si opera contra la SMA200, mas hasta 6 por confluencia con la SMA200/SMA100 (soporte o techo), mas/menos la figura tecnica si tiene edge medido. Con pocos trades historicos los componentes de backtest se acercan a su valor NEUTRAL (sin evidencia no es lo mismo que evidencia de que es malo). El desglose completo esta al abrir la tarjeta."><span class="lab">Score</span><span class="val" style="color:var(--accent)">'+r.score+'</span></span>';
     html+='<span class="rec-sm" title="Fuerza de la señal (0-5.1): 1 punto por cada indicador que confirma (MACD, RSI, Koncorde) mas bonus por condiciones extremas. 3.0 = los tres alineados; arriba de 3 = ademas intensos. Es la foto de HOY, no tiene nada de historico."><span class="lab">Fuerza</span><span class="val" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'</span></span>';
     let cf=r.confidence!=null?r.confidence:null;
     let cfCol=cf!=null?(cf>=60?'var(--buy)':(cf>=30?'var(--hold)':'var(--sell)')):'var(--muted)';
@@ -8433,6 +8702,31 @@ def _compute_position_verdict(data, position, levels=None):
     # Precio vivo de IB para todo lo que se compara con el P&L de la posicion
     # (data["price"] es el cierre del analisis y puede diferir intradia)
     px_live = pos.get("precio_actual") or price
+    # OPCIONES: todo lo que sigue mide el SUBYACENTE, asi que el precio de
+    # referencia es el del subyacente — `precio_actual` de un contrato es su
+    # PRIMA, y compararla contra la SMA200 de la accion es el bug que hacia
+    # que la ficha narrara un PUT como si fuera una tenencia larga.
+    opt = pos.get("option") or None
+    if opt:
+        px_live = opt.get("underlying_price") or price
+    elif pos.get("option_unresolved"):
+        # Opcion de la que no se pudo resolver el contrato (bridge viejo, sin
+        # right/strike/expiry). Sin saber si es call o put no hay direccion, y
+        # correr el motor igual es volver al bug: decia VENDER sobre un put
+        # cuya tesis se estaba cumpliendo. Mejor decir que no se puede leer.
+        return {
+            "verdict": "HOLD", "urgency": "low",
+            "headline": "SIN DATOS DEL CONTRATO",
+            "reason": ("Esta tenencia es una opcion, pero no llegaron los datos del "
+                       "contrato (tipo, strike, vencimiento), asi que no se sabe si "
+                       "gana cuando el subyacente sube o cuando baja — y sin eso "
+                       "cualquier veredicto seria un volado. El grafico de abajo es "
+                       "de la ACCION. Para que la ficha funcione hay que reinstalar "
+                       "el bridge."),
+            "trend": "flat", "bull_score": 0, "bear_score": 0,
+            "fav_score": 0, "adv_score": 0, "exposure": None,
+            "factors": [], "tech": {},
+        }
 
     lv = levels or {}
     target_sug = lv.get("target") or 0
@@ -8677,6 +8971,85 @@ def _compute_position_verdict(data, position, levels=None):
     elif cnt > 0:
         _f("Backtest 5Y", f"muestra chica ({cnt} señales), confianza baja", "neutral", 0)
 
+    # === A FAVOR / EN CONTRA DEL TENEDOR ===
+    # bull/bear describen al SUBYACENTE. Lo que decide que hacer con la
+    # tenencia es si el subyacente va hacia donde al TENEDOR le conviene, y
+    # eso no es lo mismo: con un PUT comprado (exposure bajista) cada factor
+    # bajista juega A FAVOR. Para una accion larga fav==bull y adv==bear, asi
+    # que el camino de siempre no se mueve ni un punto.
+    _inv = bool(opt) and opt.get("exposure") == "bajista"
+    for _fac in factors:
+        _fac["for_holder"] = ("neutral" if _fac["side"] == "neutral"
+                              else (("adv" if _fac["side"] == "bull" else "fav") if _inv
+                                    else ("fav" if _fac["side"] == "bull" else "adv")))
+    fav = bear if _inv else bull
+    adv = bull if _inv else bear
+
+    # === FACTORES PROPIOS DEL CONTRATO (reloj y distancia al breakeven) ===
+    # Un analisis de la accion no los ve, y son la mitad de la decision: una
+    # tesis que se cumple tarde, con la opcion vencida, no sirve de nada.
+    if opt:
+        def _of(name, detail, holder_side, w):
+            factors.append({"name": name, "detail": detail, "side": "option",
+                            "for_holder": holder_side, "weight": w})
+            return w
+
+        _dte = opt.get("dte")
+        _long = opt.get("is_long", True)
+        if _dte is not None:
+            # El tiempo corre en contra del comprador y a favor del vendedor
+            _decay_side = "adv" if _long else "fav"
+            _ext = opt.get("extrinsic_pct")
+            _ext_txt = f", {_ext:.0f}% de la prima es valor temporal" if _ext else ""
+            if _dte <= 7:
+                w = 12
+            elif _dte <= 21:
+                w = 8
+            elif _dte <= 45:
+                w = 4
+            else:
+                w = 0
+            if w:
+                _t = (f"vence en {_dte} dias{_ext_txt}" if _long
+                      else f"vence en {_dte} dias{_ext_txt}: el tiempo corre a tu favor")
+                if _decay_side == "fav":
+                    fav += _of("Reloj del contrato", _t, "fav", w)
+                else:
+                    adv += _of("Reloj del contrato", _t, "adv", w)
+            else:
+                _of("Reloj del contrato", f"faltan {_dte} dias: hay tiempo de sobra", "neutral", 0)
+
+        _bim = opt.get("breakeven_in_moves")
+        _be = opt.get("breakeven")
+        _em = opt.get("expected_move_pct")
+        if _bim is not None and _be:
+            _need = abs(opt.get("pct_to_breakeven") or 0)
+            _vs = f" (movimiento tipico a {_dte} dias: {_em:.1f}%)" if _em else ""
+            if _bim <= 0:
+                fav += _of("Breakeven", f"el subyacente ya paso tu breakeven ${_be:.2f}", "fav", 10)
+            elif _bim <= 0.5:
+                fav += _of("Breakeven", f"faltan {_need:.1f}% hasta ${_be:.2f}: medio movimiento tipico{_vs}", "fav", 6)
+            elif _bim <= 1.0:
+                _of("Breakeven", f"faltan {_need:.1f}% hasta ${_be:.2f}: un movimiento tipico{_vs}", "neutral", 3)
+            elif _bim <= 2.0:
+                adv += _of("Breakeven", f"faltan {_need:.1f}% hasta ${_be:.2f}: {_bim:.1f} movimientos tipicos{_vs}", "adv", 6)
+            else:
+                adv += _of("Breakeven", f"faltan {_need:.1f}% hasta ${_be:.2f}: {_bim:.1f} movimientos tipicos — lejos{_vs}", "adv", 10)
+
+        _mny = opt.get("moneyness")
+        _pts = opt.get("pct_to_strike")
+        if _mny and _pts is not None:
+            _d = abs(_pts)
+            if _mny == "ITM":
+                fav += _of("Moneyness", f"{_mny}: el strike ${opt['strike']:.2f} quedo {_d:.1f}% "
+                           f"{'abajo' if _pts < 0 else 'arriba'} — la opcion tiene valor intrinseco", "fav", 5)
+            elif _mny == "ATM":
+                _of("Moneyness", f"ATM: el subyacente esta pegado al strike ${opt['strike']:.2f}", "neutral", 0)
+            else:
+                adv += _of("Moneyness", f"OTM: el strike ${opt['strike']:.2f} esta {_d:.1f}% "
+                           f"{'arriba' if _pts > 0 else 'abajo'}, toda la prima es valor temporal",
+                           "adv", 6 if _d > 10 else 3)
+
     # === Derivar trend del score ===
     if bull > bear + 12:
         trend = "up"
@@ -8690,15 +9063,65 @@ def _compute_position_verdict(data, position, levels=None):
     dist_to_stop_ib_pct = ((px_live - sl_ib) / px_live * 100) if (sl_ib and px_live and sl_ib > 0) else None
 
     def _pnl_text():
+        if opt:
+            # La prima y el precio del subyacente son unidades distintas:
+            # ponerlas en la misma frase era parte del "lo analiza como accion"
+            _pm = opt.get("premium")
+            _pn = opt.get("premium_now")
+            if _pm and _pn:
+                return f"Prima ${_pm:.2f} -> ${_pn:.2f} ({pnl_pct:+.1f}%)"
+            return f"P&L {pnl_pct:+.1f}% sobre la prima"
         if avg_cost > 0:
             return f"Costo ${avg_cost:.2f}, precio ${px_live:.2f} ({pnl_pct:+.1f}%)"
         return f"P&L {pnl_pct:+.1f}%"
 
     # === DETERMINAR VEREDICTO ===
     override_reason = None
+    _decided = False
 
+    # ── OPCIONES ──────────────────────────────────────────────────────────
+    # Un contrato no se decide con el chain de abajo: ahi "señal SELL 3/3"
+    # equivale a vender, y con un PUT comprado eso es la tesis cumpliendose.
+    # Se decide con fav/adv (que ya incorporan la direccion del tenedor) mas
+    # el reloj, que para una accion no existe.
+    if opt:
+        _decided = True
+        _dte = opt.get("dte")
+        _long = opt.get("is_long", True)
+        _what = opt.get("right_label", "OPCION")
+        _fav_dom = fav >= 50 and fav >= adv + 10
+        _adv_dom = adv >= 50 and adv >= fav + 10
+        if _long and _dte is not None and _dte <= 5:
+            verdict = "SELL"; urgency = "high"
+            headline = f"CERRAR — VENCE EN {_dte}D" if _dte > 0 else "VENCE HOY"
+            override_reason = (
+                f"El contrato vence en {_dte} dias. {_pnl_text()}. Lo que quede de valor "
+                f"temporal se va a cero en esta semana: cerrar o rolar, pero no dejarlo correr.")
+        elif _long and _dte is not None and _dte <= 15 and pnl_pct > 10:
+            verdict = "REDUCE"; urgency = "high"
+            headline = "TOMAR GANANCIAS — POCO TIEMPO"
+        elif _adv_dom:
+            verdict = "SELL" if pnl_pct <= -40 else "REDUCE"
+            urgency = "high" if pnl_pct <= -40 else "medium"
+            headline = ("CERRAR — TESIS DADA VUELTA" if pnl_pct <= -40
+                        else f"REDUCIR — EL {_what} JUEGA EN CONTRA")
+        elif pnl_pct >= 80:
+            verdict = "REDUCE"; urgency = "medium"
+            headline = "TOMAR GANANCIAS"
+        elif _fav_dom:
+            verdict = "HOLD"; urgency = "low"
+            headline = "HOLD — LA TESIS SE ESTA CUMPLIENDO"
+        elif pnl_pct <= -60 and fav < 30:
+            verdict = "REDUCE"; urgency = "medium"
+            headline = "REVISAR — PERDIDA GRANDE"
+        else:
+            verdict = "HOLD"; urgency = "low"
+            headline = "HOLD"
+
+    if _decided:
+        pass
     # Signal fuerte manda (BUY/SELL 3/3)
-    if sig == "SELL":
+    elif sig == "SELL":
         verdict = "SELL"; urgency = "high"
         if pnl_pct >= 20:
             headline = "VENDER — TOMAR GANANCIAS"
@@ -8771,8 +9194,11 @@ def _compute_position_verdict(data, position, levels=None):
         # Elegir los 3 factores mas relevantes en la direccion del veredicto.
         # Un HOLD con el peso tecnico del lado bajista debe explicar los
         # factores bajistas (no citar los alcistas y contradecir la tesis).
-        target_side = "bear" if (verdict in ("SELL", "REDUCE") or bear > bull) else "bull"
-        rel = [f for f in factors if f["side"] == target_side and f["weight"] > 0]
+        # Se eligen por el lado DEL TENEDOR (fav/adv), no por bull/bear: en una
+        # opcion bajista los factores que sostienen el veredicto son los
+        # bajistas del subyacente, mas los del propio contrato.
+        target_side = "adv" if (verdict in ("SELL", "REDUCE") or adv > fav) else "fav"
+        rel = [f for f in factors if f.get("for_holder") == target_side and f["weight"] > 0]
         rel.sort(key=lambda f: f["weight"], reverse=True)
         top3 = rel[:3]
         if top3:
@@ -8791,6 +9217,12 @@ def _compute_position_verdict(data, position, levels=None):
         "trend": trend,
         "bull_score": round(bull, 1),
         "bear_score": round(bear, 1),
+        # Lo mismo visto desde la tenencia. Para una accion larga coinciden con
+        # bull/bear; para un PUT comprado estan dados vuelta, y es lo unico que
+        # la ficha deberia mostrar (el usuario no tiene la accion, tiene el put).
+        "fav_score": round(fav, 1),
+        "adv_score": round(adv, 1),
+        "exposure": (opt or {}).get("exposure"),
         "factors": factors,
         # Estructura tecnica del grafico — la narrativa la reutiliza para no
         # recomputar S/R y canal (mismos numeros en veredicto y recomendacion)
@@ -8832,6 +9264,17 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
     pnl_pct = pos.get("pnl_pct", 0) or 0
     avg_cost = pos.get("costo_promedio") or 0
     cantidad = pos.get("cantidad", 0) or 0
+    # OPCIONES: `precio_actual` es la PRIMA del contrato. Todo lo que sigue
+    # (niveles, SMA200, techos/pisos) habla del SUBYACENTE, asi que el precio
+    # de la narrativa tiene que ser el del subyacente o las frases mezclan
+    # unidades ("hoy cotiza $14.10" sobre una accion de $480).
+    opt = pos.get("option") or None
+    if opt:
+        price = opt.get("underlying_price") or data.get("price") or 0
+    elif pos.get("option_unresolved"):
+        # Ver _compute_position_verdict: sin los datos del contrato no hay
+        # narrativa posible que no sea una invencion.
+        return (verdict or {}).get("reason", "")
     sl_ib = pos.get("stop_loss")
     lv = levels or {}
     target = lv.get("target") or 0
@@ -8845,6 +9288,9 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
     atr_v = tech.get("atr") or lv.get("atr") or 0
 
     action = verdict.get("verdict", "HOLD")
+    # Puntajes desde la optica del TENEDOR (para una accion larga == bull/bear)
+    fav_sc = (verdict or {}).get("fav_score", (verdict or {}).get("bull_score", 0)) or 0
+    adv_sc = (verdict or {}).get("adv_score", (verdict or {}).get("bear_score", 0)) or 0
     parts = []
     # Sin costo conocido no hay breakeven que citar: "$0.00" es peor que
     # omitirlo (pasaba en toda orden pendiente, costo_promedio=0).
@@ -8875,7 +9321,42 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
             tenure_txt = ""
     # Una orden cargada sin fill no es una entrada: decir "Entraste en X" sobre
     # un LMT que nunca se ejecuto es, directamente, falso.
-    if pos.get("is_pending"):
+    if opt:
+        # "Entraste en ROP a $480" sobre un PUT es falso dos veces: ni el
+        # precio es el de la accion ni la tenencia es alcista. Lo primero que
+        # tiene que quedar claro es QUE contrato es y EN QUE DIRECCION gana.
+        _n = abs(opt.get("contracts") or 0)
+        _verbo = "Compraste" if opt.get("is_long") else "Vendiste"
+        p1 = (f"{_verbo} {_n:.0f} {opt.get('right_label', 'OPCION')}"
+              f"{'S' if _n != 1 else ''} de {opt.get('underlying', sym)} "
+              f"strike ${opt['strike']:.2f}")
+        if opt.get("expiry"):
+            p1 += f" con vencimiento {option_position._fmt_date(opt['expiry'])}"
+            if opt.get("dte") is not None:
+                p1 += f" (faltan {opt['dte']} dias)"
+        if tenure_txt:
+            p1 += f", {tenure_txt}"
+        if opt.get("premium"):
+            p1 += (f", {'pagando' if opt.get('is_long') else 'cobrando'} "
+                   f"${opt['premium']:.2f} de prima")
+            _tot = opt["premium"] * _n * (opt.get("multiplier") or 100)
+            if _tot:
+                p1 += f" (${_tot:,.0f} en total)"
+        p1 += "."
+        _dirw = "CAE" if opt.get("exposure") == "bajista" else "SUBE"
+        p1 += (f" Esta posicion gana si {opt.get('underlying', sym)} {_dirw}: "
+               f"todo el analisis tecnico de abajo es de la ACCION, y hay que "
+               f"leerlo con ese signo.")
+        if opt.get("premium_now"):
+            p1 += (f" La prima hoy vale ${opt['premium_now']:.2f} "
+                   f"({pnl_pct:+.1f}% sobre lo que pagaste)")
+            if opt.get("breakeven") and price:
+                p1 += (f"; el breakeven al vencimiento esta en "
+                       f"${opt['breakeven']:.2f} y la accion cotiza ${price:.2f}")
+            p1 += "."
+        parts.append(p1)
+        p1 = None
+    elif pos.get("is_pending"):
         po = pos.get("pending_order") or {}
         _acc = "COMPRA" if (po.get("action") or "BUY").upper() == "BUY" else "VENTA"
         p1 = f"Todavia no entraste en {sym}: tenes una orden de {_acc} cargada en IB"
@@ -8978,6 +9459,22 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
         struct_bits.append("Fibonacci: " + fib_n["text"])
     if struct_bits:
         p2 += " En el grafico: " + "; ".join(struct_bits) + "."
+    # Para una opcion, la lectura del subyacente no se lee sola: hay que decir
+    # de que lado cae. Es exactamente la confusion que origino este bloque —
+    # un cuadro bajista con un PUT comprado es la tesis funcionando.
+    if opt:
+        _mine = opt.get("exposure")
+        _reading = "bajista" if is_bearish else "alcista"
+        if _mine and sig_label.upper() not in ("NEUTRAL", ""):
+            if _mine == _reading:
+                p2 += (f" Esa lectura {_reading} juega A FAVOR de tu "
+                       f"{opt.get('right_label', 'opcion').lower()}: es la direccion "
+                       f"que necesitas.")
+            else:
+                p2 += (f" OJO: esa lectura {_reading} va EN CONTRA de tu "
+                       f"{opt.get('right_label', 'opcion').lower()}, que necesita que "
+                       f"{opt.get('underlying', sym)} "
+                       f"{'caiga' if _mine == 'bajista' else 'suba'}.")
     parts.append(p2)
 
     # ── 3. NIVELES Y VENTANA (optica del tenedor) ──
@@ -9003,6 +9500,33 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
             p3_bits.append(f"la tesis se invalida si el precio pierde ${stop_sug:.2f}{sb_txt}")
     if sl_ib:
         p3_bits.append(f"tu stop activo en IB esta en ${sl_ib:.2f}")
+    if opt:
+        # Los niveles que deciden un contrato no son el target del sistema
+        # sino el breakeven y el strike, medidos contra lo que el subyacente
+        # suele moverse en los dias que quedan.
+        _ob = []
+        if opt.get("breakeven") and opt.get("pct_to_breakeven") is not None:
+            _nd = abs(opt["pct_to_breakeven"])
+            _dirn = "caer" if opt.get("exposure") == "bajista" else "subir"
+            _past = ((opt["pct_to_breakeven"] < 0) if opt.get("exposure") == "bajista"
+                     else (opt["pct_to_breakeven"] > 0))
+            if _nd < 0.1 or not _past:
+                _ob.append(f"ya estas del lado bueno del breakeven ${opt['breakeven']:.2f}")
+            else:
+                _t = (f"para no perder plata al vencimiento, {opt.get('underlying', sym)} "
+                      f"tiene que {_dirn} {_nd:.1f}% hasta ${opt['breakeven']:.2f}")
+                if opt.get("expected_move_pct"):
+                    _t += (f", contra un movimiento tipico de {opt['expected_move_pct']:.1f}% "
+                           f"en los {opt.get('dte')} dias que quedan")
+                _ob.append(_t)
+        if opt.get("moneyness") and opt.get("pct_to_strike") is not None:
+            _ob.append(f"el strike ${opt['strike']:.2f} esta {abs(opt['pct_to_strike']):.1f}% "
+                       f"{'arriba' if opt['pct_to_strike'] > 0 else 'abajo'} ({opt['moneyness']})")
+        if opt.get("extrinsic_pct") is not None and opt.get("premium_now"):
+            _ob.append(f"de los ${opt['premium_now']:.2f} de prima, "
+                       f"{opt['extrinsic_pct']:.0f}% es valor temporal que se consume solo")
+        if _ob:
+            parts.append("Para el contrato, " + "; ".join(_ob) + ".")
     if p3_bits:
         p3 = "En cuanto a niveles, " + "; ".join(p3_bits) + "."
         if horizon:
@@ -9026,7 +9550,66 @@ def _generate_position_recommendation(sym, data, position, levels, entry_fills,
         protect_txt = "2 ATR bajo el precio actual"
 
     # ── 4. RECOMENDACION CONDICIONADA ──
-    if action == "SELL":
+    if opt:
+        # El chain de abajo esta escrito para un tenedor largo de la ACCION
+        # ("SUMAR", "promediar el costo", "subir el stop"): nada de eso aplica
+        # a un contrato con vencimiento, y "VENDER" dicho sobre la señal del
+        # subyacente era literalmente el reves de lo que corresponde.
+        _u = opt.get("underlying", sym)
+        _rl = (opt.get("right_label") or "opcion").lower()
+        _dte = opt.get("dte")
+        _mine = opt.get("exposure")
+        _dirw = "caiga" if _mine == "bajista" else "suba"
+        _aligned = (_mine == ("bajista" if is_bearish else "alcista"))
+        _bim = opt.get("breakeven_in_moves")
+        if action == "SELL":
+            if _dte is not None and _dte <= 5:
+                p4 = (f"Recomendacion: CERRAR O ROLAR. Faltan {_dte} dias: el valor temporal "
+                      f"que quede se va a cero esta semana, y a esta altura solo paga el "
+                      f"intrinseco. Si seguis creyendo que {_u} va a "
+                      f"{'caer' if _mine == 'bajista' else 'subir'}, rolar a un "
+                      f"vencimiento mas largo; si no, cerrar y liberar el capital.")
+            else:
+                p4 = (f"Recomendacion: CERRAR. El cuadro de {_u} se dio vuelta en contra de tu "
+                      f"{_rl} y la perdida ya es {pnl_pct:.0f}%. En una opcion el tiempo no "
+                      f"perdona un error de direccion: no hay 'esperar a que vuelva'.")
+        elif action == "REDUCE":
+            if pnl_pct >= 50:
+                p4 = (f"Recomendacion: TOMAR GANANCIAS. Llevas {pnl_pct:+.0f}% sobre la prima")
+                if _dte is not None and _dte <= 15:
+                    p4 += f" y quedan solo {_dte} dias"
+                p4 += (f". Cerrar al menos la mitad asegura el recorrido; lo que dejes corriendo "
+                       f"ya es una apuesta con plata de la casa.")
+            else:
+                p4 = (f"Recomendacion: REDUCIR. El peso de la evidencia esta en contra de tu "
+                      f"{_rl} (a favor {fav_sc:.0f} vs en contra {adv_sc:.0f})")
+                if _bim is not None and _bim > 1.5:
+                    p4 += (f" y el breakeven queda a {_bim:.1f} movimientos tipicos: hace falta "
+                           f"bastante mas que un movimiento normal para llegar")
+                p4 += ". Achicar el tamaño y reevaluar."
+        else:  # HOLD
+            if _aligned:
+                p4 = (f"Recomendacion: MANTENER. La lectura de {_u} va en la direccion que tu "
+                      f"{_rl} necesita, asi que la tesis con la que entraste sigue en pie")
+                if _bim is not None and _bim <= 0:
+                    p4 += " y el subyacente ya paso el breakeven"
+                elif _dte is not None:
+                    p4 += f" y todavia quedan {_dte} dias para que se desarrolle"
+                p4 += "."
+            else:
+                p4 = (f"Recomendacion: MANTENER CON PLAN. Tu {_rl} necesita que {_u} {_dirw} y hoy "
+                      f"el cuadro no acompaña")
+                if _dte is not None and _dte > 45:
+                    p4 += (f", pero quedan {_dte} dias: hay tiempo para que la lectura cambie "
+                           f"antes de que el valor temporal apriete")
+                elif _dte is not None:
+                    p4 += (f" y quedan {_dte} dias: es poco margen, el valor temporal empieza a "
+                           f"pesar mas que la direccion")
+                p4 += ". Definir ahora a que perdida de prima se corta, en vez de decidirlo contra el vencimiento."
+            if pnl_pct <= -40:
+                p4 += (f" La posicion ya perdio {abs(pnl_pct):.0f}% de la prima: una opcion no "
+                       f"'vuelve' como una accion, el reloj corre en una sola direccion.")
+    elif action == "SELL":
         if pnl_pct >= 15:
             p4 = (f"Recomendacion: VENDER. El mismo sistema que uso el escaner para detectar la entrada "
                   f"ahora marca venta completa, y estas {pnl_pct:+.0f}% arriba — asegurar la ganancia aca "
@@ -9187,32 +9770,56 @@ def _entry_since_map(trades_file=None):
     flat->flat: esa fecha es el PRIMER fill de apertura de la posicion que
     tenes hoy, no el fill mas viejo que exista del simbolo (si compraste,
     vendiste todo y volviste a comprar, la tesis es la de la segunda entrada).
+
+    CACHEA SOLO EL CASO LOCAL (sin `trades_file`). Con un path explicito el
+    caller ya tiene su propia cache, y encadenar dos caches del mismo TTL
+    las TRENZA: cuando la externa expira y llama a esta, esta todavia esta
+    "fresca" por centesimas, devuelve el mapa viejo y la externa lo re-cachea
+    otro ciclo — para siempre. Sintoma real: NVDA faltaba en el mapa del
+    arranque en frio (Flex todavia sin responder) y nunca se recuperaba,
+    mientras /api/trades-history ya lo mostraba.
     """
     key = trades_file or "_local_"
-    hit = _THESIS_SINCE.get(key)
-    if hit and time.time() - hit[0] < _THESIS_SINCE_TTL:
-        return hit[1]
+    if trades_file is None:
+        hit = _THESIS_SINCE.get(key)
+        if hit and time.time() - hit[0] < _THESIS_SINCE_TTL:
+            return hit[1]
     out = {}
     try:
         for op in (build_trades_history(trades_file) or {}).get("open_positions", []):
+            if not op.get("since"):
+                continue
             if op.get("kind") == "OPT":
-                continue  # el symbol es una etiqueta humana, no un ticker
-            if op.get("since"):
-                out[op["symbol"]] = op["since"]
+                # El symbol es una etiqueta humana, no un ticker: la tenencia
+                # se cruza por PATA (subyacente/vencimiento/tipo/strike).
+                lg = op.get("leg") or {}
+                k = option_position.since_key(lg.get("root"), lg.get("expiry"),
+                                              lg.get("right"), lg.get("strike"))
+                if k:
+                    out[k] = op["since"]
+                continue
+            out[op["symbol"]] = op["since"]
     except Exception as e:
         print(f"[ENTRY_SINCE] no se pudo leer el historial: {e}")
-    _THESIS_SINCE[key] = (time.time(), out)
+    if trades_file is None:
+        _THESIS_SINCE[key] = (time.time(), out)
     return out
 
 
 def build_entry_thesis(sym, position, entry_fills, since_map=None):
     """Tesis de entrada vs. hoy para una posicion. None si no aplica."""
-    if (position or {}).get("tipo", "STK") != "STK":
-        return None   # opciones: el symbol es OCC, no hay serie del contrato
+    _opt = (position or {}).get("option")
+    if (position or {}).get("tipo", "STK") not in ("STK", "OPT"):
+        return None
+    if (position or {}).get("tipo") == "OPT" and not _opt:
+        return None   # contrato sin resolver: no hay direccion que reconstruir
     if (position or {}).get("is_pending"):
         return None   # todavia no entraste: no hay nada que reconstruir
     try:
-        since = (since_map or {}).get(sym)
+        # Para una opcion la fecha sale del episodio de SU pata, no del
+        # ticker: con el subyacente se tomaria la entrada de la accion.
+        _lk = option_position.since_key_of(_opt) if _opt else None
+        since = (since_map or {}).get(_lk or sym)
         if not since and entry_fills:
             # Respaldo: el fill mas viejo que conozcamos del simbolo. Menos
             # preciso que el episodio (no distingue una reentrada), pero es
@@ -9222,8 +9829,16 @@ def build_entry_thesis(sym, position, entry_fills, since_map=None):
         df = _thesis_history(sym)
         if df is None:
             return None
+        # El P&L lo manda la POSICION (vivo de IB), no se recalcula del cierre
+        # de yfinance: si no, el resumen de la tesis dice -11.3% al lado de un
+        # header que dice -11.2%. CLAUDE.md ya documenta esa mezcla como bug.
         return position_thesis.build(
-            sym, since, df, avg_cost=(position or {}).get("costo_promedio"))
+            # En una opcion el "costo promedio" es la PRIMA del contrato, no un
+            # precio del subyacente: pasarlo dibujaria un breakeven de $12 sobre
+            # una accion de $480. La serie y los niveles son del subyacente.
+            sym, since, df,
+            avg_cost=(None if _opt else (position or {}).get("costo_promedio")),
+            pnl_pct=(position or {}).get("pnl_pct"))
     except Exception as e:
         print(f"[ENTRY_THESIS] {sym}: {e}")
         return None
@@ -9308,11 +9923,21 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
     entry_fills = []
     try:
         from portfolio import get_executions_for_symbol
+        # IB reporta las opciones con el symbol del subyacente, asi que los
+        # fills llegan mezclados. En la ficha de una ACCION hay que quedarse
+        # con los de la accion (un fill de opcion trae la PRIMA, y dibujarla
+        # sobre el grafico del subyacente aplasta la escala); en la de un
+        # CONTRATO se guarda la fecha pero no el precio, por lo mismo.
+        _want_opt = bool((position or {}).get("option"))
         for e in get_executions_for_symbol(sym):
+            _is_opt = (e.get("sec_type") or "STK").upper() in ("OPT", "FOP")
+            if _is_opt != _want_opt:
+                continue
             if (e.get("side") or "").upper() == "BOT" and e.get("price") and e.get("time"):
                 entry_fills.append({
                     "time": e["time"],
-                    "price": round(float(e["price"]), 2),
+                    "price": None if _want_opt else round(float(e["price"]), 2),
+                    "premium": round(float(e["price"]), 2) if _want_opt else None,
                     "qty": float(e.get("qty", 0) or 0),
                 })
     except Exception as e:
@@ -9322,6 +9947,20 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
     # paso con esa lectura hasta hoy. Se calcula ANTES de la narrativa para que
     # la recomendacion pueda citarla en vez de hablar solo del presente.
     entry_thesis = build_entry_thesis(sym, position, entry_fills, _entry_since_map())
+
+    # 5d. OPCIONES: el contrato se completa recien aca, con el precio del
+    # subyacente y su ATR (moneyness, distancia al breakeven, movimiento
+    # tipico a vencimiento). Sin esto el veredicto no tiene con que comparar.
+    if (position or {}).get("option"):
+        try:
+            # In place: la MISMA posicion viaja al payload que renderiza la
+            # ficha, y tiene que llevar el contrato ya completo (si no, la UI
+            # muestra strike y vencimiento pero no moneyness ni breakeven).
+            position["option"] = option_position.enrich(
+                position["option"], underlying_price=data.get("price"),
+                atr=levels.get("atr"))
+        except Exception as e:
+            print(f"  [Portfolio deep] Option enrich {sym}: {e}")
 
     # 5b. Verdict (scoring multi-factor decide la ACCION) + narrativa integral
     verdict = _compute_position_verdict(data, position, levels)
@@ -9398,6 +10037,11 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "verdict_factors": verdict.get("factors", []),
         "bull_score": verdict.get("bull_score", 0),
         "bear_score": verdict.get("bear_score", 0),
+        "fav_score": verdict.get("fav_score", verdict.get("bull_score", 0)),
+        "adv_score": verdict.get("adv_score", verdict.get("bear_score", 0)),
+        "exposure": verdict.get("exposure"),
+        # El contrato ya enriquecido (moneyness, breakeven, DTE) para la ficha
+        "option": (position or {}).get("option"),
         "verdict_tech": verdict.get("tech", {}),
         "macd_ok": data.get("macd_ok", False),
         "rsi_ok": data.get("rsi_ok", False),
@@ -10072,17 +10716,25 @@ def build_trades_history(trades_file=None):
 
     open_positions = []   # posiciones vivas: no son trades, pero se informan
 
-    def _note_open(label, ep, tt, kind):
+    def _note_open(label, ep, tt, kind, leg=None):
         qty = tt["open_qty"] - tt["close_qty"]
         if qty <= 0:
             return
-        open_positions.append({
+        row = {
             "symbol": label, "kind": kind,
             "direction": "SHORT" if ep["dir"] < 0 else "LONG",
             "quantity": qty,
             "avg_price": round(tt["open_amt"] / tt["open_qty"], 2) if tt["open_qty"] else 0,
             "since": tt["open_date"],
-        })
+        }
+        if leg:
+            # La pata, estructurada. El `symbol` de una opcion es una etiqueta
+            # humana ("ROP P$500 exp 2027-01-15"): sin esto, Mi Cartera no
+            # puede cruzar la tenencia con su episodio y la ficha de un
+            # contrato se queda sin fecha de entrada (y sin tesis).
+            row["leg"] = {"root": leg[0], "expiry": leg[1],
+                          "right": leg[2], "strike": leg[3]}
+        open_positions.append(row)
 
     # --- ACCIONES / ETFs -------------------------------------------------
     for sym, fills in sorted(stock_trades.items()):
@@ -10159,7 +10811,7 @@ def build_trades_history(trades_file=None):
             if not ep["closes"]:
                 # pata todavia abierta: no es un trade cerrado, pero se informa
                 _lbl = f"{leg[0]} {leg[2]}${leg[3]:g} exp {leg[1]}"
-                _note_open(_lbl, ep, tt, "OPT")
+                _note_open(_lbl, ep, tt, "OPT", leg=leg)
                 continue
             anchor = tt["open_date"] or tt["close_date"]
             groups[(leg[0], leg[1], anchor)].append((leg, ep, tt))

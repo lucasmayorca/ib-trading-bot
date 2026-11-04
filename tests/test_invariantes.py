@@ -948,3 +948,395 @@ def test_el_cloud_exporta_los_mismos_campos_nuevos():
     # y el lado del backtest lo decide el LABEL, no el signal crudo
     assert "_label_is_bearish(data.get(\"signal_label\", sig))" in cuerpo
     assert 'if sig == "SELL"' not in cuerpo
+
+
+def test_el_pnl_de_la_tesis_es_el_vivo_no_el_del_cierre():
+    """El header de la ficha usa el precio vivo de IB y el motor veia el cierre
+    de yfinance: el resumen decia -11.3% al lado de un header que decia -11.2%.
+    Es la misma mezcla que CLAUDE.md ya documenta para Mi Cartera."""
+    import position_thesis as pt
+    df = _serie_sintetica()
+    fecha = str(df["date"].iloc[150])
+    cost = float(df["close"].iloc[150])
+    r = pt.build("TEST", fecha, df, avg_cost=cost, pnl_pct=-11.2)
+    assert r["pnl_pct"] == -11.2
+    assert "-11.2%" in r["summary"]
+    # y el valor vivo NO puede ensuciar el cache: la misma tesis servida con
+    # otro P&L cambia solo esa frase
+    r2 = pt.build("TEST", fecha, df, avg_cost=cost, pnl_pct=+4.0)
+    assert "+4.0%" in r2["summary"] and "-11.2%" not in r2["summary"]
+    assert r2["entry"]["as_of"] == r["entry"]["as_of"]
+    assert r2["milestones"] == r["milestones"]
+
+
+def test_el_mapa_de_entradas_no_encadena_dos_caches():
+    """Con un path explicito el caller ya cachea. Si esta funcion tambien
+    cachea con el MISMO TTL, las dos se trenzan: la externa expira, llama a
+    esta, esta responde con el mapa viejo (le faltan centesimas para vencer) y
+    la externa lo re-cachea otro ciclo — para siempre. Sintoma real: NVDA
+    faltaba en el mapa del arranque en frio y no se recuperaba nunca, mientras
+    /api/trades-history ya lo mostraba."""
+    import json
+    import tempfile
+    trades = {"trades": [
+        {"symbol": "NVDA", "action": "BUY", "date": "2026-10-30", "filled_qty": 75,
+         "avg_fill_price": 200.0, "commission": 1.0, "realized_pnl": 0.0, "order_id": "1"},
+    ]}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(trades, f)
+        path = f.name
+    assert vw._entry_since_map(path).get("NVDA") == "2026-10-30"
+    # cambia el archivo: una segunda lectura NO puede servir el mapa viejo
+    trades["trades"][0]["symbol"] = "AMD"
+    with open(path, "w") as f:
+        json.dump(trades, f)
+    m2 = vw._entry_since_map(path)
+    assert "NVDA" not in m2 and m2.get("AMD") == "2026-10-30", m2
+    os.unlink(path)
+
+
+def test_sin_entrada_no_se_dibuja_una_columna_vacia():
+    """Una caja "sin datos" al lado de otra llena parece un render roto."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("function _thesisBlock")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "if(et.entry){" in cuerpo, "la grilla de 2 columnas no esta gateada por et.entry"
+    assert "pth-solo" in cuerpo
+
+
+# ── 15. Confluencia con una media mayor (SMA200 / SMA100) ────────────
+#
+# La 200 y la 100 son las referencias que mas gente mira: entrar apoyado en una
+# de ellas no es lo mismo que entrar en el aire. Medido sobre 217 simbolos x 10
+# años (mismo motor de ejecucion que el backtest, `tools/medir_ma.py`): las
+# entradas de señal a menos de 1 ATR de la 200 o la 100 rinden +0.90% por trade
+# (n=94) contra +0.63% del total comprando — ponderando por el credito de la
+# rampa, +1.06% vs +0.63% (p=0.136, NO significativo) — y +0.38% contra -0.31%
+# vendiendo (p=0.022). Sobre entradas INCONDICIONALES (95.107 por lado)
+# la cercania no aporta nada (-0.03 pp, t=-0.95): no es una propiedad de la
+# media, es una interaccion con la señal — por eso el bonus esta acotado a 6
+# puntos y no es un componente de peso completo.
+
+def _score_con_sma(sma200, sma100=None, price=100.0):
+    """Score de un setup bajista con el precio BAJO su SMA200 (con-tendencia,
+    sin penalizacion) para aislar el efecto de la confluencia."""
+    d = mk_analysis("2026-09-18", price=price, label="VENTA FUERTE",
+                    signal="SELL", strength=4.3)
+    d["chart"]["mas"] = {"sma200_val": sma200, "sma100_val": sma100}
+    d["backtest"].update(sell_count_trend=10, sell_win_rate_trend=0.6)
+    parts = []
+    return vw._score_stock("TEST", d, min_target_pct=0, parts=parts), parts
+
+
+def _bonus(parts):
+    for p in parts:
+        if p["lab"] == "Confluencia con media mayor":
+            return p["pts"]
+    return 0.0
+
+
+def test_la_cercania_a_la_media_mayor_suma_y_la_lejania_no():
+    """ATR = 2.0 en el analisis sintetico, asi que +2 es 1 ATR."""
+    cerca, p_cerca = _score_con_sma(102.0)      # 1 ATR por encima: techo cercano
+    lejos, p_lejos = _score_con_sma(120.0)      # 10 ATR: la media no juega
+    assert _bonus(p_lejos) == 0
+    assert _bonus(p_cerca) == vw.MA_CONFLUENCE_PTS
+    assert cerca - lejos == vw.MA_CONFLUENCE_PTS
+
+
+def test_soporte_y_techo_pesan_igual_pero_se_nombran_distinto():
+    """El usuario pidio las dos lecturas: la media importa como NIVEL, de los
+    dos lados. Lo que cambia es el rol, que la tarjeta tiene que decir."""
+    _, arriba = _score_con_sma(102.0)           # media por encima => techo
+    _, abajo = _score_con_sma(98.0)             # media por debajo => soporte
+    assert _bonus(arriba) == _bonus(abajo) == vw.MA_CONFLUENCE_PTS
+    why_arriba = [p["why"] for p in arriba if p["lab"] == "Confluencia con media mayor"][0]
+    why_abajo = [p["why"] for p in abajo if p["lab"] == "Confluencia con media mayor"][0]
+    assert "techo" in why_arriba and "soporte" not in why_arriba
+    assert "soporte" in why_abajo and "techo" not in why_abajo
+
+
+def test_la_confluencia_es_rampa_no_escalon():
+    """Mismo motivo que la penalizacion contra-tendencia: un umbral duro parte
+    en dos dias consecutivos que no se distinguen."""
+    prev = None
+    saltos = []
+    for d_atr in [x / 10 for x in range(0, 30)]:
+        _, parts = _score_con_sma(100.0 + d_atr * 2.0)
+        b = _bonus(parts)
+        if prev is not None:
+            assert b <= prev + 1e-9, f"el bonus no puede crecer con la distancia ({d_atr})"
+            saltos.append(prev - b)
+        prev = b
+    assert max(saltos) < vw.MA_CONFLUENCE_PTS / 2, "hay un escalon, no una rampa"
+    assert _bonus(_score_con_sma(100.0 + vw.MA_NEAR_ZERO_ATR * 2.0)[1]) == 0
+
+
+def test_las_dos_medias_juntas_suman_mas_pero_acotado():
+    """La 100 y la 200 pegadas son UNA zona, no dos niveles sueltos: el extra
+    es menor que el primer nivel y el total esta topeado."""
+    _, una = _score_con_sma(102.0)
+    _, dos = _score_con_sma(102.0, sma100=101.0)
+    assert _bonus(dos) > _bonus(una)
+    assert _bonus(dos) == vw.MA_CONFLUENCE_PTS + vw.MA_CONFLUENCE_EXTRA_PTS
+    assert vw.MA_CONFLUENCE_EXTRA_PTS < vw.MA_CONFLUENCE_PTS
+    fila = [p for p in dos if p["lab"] == "Confluencia con media mayor"][0]
+    assert fila["pts"] <= fila["max"]
+
+
+def test_la_confluencia_nunca_castiga():
+    """Estar lejos de las medias es el caso NORMAL (el 76% de las señales de
+    compra medidas), no un defecto: el componente es bonus o nada."""
+    for sma in (100.0, 103.0, 106.0, 140.0, 60.0):
+        _, parts = _score_con_sma(sma)
+        assert _bonus(parts) >= 0
+
+
+def test_la_narrativa_dice_la_confluencia_que_el_score_premio():
+    """Si el score suma por la media y el texto no la menciona, la tarjeta
+    muestra un numero que no puede explicar (el mismo defecto que el veredicto
+    de Mi Cartera tenia con sus factores)."""
+    d = mk_analysis("2026-09-18", price=100.0, label="VENTA FUERTE", signal="SELL")
+    d["chart"]["mas"] = {"sma200_val": 102.0, "sma100_val": None}
+    texto = " ".join(vw._generate_rationale("TEST", d))
+    assert "SMA200" in texto and "ATR" in texto and "techo" in texto
+    d["chart"]["mas"] = {"sma200_val": 140.0, "sma100_val": None}
+    assert "Media mayor" not in " ".join(vw._generate_rationale("TEST", d))
+
+
+# ── 16. OPCIONES EN MI CARTERA ───────────────────────────────────────
+# Una tenencia de opciones se analizaba con el motor de una ACCION LARGA: se
+# tomaba el `symbol` que manda IB (que para un contrato ES el subyacente), se
+# corria el analisis tecnico de esa accion y el veredicto se escribia desde la
+# optica de alguien que la tiene comprada. Con un PUT eso sale del reves: una
+# lectura bajista — la tesis del tenedor cumpliendose — producia "VENDER".
+
+import option_position as op
+
+
+def _opt_pos(right="P", strike=500.0, qty=2.0, cost_contract=1240.0,
+             premium_now=14.10, expiry="20270115", pnl_pct=13.7):
+    return {"symbol": "ROP", "tipo": "OPT", "cantidad": qty,
+            "costo_promedio": cost_contract, "precio_actual": premium_now,
+            "right": right, "strike": strike, "expiry": expiry,
+            "multiplier": "100", "pnl_pct": pnl_pct}
+
+
+def _ana(price, label, signal, rsi, hist, sma200, sma50, n=300):
+    ohlc = [{"time": f"2026-{(i % 12) + 1:02d}-15", "open": price,
+             "high": price * 1.02, "low": price * 0.98, "close": price}
+            for i in range(n)]
+    return {"signal": signal, "signal_label": label, "strength": 4.2,
+            "conditions_met": 3, "price": price,
+            "values": {"rsi": rsi, "koncorde": {"marron": 2, "media": 6, "azul": 5}},
+            "backtest": {"confidence": 60, "buy_win_rate": .6, "sell_win_rate": .56,
+                         "buy_count": 9, "sell_count": 9,
+                         "buy_avg_win": 8.0, "sell_avg_win": 8.0},
+            "chart": {"ohlc": ohlc,
+                      "mas": {"sma200_val": sma200, "sma50_val": sma50,
+                              "sma20_val": price * 0.99},
+                      "macd": {"hist": [hist] * n}, "rsi": [rsi] * n,
+                      "koncorde": {"marron": [2] * n, "media": [6] * n}}}
+
+
+def _verdict_for(raw, data, spot, atr=9.0):
+    pos = dict(raw)
+    pos["option"] = op.enrich(op.describe(raw), underlying_price=spot, atr=atr)
+    pos["costo_promedio"] = pos["option"]["premium"]
+    lv = vw._compute_price_levels(data)
+    return pos, lv, vw._compute_position_verdict(data, pos, lv)
+
+
+def test_exposicion_de_cada_pata():
+    """call comprado / put vendido ganan al alza; put comprado / call vendido
+    a la baja. Es la unica pregunta que importa para leer el analisis."""
+    assert op.exposure_of("C", 1) == "alcista"
+    assert op.exposure_of("P", -1) == "alcista"
+    assert op.exposure_of("P", 1) == "bajista"
+    assert op.exposure_of("C", -1) == "bajista"
+
+
+def test_la_prima_no_se_confunde_con_el_precio_de_la_accion():
+    """IB manda `averageCost` POR CONTRATO (x100) y `marketPrice` por accion.
+    Sin dividir, el 'costo' sale 100x y cualquier comparacion contra el strike
+    o el grafico del subyacente es basura (ya paso con la linea de costo)."""
+    o = op.describe(_opt_pos())
+    assert o["premium"] == 12.40          # 1240 / 100
+    assert o["premium_now"] == 14.10      # ya viene por accion
+    assert o["breakeven"] == 487.60       # strike - prima, en la escala de ROP
+    assert o["underlying"] == "ROP" and o["right_label"] == "PUT"
+
+
+def test_breakeven_de_un_call_suma_la_prima():
+    o = op.describe(_opt_pos(right="C", strike=460.0, cost_contract=1500.0))
+    assert o["breakeven"] == 475.0
+
+
+def test_el_contrato_se_reconstruye_del_symbol_occ():
+    """Un bridge viejo no manda right/strike/expiry: el OCC es el ultimo
+    recurso antes de mostrar la opcion como si fuera la accion."""
+    o = op.describe({"tipo": "OPT", "cantidad": 1, "costo_promedio": 1240.0,
+                     "local_symbol": "ROP   270115P00500000"})
+    assert (o["underlying"], o["right"], o["strike"], o["expiry"]) == \
+           ("ROP", "P", 500.0, "2027-01-15")
+
+
+def test_la_clave_distingue_dos_contratos_del_mismo_activo():
+    """`symbol` de una opcion es el subyacente: sin clave propia, dos puts de
+    ROP (o ROP accion y un put de ROP) compartian id de acordeon y key de
+    chart, y la ficha abierta era siempre la primera."""
+    k1 = op.position_key(_opt_pos(strike=500.0))
+    k2 = op.position_key(_opt_pos(strike=460.0))
+    k3 = op.position_key({"symbol": "ROP", "tipo": "STK", "cantidad": 100})
+    assert len({k1, k2, k3}) == 3
+
+
+def test_put_con_lectura_bajista_NO_dice_vender():
+    """EL BUG REPORTADO: 'tengo un put de ROP y me decis vender, cuando en
+    realidad estoy dentro de la estrategia'. VENTA 3/3 sobre el subyacente es
+    la tesis del put CUMPLIENDOSE."""
+    data = _ana(480.0, "VENTA FUERTE", "SELL", 74.0, 2.0, 520.0, 500.0)
+    pos, lv, v = _verdict_for(_opt_pos(), data, 480.0)
+    assert v["verdict"] == "HOLD"
+    assert v["fav_score"] > v["adv_score"]
+    assert v["exposure"] == "bajista"
+    txt = vw._generate_position_recommendation("ROP", data, pos, lv, [], v, None)
+    assert "A FAVOR" in txt
+    assert "Recomendacion: MANTENER" in txt
+
+
+def test_put_con_lectura_alcista_si_manda_cerrar():
+    """El espejo: si el subyacente se da vuelta al alza, el put esta en
+    problemas aunque el escaner grite COMPRA."""
+    data = _ana(540.0, "COMPRA FUERTE", "BUY", 26.0, -1.5, 490.0, 510.0)
+    _, _, v = _verdict_for(_opt_pos(pnl_pct=-59.7, premium_now=5.0), data, 540.0)
+    assert v["verdict"] in ("SELL", "REDUCE")
+    assert v["adv_score"] > v["fav_score"]
+
+
+def test_una_accion_larga_no_cambio_nada():
+    """fav/adv == bull/bear sin opcion: el camino de siempre tiene que dar
+    exactamente lo mismo que antes de este cambio."""
+    data = _ana(480.0, "VENTA FUERTE", "SELL", 74.0, 2.0, 520.0, 500.0)
+    pos = {"symbol": "ROP", "tipo": "STK", "cantidad": 100,
+           "costo_promedio": 450.0, "precio_actual": 480.0, "pnl_pct": 6.7}
+    v = vw._compute_position_verdict(data, pos, vw._compute_price_levels(data))
+    assert v["verdict"] == "SELL"
+    assert v["fav_score"] == v["bull_score"] and v["adv_score"] == v["bear_score"]
+    assert v["exposure"] is None
+    assert all(f["for_holder"] == ("fav" if f["side"] == "bull" else
+                                   ("adv" if f["side"] == "bear" else "neutral"))
+               for f in v["factors"])
+
+
+def test_el_reloj_pesa_y_manda_cerrar_cerca_del_vencimiento():
+    """Un contrato a 3 dias se cierra o se rola aunque la tesis sea perfecta:
+    el valor temporal que quede se va a cero. Una accion no tiene esto."""
+    data = _ana(480.0, "VENTA FUERTE", "SELL", 74.0, 2.0, 520.0, 500.0)
+    pos, lv, v = _verdict_for(_opt_pos(expiry="20261106", pnl_pct=-30.0,
+                                       premium_now=8.0), data, 480.0)
+    assert v["verdict"] == "SELL" and v["urgency"] == "high"
+    assert "VENCE" in v["headline"]
+    assert "ROLAR" in vw._generate_position_recommendation(
+        "ROP", data, pos, lv, [], v, None)
+
+
+def test_el_tiempo_corre_a_favor_del_vendedor():
+    """El mismo factor, invertido: en una pata VENDIDA el decay suma."""
+    data = _ana(540.0, "COMPRA FUERTE", "BUY", 26.0, -1.5, 490.0, 510.0)
+    _, _, v = _verdict_for(_opt_pos(qty=-2.0, expiry="20261120", pnl_pct=35.0,
+                                    premium_now=7.0), data, 540.0)
+    reloj = [f for f in v["factors"] if f["name"] == "Reloj del contrato"]
+    assert reloj and reloj[0]["for_holder"] == "fav"
+
+
+def test_la_narrativa_no_mezcla_prima_con_precio_del_subyacente():
+    """'hoy cotiza $14.10' sobre una accion de $480 era literal: la narrativa
+    tomaba `precio_actual`, que en un contrato es la PRIMA."""
+    data = _ana(480.0, "VENTA FUERTE", "SELL", 74.0, 2.0, 520.0, 500.0)
+    pos, lv, v = _verdict_for(_opt_pos(), data, 480.0)
+    txt = vw._generate_position_recommendation("ROP", data, pos, lv, [], v, None)
+    assert "$12.40 de prima" in txt and "la accion cotiza $480.00" in txt
+    assert "breakeven al vencimiento esta en $487.60" in txt
+    # y el P&L se narra sobre la PRIMA, no contra el precio de la accion
+    assert "Prima $12.40 -> $14.10" in v["reason"]
+    assert "Costo $12.40, precio $480" not in v["reason"]
+
+
+def test_la_tesis_de_entrada_no_usa_la_prima_como_precio(monkeypatch):
+    """position_thesis dibuja el breakeven sobre la serie del SUBYACENTE: con
+    la prima ($12) sobre una accion de $480 la linea queda fuera de escala —
+    el mismo bug que ya se arreglo con la linea de costo promedio."""
+    pos = _opt_pos()
+    pos["option"] = op.describe(pos)
+    visto = {}
+    monkeypatch.setattr(vw, "_thesis_history", lambda s: "DF")
+    monkeypatch.setattr(vw.position_thesis, "build",
+                        lambda *a, **k: visto.update(k) or {"ok": True})
+    vw.build_entry_thesis("ROP", pos, [{"time": "2026-05-04", "price": None}], {})
+    assert visto["avg_cost"] is None
+    # una accion si lleva su costo (no se rompio el camino de siempre)
+    visto.clear()
+    vw.build_entry_thesis("ROP", {"tipo": "STK", "costo_promedio": 450.0},
+                          [{"time": "2026-05-04", "price": 450.0}], {})
+    assert visto["avg_cost"] == 450.0
+
+
+def test_la_fecha_de_entrada_de_una_opcion_sale_de_SU_pata():
+    """El episodio flat->flat de una opcion se indexa por pata, no por ticker:
+    con el subyacente se tomaria la fecha de entrada de la ACCION."""
+    k = op.since_key("ROP", "2027-01-15", "P", 500.0)
+    assert k == op.since_key_of(op.describe(_opt_pos()))
+    assert k != "ROP"
+
+
+def test_el_bridge_manda_los_datos_del_contrato():
+    """Sin right/strike/expiry el cloud no puede saber si la tenencia gana
+    cuando el subyacente sube o baja. El bridge es la UNICA fuente: si esto se
+    cae, Mi Cartera vuelve a narrar un PUT como una tenencia larga."""
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1] / "bridge" / "main.py"
+    txt = src.read_text()
+    i = txt.index("def updatePortfolio")
+    cuerpo = txt[i:i + 1600]
+    for campo in ('"right"', '"strike"', '"expiry"', '"multiplier"', '"localSymbol"'):
+        assert campo in cuerpo, campo
+    # y la tenencia tiene que entrar en la watchlist, o el contrato sale sin chart
+    j = txt.index("def split_held")
+    assert '"OPT"' in txt[j:j + 1400]
+
+
+def test_la_alerta_de_una_opcion_sale_del_veredicto_no_de_la_señal():
+    """'VENDER ROP' en el banner de alertas, sobre un put, era el mismo bug en
+    otra superficie: la alerta miraba `signal == SELL and cantidad > 0`."""
+    from portfolio import _generate_portfolio_alerts
+    p = {"symbol": "ROP", "key": "ROP_20270115P00500000", "cantidad": 2,
+         "pnl_pct": 13.7, "precio_actual": 14.10,
+         "display_symbol": "PUT ROP $500 15-01-2027",
+         "option": {"exposure": "bajista", "right_label": "PUT"},
+         "analysis": {"signal": "SELL", "verdict": "HOLD",
+                      "headline": "HOLD — LA TESIS SE ESTA CUMPLIENDO"}}
+    assert _generate_portfolio_alerts([p], {}, {}) == []
+    p["analysis"] = {"signal": "BUY", "verdict": "SELL", "headline": "CERRAR",
+                     "verdict_summary": "x"}
+    al = _generate_portfolio_alerts([p], {}, {})
+    assert len(al) == 1 and al[0]["symbol"] == "ROP_20270115P00500000"
+
+
+def test_una_opcion_sin_contrato_dice_que_no_puede_leerla():
+    """Bridge viejo: llega secType OPT pero sin right/strike/expiry. Sin saber
+    si es call o put no hay direccion — correr el motor igual es volver al bug
+    (decia VENDER sobre un put cuya tesis se cumplia)."""
+    assert op.describe({"symbol": "ROP", "secType": "OPT", "position": 2,
+                        "averageCost": 1240.0}) is None
+    assert op.unresolved({"symbol": "ROP", "secType": "OPT", "position": 2})
+    assert not op.unresolved({"symbol": "ROP", "secType": "STK"})
+    data = _ana(480.0, "VENTA FUERTE", "SELL", 74.0, 2.0, 520.0, 500.0)
+    pos = {"symbol": "ROP", "tipo": "OPT", "cantidad": 2, "costo_promedio": 12.4,
+           "precio_actual": 14.1, "pnl_pct": 13.7, "option_unresolved": True}
+    v = vw._compute_position_verdict(data, pos, vw._compute_price_levels(data))
+    assert v["verdict"] == "HOLD" and "CONTRATO" in v["headline"]
+    assert "VENDER" not in v["reason"] and "bridge" in v["reason"]
+    txt = vw._generate_position_recommendation(
+        "ROP", data, pos, vw._compute_price_levels(data), [], v, None)
+    assert "Entraste en ROP" not in txt

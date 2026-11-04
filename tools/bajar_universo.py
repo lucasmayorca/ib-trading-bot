@@ -2,7 +2,8 @@
 
 Uso:  PYTHONPATH=. venv/bin/python tools/bajar_universo.py [salida.pkl]
 Default: tools/universo_10y.pkl (ignorado por git, ~30 MB).
-Paso 1 de la re-medicion del edge de figuras; despues correr tools/medir_edge.py.
+Paso 1 de la re-medicion del edge de figuras; despues correr tools/medir_edge.py
+(o tools/medir_ma.py para el edge de la cercania a la SMA200/SMA100).
 """
 import os, pickle, sys, time, warnings
 warnings.filterwarnings("ignore")
@@ -39,9 +40,15 @@ for k in range(0, len(syms), CH):
         if len(d) < 400:
             continue
         data[s] = pd.DataFrame({
+            # open y volume van aunque medir_edge.py no los use: el Koncorde
+            # necesita volume y el modelo de fill intradia del backtest necesita
+            # open (tools/medir_ma.py). Agregar columnas es compatible hacia atras.
+            "date": [str(x)[:10] for x in d.index],
+            "open": d["Open"].values.astype(float),
             "high": d["High"].values.astype(float),
             "low": d["Low"].values.astype(float),
             "close": d["Close"].values.astype(float),
+            "volume": d["Volume"].values.astype(float),
         })
     print(f"  {k+len(chunk)}/{len(syms)} -> acumulados {len(data)}", flush=True)
     time.sleep(1)

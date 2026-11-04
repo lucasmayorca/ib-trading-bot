@@ -36,6 +36,7 @@ Automated trading bot connected to Interactive Brokers TWS. Scans top ~75 NYSE/N
 | `patterns.py` | Motor compartido de figuras técnicas + Fibonacci (chartista, por reglas) |
 | `options_lab.py` | Options strategy engine (Black-Scholes, Greeks, IV analysis) |
 | `position_thesis.py` | Tesis de entrada de una posicion: que decia el sistema el dia que compraste vs. hoy |
+| `option_position.py` | Una tenencia de OPCIONES normalizada: direccion (call/put x largo/corto), DTE, breakeven, moneyness |
 
 ## Signal Logic
 
@@ -483,10 +484,95 @@ invalidaciones"*, *"el costo promedio no está marcado"*, y recomendaciones que 
 7. **Cloud: `win_rate`/`avg_return` ramificaban por `sig == "SELL"`** en vez de
    `_label_is_bearish(signal_label)`. Con "VENTA INMINENTE" (signal = HOLD) el cloud mostraba los
    números del lado contrario al local.
+8. **DOS CACHÉS DEL MISMO TTL SE TRENZAN Y CONGELAN EL MAPA (2026-11, cazado en producción).**
+   `_entry_since_for` (cloud, 600s) llamaba a `_entry_since_map`, que tenía *su propia* caché de
+   600s con el mismo path como clave. Cuando la externa expira y llama a la interna, a la interna
+   le faltan centésimas para vencer ⇒ devuelve el mapa viejo ⇒ la externa lo re-cachea otro ciclo.
+   **Nunca se refresca.** Síntoma real: NVDA faltaba en el mapa del arranque en frío (Flex todavía
+   sin responder) y la ficha decía "SIN HISTORIAL DE ENTRADA" para siempre, mientras
+   `/api/trades-history` ya listaba `NVDA LONG 75 desde 2026-10-30`. Las otras 6 posiciones
+   andaban, que es lo que hacía parecer que el problema era del símbolo. Regla: **si el caller
+   cachea, la función no cachea** — `_entry_since_map` solo cachea el caso local (sin `trades_file`).
+   Además, un mapa VACÍO se cachea 60s y no 600: casi siempre es un arranque en frío, no un usuario
+   sin historial. Test: §14.
+9. **El P&L de la tesis sale de la POSICIÓN (vivo de IB), no del cierre de yfinance.** El resumen
+   decía "-11.3%" al lado de un header que decía "-11.2%" — la misma mezcla que esta sección ya
+   documenta para la narrativa. Como el P&L cambia con cada tick y el resto de la tesis se cachea
+   por día, la frase del P&L vive FUERA del resumen cacheado (`_pnl_bit` + `_with_pnl`).
+10. **Sin entrada reconstruida no se dibuja la columna "CUANDO COMPRASTE" vacía**: una caja que
+   dice "sin datos" al lado de otra llena parece un render roto. Se muestra solo el cuadro de hoy.
 
 Tests: `tests/test_invariantes.py` §14 (paridad de dirección, causalidad del corte, el snapshot de
 hoy == `generate_signal` sobre la serie completa, sin fecha no se inventa, y los 4 invariantes de
 presentación). ⚠ **No requiere reinstalar el bridge**: todo el cálculo nuevo es server-side.
+
+## Opciones en Mi Cartera (`option_position.py`, 2026-11)
+Feedback que lo originó: *"algunas de mis tenencias son opciones, tanto calls como puts, y las
+estás analizando en cartera como si fuesen acciones. Tengo un put de ROP y me decís vender, cuando
+en realidad estoy dentro de la estrategia definida: esperamos que la acción caiga y el put se
+revalorice"*.
+
+- **El defecto de fondo**: para IB, `contract.symbol` de un contrato **ES el subyacente**. Mi
+  Cartera tomaba ese símbolo, corría el análisis técnico de la acción y escribía el veredicto desde
+  la óptica de un **tenedor largo de esa acción**. Con un PUT comprado eso sale del revés: "VENTA
+  3/3", "perdió la SMA200", "death cross" — la tesis del tenedor **cumpliéndose** — producían
+  `verdict="SELL"`, headline "VENDER" y una alerta "VENDER ROP" en el banner.
+- **Una opción es una apuesta DIRECCIONAL sobre el subyacente + un reloj.** `option_position.py`
+  (puro: sin IO, sin ibapi, sin pandas — por eso local y cloud narran idéntico) traduce la tenencia
+  a esos términos: `exposure` (call comprado / put vendido ⇒ **alcista**; put comprado / call
+  vendido ⇒ **bajista**), DTE, breakeven, moneyness, intrínseco/extrínseco, y la vara honesta:
+  cuánto tiene que moverse el subyacente hasta el breakeven **contra cuánto suele moverse** en los
+  días que quedan (`breakeven_in_moves` = necesario / (ATR·√DTE)).
+- **`fav`/`adv`, no `bull`/`bear`.** `_compute_position_verdict` sigue puntuando el SUBYACENTE
+  igual que antes, y recién al final mapea cada factor a `for_holder` ('fav'/'adv'/'neutral') según
+  la exposición. **Para una acción larga `fav==bull` y `adv==bear`**, así que el camino de siempre
+  no se mueve ni un punto (hay test). El JS agrupa por `for_holder`, nunca por `side`.
+- **Factores que una acción no tiene** (se suman a fav/adv, `side="option"`): *Reloj del contrato*
+  (DTE ≤7 / ≤21 / ≤45 → 12/8/4 pts; **en contra del comprador y A FAVOR del vendedor**),
+  *Breakeven* (en movimientos típicos: ya pasado ⇒ +10 fav … >2 movimientos ⇒ 10 adv) y
+  *Moneyness*. Sin esto el consejo es incompleto: una tesis que se cumple tarde, con la opción
+  vencida, no sirve de nada.
+- **Cadena de decisión propia** (el chain de acciones dice "SUMAR", "promediar", "subir el stop":
+  nada de eso aplica): vencimiento ≤5 días ⇒ CERRAR/ROLAR; ≤15 días con ganancia ⇒ tomar;
+  `adv` dominante ⇒ cerrar o reducir; +80% ⇒ tomar ganancias; `fav` dominante ⇒ **"HOLD — LA TESIS
+  SE ESTÁ CUMPLIENDO"**.
+- **Unidades (la trampa de siempre)**: IB manda `averageCost` de una opción **POR CONTRATO**
+  (prima × multiplicador) y `marketPrice` **POR ACCIÓN**. El total en dólares usa el de contrato;
+  todo lo que se muestra o se compara contra el strike es la prima **por acción**. Y el precio de
+  referencia del veredicto y de la narrativa es el del **SUBYACENTE** — `precio_actual` de un
+  contrato es su prima, y compararla contra la SMA200 de la acción era el bug en su forma más
+  literal ("hoy cotiza $14.10" sobre una acción de $480).
+- **Identidad**: `pos["key"]` (`ROP_20270115P00500000`) para el DOM y los charts, `pos["underlying"]`
+  para los datos, `pos["display_symbol"]` para leer. Sin eso, dos contratos del mismo activo — o la
+  acción y una opción sobre ella — compartían id de acordeón y key de chart, y `_findPortPosition`
+  devolvía siempre el primero.
+- **Lo que NO se dibuja**: la línea "TU COSTO" (es una prima: con `scale:true` aplastaba el panel
+  entero, mismo bug que el costo promedio fuera de escala) y los fills como precio. En su lugar van
+  **Strike** y **BREAKEVEN**, que sí viven en la escala de la acción; los fills de un contrato
+  marcan la FECHA (LW ubica los markers por tiempo, no por precio) y se etiquetan "prima $X".
+  Los fills llegan mezclados porque IB los reporta con el símbolo del subyacente: `sec_type` los
+  separa (`get_executions_for_symbol` ahora lo expone).
+- **La fecha de entrada sale de SU pata**, no del ticker: `build_trades_history().open_positions`
+  emite `leg` estructurada ({root, expiry, right, strike}) y `_entry_since_map` la indexa con
+  `option_position.since_key`. Con el subyacente se tomaría la entrada de la ACCIÓN.
+- **Las alertas de una opción salen del VEREDICTO, no de `signal`**: `_generate_portfolio_alerts`
+  ramificaba por `signal == "SELL" and cantidad > 0` — el mismo bug en otra superficie.
+- **Degradado explícito**: si llega `secType="OPT"` sin right/strike/expiry ni localSymbol (bridge
+  viejo), `option_unresolved=True` y la ficha **dice que no puede leer el contrato** y pide
+  reinstalar el bridge, en vez de narrarlo como una tenencia larga. Decir "no sé" es la única
+  respuesta honesta cuando no se sabe si es call o put.
+- **Lo que queda fuera a propósito**: `signal_counts` del header sigue contando la señal del
+  SUBYACENTE (describe la lectura técnica de la tenencia, no la acción recomendada), y el `WR`/`Ret.
+  Prom.` de la tarjeta siguen siendo los del label del escáner — cambiarlos sería una afirmación
+  nueva, no una corrección.
+- ⚠ **Requiere reinstalar el bridge** (`rm -rf ~/.ib-bridge && curl -sL .../install-bridge.sh | bash`):
+  `updatePortfolio` ahora reporta right/strike/expiry/multiplier/localSymbol y `split_held` mergea
+  el subyacente de una opción en la watchlist (sin eso la ficha sale sin gráfico). Hasta entonces el
+  cloud muestra el estado degradado de arriba.
+
+Tests: `tests/test_invariantes.py` §16 (exposición de cada pata, unidades de la prima, breakeven de
+call y put, reconstrucción desde el OCC, claves distintas, el caso ROP del usuario y su espejo, el
+reloj, la acción larga sin cambios, la alerta por veredicto y el degradado).
 
 ## Figuras Técnicas (`patterns.py`, 2026-08)
 - **Motor compartido** de figuras chartistas por reglas, extraído del detector que nació en
@@ -701,8 +787,45 @@ presentación). ⚠ **No requiere reinstalar el bridge**: todo el cálculo nuevo
 - **`_score_stock` (vista_web.py)** rankea por **edge esperado**: componentes strength (25),
   expectancy (30, con shrinkage por muestra), profit_factor (15), confidence (15), win_rate
   (10), señal activa (5), menos **penalización contra-tendencia** (hasta −15 si el precio va
-  contra su SMA200). El fallback relajado en `compute_top3` usa la misma escala. Este 0-100 es
+  contra su SMA200), más **confluencia con una media mayor** (hasta +6) y ±5 por figura técnica
+  con edge medido. El fallback relajado en `compute_top3` usa la misma escala. Este 0-100 es
   el "Score" de las tarjetas de recomendación (con tooltip explicativo en el chip).
+- **CONFLUENCIA CON LA SMA200/SMA100 (2026-11, pedido del usuario: "es una media muy
+  significativa para entrar")**: `_major_ma_proximity(mas, price, atr)` mide la distancia del
+  precio a las **dos medias mayores** en ATR y devuelve un crédito por media — **1.0 hasta
+  `MA_NEAR_FULL_ATR`=1.0 ATR, rampa lineal a 0 en `MA_NEAR_ZERO_ATR`=2.0 ATR**. El bonus es
+  `MA_CONFLUENCE_PTS`=4 por la media más cercana + `MA_CONFLUENCE_EXTRA_PTS`=2 si la OTRA
+  también confluye (la 100 y la 200 pegadas son UNA zona, no dos niveles sueltos).
+  - **Soporte y techo pesan IGUAL** (pedido explícito: "ya sea como soporte o techo"): la media
+    importa como NIVEL, de los dos lados. Lo que cambia es el `role` que se nombra en el `why`,
+    en la tesis y en el racional — el usuario necesita saber si la media está abajo sosteniendo
+    o arriba tapando. Hay test de simetría.
+  - **Es bonus, nunca castigo**: estar lejos de las medias es el caso NORMAL (el 81% de las
+    señales de compra medidas), no un defecto.
+  - **Evidencia** (217 símbolos × 10 años, mismo motor de ejecución intradía, cooldown y costes
+    del backtest; `tools/medir_ma.py`): entradas de señal a **<1 ATR** de la 200 o la 100
+    rinden **+0.90%/trade** (n=94) contra **+0.63%** del total comprando; ponderando cada trade
+    por el crédito de la rampa queda **+1.06% vs +0.63%** (p=0.136 por permutación, **NO
+    significativo**) comprando y **+0.38% vs −0.31%** vendiendo (p=0.022). Dentro de la rampa
+    entera (<2 ATR): +0.23 pp comprando (t=0.56) y **+0.79 pp vendiendo (t=2.13)**. Por bandas
+    del lado comprador:
+    [0.5,1.5) ATR da +1.90% (n=96, t=3.65) y [1.5,2) da −0.49% (n=45) — la no-monotonía con
+    n≈45 por bucket es la razón de que el bonus esté **acotado a 6 puntos** y no sea un
+    componente de peso completo. A 2.5 ATR el efecto comprador se diluye a +0.07 pp: por eso la
+    rampa muere en 2.0.
+  - **NO es una propiedad de la media, es una interacción con la señal**: sobre entradas
+    **incondicionales** (95.107 por lado, cada 5 ruedas) la cercanía no aporta nada (−0.03 pp
+    comprando, t=−0.95; +0.08 pp vendiendo). Comprar cerca de la 200 porque sí no tiene edge.
+  - **No duplica la penalización contra-tendencia** aunque las dos miren la SMA200: aquella dice
+    "pegado a la media el régimen no está definido, no castigues"; ésta dice "pegado a la media
+    hay un nivel de referencia, suma". De hecho el bucket que mejor rindió comprando (−1.5 a
+    −0.5 ATR de la SMA200: **+2.13%/trade, n=63**) es justo el que la pena golpeaba casi entero.
+  - **El mismo cálculo alimenta la narrativa** (`_generate_thesis` línea "Confluencia:" y
+    `_generate_rationale` bullet "Media mayor:"): si el score premia la media, la tarjeta tiene
+    que poder explicarlo — y sale de una sola función, no de una segunda implementación.
+  - Tests: `tests/test_invariantes.py` §15. ⚠ **No requiere reinstalar el bridge**: `sma100_val`
+    y `sma200_val` ya viajan en `chart.mas` (`MA_PERIODS` del bridge incluye 100) y el cálculo
+    es server-side; el cloud importa `_score_stock` de `vista_web` tal cual.
 - **RAMPAS, NO ESCALONES (2026-10)**: dos componentes saltaban enteros al cruzar un borde, y
   producían diferencias grandes de score entre dos días en que no había cambiado nada real.
   1. **Penalización contra-tendencia**: los hasta 15 puntos (el 15% de la escala) se cobraban en
