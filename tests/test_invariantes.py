@@ -1617,3 +1617,40 @@ def test_el_score_relajado_dice_que_es_relajado():
     cuerpo = src[i:src.index("\ndef ", i + 10)]
     assert "El techo real de este score es 46" in cuerpo
     assert '"key": "fuerza"' in cuerpo and '"key": "total"' in cuerpo
+
+
+def test_el_desglose_no_puede_romper_el_score():
+    """Un simbolo SIN trades historicos tiene expectancy/pf/avg_win en None —
+    el caso mas comun, no un borde. Un `float(None)` en los insumos tiraba
+    _score_stock, y como el cloud envuelve compute_top3 en un try que devuelve
+    [], UNA excepcion dejaba Top Recomendaciones VACIO con 99 analisis sanos
+    en el cache. Caso real en produccion."""
+    a = _analisis_puntuable()
+    a["backtest"] = {"confidence": 0}          # backtest vacio: todo None
+    parts = []
+    sc = vw._score_stock("TEST", a, parts=parts)   # no debe lanzar
+    assert sc is not None and parts
+    # y con TODAS las claves explicitamente en None tampoco
+    a["backtest"] = {k: None for k in (
+        "confidence", "buy_win_rate", "buy_expectancy", "buy_profit_factor",
+        "buy_count", "buy_count_trend", "buy_win_rate_trend", "buy_avg_win",
+        "buy_avg_loss", "buy_baseline_expectancy", "buy_baseline_profit_factor",
+        "buy_baseline_win_rate", "baseline_count")}
+    parts2 = []
+    assert vw._score_stock("TEST", a, parts=parts2) is not None
+    for p in parts2:
+        for x in p["inputs"]:
+            assert "None" not in str(x["val"]), f"{p['key']}: {x}"
+
+
+def test_un_simbolo_roto_no_vacia_el_ranking():
+    """compute_top3 aisla cada simbolo: el cloud traga la excepcion y devuelve
+    [], asi que sin aislamiento un solo symbol defectuoso borra el Top."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index("def compute_top3")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    j = cuerpo.index("score = _score_stock(sym, data, min_target_pct, parts=breakdown)")
+    # la linea inmediatamente anterior tiene que ser el `try:`
+    antes = [l for l in cuerpo[:j].splitlines() if l.strip()][-1]
+    assert antes.strip() == "try:", f"la llamada no esta aislada: {antes!r}"
+    assert "continue" in cuerpo[j:j + 900]

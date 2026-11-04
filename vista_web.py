@@ -1178,7 +1178,10 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
                "mismo periodo. Mide calidad de la señal, no ganancia: el "
                "baseline se mide por simbolo porque la deriva de cada activo "
                "es distinta.",
-          inputs=[_in("Del setup", f"{float(expectancy):+.2f}% por trade"),
+          # `expectancy` es None cuando el simbolo no tuvo NINGUNA señal
+          # historica de este lado — el caso mas comun, no un borde raro.
+          inputs=[_in("Del setup", f"{float(expectancy):+.2f}% por trade"
+                      if expectancy is not None else None),
                   _in("Entrando al azar", f"{float(_base):+.2f}% por trade" if _base is not None else None),
                   _in("Edge", f"{exp_val:+.2f} pp" if _base is not None else None),
                   _in("Ganador medio", f"{float(_avg_w):+.2f}%" if _avg_w is not None else None),
@@ -2571,7 +2574,16 @@ def compute_top3(cache, min_target_pct=None, universe=None):
     scored = []
     for sym, data in vigentes:
         breakdown = []
-        score = _score_stock(sym, data, min_target_pct, parts=breakdown)
+        try:
+            score = _score_stock(sym, data, min_target_pct, parts=breakdown)
+        except Exception as e:
+            # Un simbolo que explota NO puede vaciar el ranking entero: el
+            # caller del cloud envuelve compute_top3 en un try que devuelve [],
+            # asi que una excepcion en UN symbol dejaba Top Recomendaciones en
+            # blanco con 99 analisis sanos en el cache. Caso real: un `float()`
+            # sobre una expectancy None (simbolo sin trades historicos).
+            print(f"[SCORE] {sym}: {e}")
+            continue
         if score is not None:
             scored.append((sym, data, score, breakdown))
 
