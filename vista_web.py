@@ -1027,10 +1027,26 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     Se llena aca adentro, junto al calculo, a proposito: un desglose
     reconstruido afuera se desincroniza con la formula en el primer cambio.
     """
-    def _part(lab, pts, mx, why):
+    def _part(lab, pts, mx, why, key=None, what=None, inputs=None, caveat=None):
+        """Una fila del desglose.
+
+        `key` es un id ESTABLE para que el front enrute texto e insumos sin
+        mirar el `lab`: matchear por la etiqueta en castellano es la trampa de
+        subcadenas que este repo ya pago una vez ("SOBREVENTA" contiene
+        "VENTA"). `what` dice QUE MIDE el componente, `inputs` son los numeros
+        crudos de los que sale (para no obligar a parsear el `why`), y
+        `caveat` es el "que NO es" — todo junto al calculo, porque un texto
+        escrito en otro lado se desincroniza con la formula.
+        """
         if parts is not None:
             parts.append({"lab": lab, "pts": round(float(pts), 1),
-                          "max": mx, "why": why})
+                          "max": mx, "why": why, "key": key, "what": what,
+                          "inputs": [i for i in (inputs or []) if i],
+                          "caveat": caveat})
+
+    def _in(lab, val):
+        """Un insumo del desglose; None si no hay dato (se filtra solo)."""
+        return {"lab": lab, "val": val} if val not in (None, "") else None
     sig = data.get("signal", "HOLD")
     label = data.get("signal_label", sig)
     is_bearish = _label_is_bearish(label)
@@ -1064,6 +1080,8 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         base_exp = bt.get("sell_baseline_expectancy")
         base_pf = bt.get("sell_baseline_profit_factor")
         base_wr = bt.get("sell_baseline_win_rate")
+        _avg_w = bt.get("sell_avg_win")
+        _avg_l = bt.get("sell_avg_loss")
     else:
         wr = bt.get("buy_win_rate", 0) or 0
         expectancy = bt.get("buy_expectancy")
@@ -1074,6 +1092,12 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         base_exp = bt.get("buy_baseline_expectancy")
         base_pf = bt.get("buy_baseline_profit_factor")
         base_wr = bt.get("buy_baseline_win_rate")
+        _avg_w = bt.get("buy_avg_win")
+        _avg_l = bt.get("buy_avg_loss")
+    # El backtest ya exportaba el ganador/perdedor medio y el n del baseline;
+    # nadie los leia. Son justo lo que hace falta para que el desglose muestre
+    # de que muestra sale cada numero en vez de pedir que se confie en el.
+    _base_n = bt.get("baseline_count") or 0
 
     # Small-sample shrinkage: with few historical trades, trust the edge less.
     robust_n = getattr(config, "BACKTEST_ROBUST_TRADES", 12)
@@ -1082,7 +1106,19 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     # Component 1: snapshot conviction (0-25)
     s1 = min(strength / 5.1, 1.0) * 25
     _part("Fuerza de la señal", s1, 25, f"{strength:.1f} de 5.1 — indicadores "
-          f"que confirman y con que intensidad")
+          f"que confirman y con que intensidad", key="fuerza",
+          what="Cuantos de los tres indicadores confirman HOY y con que "
+               "intensidad. 3.0 = los tres alineados; arriba de 3 cada decima "
+               "es un extra (RSI en extremo, piso/techo confirmado, flujo "
+               "institucional a favor). El maximo de 5.1 es la suma de todos "
+               "esos extras.",
+          # Las lecturas de MACD/RSI/Koncorde NO van aca: llegan solas como
+          # bullets ruteados del racional (con su ✓/✗, que dice mas). Ponerlas
+          # en los dos lados repetia los mismos strings dentro del mismo panel.
+          inputs=[_in("Fuerza", f"{strength:.1f} / 5.1"),
+                  _in("Condiciones", f"{conditions}/3")],
+          caveat="Es la foto de hoy: no tiene nada de historico. Una fuerza "
+                 "alta no dice que el setup haya funcionado antes.")
 
     # Component 2: EDGE contra el baseline del simbolo (0-30), shrunk by sample.
     #
@@ -1136,7 +1172,21 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         _exp_why = (f"{exp_val:+.2f}% por trade, neto de costes (sin baseline "
                     f"medido) · {_muestra}")
     _part("Edge sobre el baseline" if _base is not None else "Expectancy historica",
-          s2, 30, _exp_why + _ancla(15))
+          s2, 30, _exp_why + _ancla(15), key="edge",
+          what="Cuanto rindio este setup por trade en 5 años, MENOS lo que "
+               "habria rendido entrar sin condicion en el mismo activo y el "
+               "mismo periodo. Mide calidad de la señal, no ganancia: el "
+               "baseline se mide por simbolo porque la deriva de cada activo "
+               "es distinta.",
+          inputs=[_in("Del setup", f"{float(expectancy):+.2f}% por trade"),
+                  _in("Entrando al azar", f"{float(_base):+.2f}% por trade" if _base is not None else None),
+                  _in("Edge", f"{exp_val:+.2f} pp" if _base is not None else None),
+                  _in("Ganador medio", f"{float(_avg_w):+.2f}%" if _avg_w is not None else None),
+                  _in("Perdedor medio", f"{float(_avg_l):+.2f}%" if _avg_l is not None else None),
+                  _in("Muestra", f"{n_side} trades del setup"),
+                  _in("Muestra del baseline", f"{_base_n} entradas al azar" if _base_n else None)],
+          caveat="No es el retorno que vas a obtener: es el promedio historico "
+                 "de una simulacion con costes, no una posicion tuya.")
 
     # Component 3: profit factor (0-15), shrunk by sample size
     pf_val = float(pf) if pf is not None else 1.0
@@ -1156,12 +1206,38 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         _pf_txt += f" vs {float(base_pf):.2f} del baseline (x{_pf_rel:.2f})"
     _part("Profit factor", s3, 15,
           f"{_pf_txt} — dolares ganados por dolar perdido, relativo a entrar al "
-          f"azar (1.0 = no aporta, 2.5+ = maximo) · {_muestra}" + _ancla(0))
+          f"azar (1.0 = no aporta, 2.5+ = maximo) · {_muestra}" + _ancla(0),
+          key="pf",
+          what="Por cada dolar que perdieron los trades perdedores, cuantos "
+               "ganaron los ganadores. Se puntua RELATIVO al baseline: un PF "
+               "de 1.3 en un activo donde entrar al azar ya da 1.2 casi no "
+               "aporta.",
+          inputs=[_in("PF del setup", "sin perdedores" if pf_val >= 999 else f"{pf_val:.2f}"),
+                  _in("PF del baseline", f"{float(base_pf):.2f}" if base_pf else None),
+                  _in("Relativo", f"x{_pf_rel:.2f}" if base_pf and pf_val < 999 else None),
+                  _in("Muestra", f"{n_side} trades del setup")],
+          caveat="PF 999 significa que NO hubo trades perdedores en la muestra "
+                 "— con pocos trades eso es falta de evidencia, no un edge "
+                 "enorme.")
 
     # Component 4: calibrated confidence / statistical robustness (0-15)
     s4 = min(confidence / 100, 1.0) * 15
     _part("Confianza del backtest", s4, 15,
-          f"{confidence:.0f}/100 — significancia estadistica del edge x muestra")
+          f"{confidence:.0f}/100 — significancia estadistica del edge x muestra",
+          key="conf",
+          what="Que tan creible es que el edge medido no sea casualidad. Sale "
+               "de la significancia estadistica de que la expectancy sea mayor "
+               "que cero, multiplicada por el tamaño de la muestra: pocos "
+               "trades empujan el valor hacia el medio aunque el promedio se "
+               "vea bien.",
+          inputs=[_in("Confianza", f"{confidence:.0f} / 100"),
+                  _in("Trades de este lado", f"{n_side}"),
+                  _in("Muestra plena a partir de", f"{robust_n} trades"),
+                  _in("Peso de la muestra", f"{sample_w * 100:.0f}%")],
+          caveat="NO es probabilidad de ganar. Un 0 es un resultado real (hubo "
+                 "señales pero sin edge robusto), distinto de no haber tenido "
+                 "ninguna señal historica. Ojo: se calcula mezclando los dos "
+                 "lados del backtest, no solo el de esta señal.")
 
     # Component 5: win rate (0-10), relativo al baseline y shrunk al neutral.
     # Un 30% de aciertos shorteando no dice nada si entrar al azar tambien da 30%.
@@ -1175,7 +1251,17 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         _wr_norm = min(wr, 1.0)
         _wr_why = f"{wr * 100:.0f}% historico (sin baseline medido) · {_muestra}"
     s5 = 5.0 + (_wr_norm * 10 - 5.0) * sample_w
-    _part("Win rate", s5, 10, _wr_why + _ancla(5))
+    _part("Win rate", s5, 10, _wr_why + _ancla(5), key="wr",
+          what="Que porcentaje de los trades del setup cerro en ganancia, "
+               "comparado con el porcentaje que da entrar al azar en el mismo "
+               "activo. Lo que puntua es la diferencia, no el numero suelto.",
+          inputs=[_in("Del setup", f"{wr * 100:.0f}%"),
+                  _in("Entrando al azar", f"{float(base_wr) * 100:.0f}%" if base_wr is not None else None),
+                  _in("Diferencia", f"{(min(wr, 1.0) - float(base_wr)) * 100:+.0f} pp" if base_wr is not None else None),
+                  _in("Muestra", f"{n_side} trades del setup")],
+          caveat="Un win rate bajo con ganadores grandes puede ser mejor "
+                 "negocio que uno alto con ganadores chicos: mirarlo junto al "
+                 "ganador y el perdedor medio.")
 
     # Component 6: how close the setup is to being executable (0-5).
     #
@@ -1209,7 +1295,18 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
             _s6_why = (f"{label} ({conditions}/3) — lo que falta es un giro "
                        f"(MACD o Koncorde), que cambia de signo demasiado "
                        f"seguido como para puntuar su cercania")
-    _part("Señal activa", s6, 5, _s6_why)
+    _part("Señal activa", s6, 5, _s6_why, key="activa",
+          what="Si el setup es EJECUTABLE hoy. Las tres condiciones cumplidas "
+               "(3/3) cobran los 5 puntos. Un 2/3 cobra credito parcial solo "
+               "si lo que falta es el RSI, proporcional a su distancia al "
+               "umbral: el RSI cambia de estado el 2.3% de los dias, mientras "
+               "el giro del MACD lo hace el 27.7% y el del Koncorde el 43.3%, "
+               "asi que premiar la cercania de un giro seria premiar ruido.",
+          inputs=[_in("Etiqueta", label),
+                  _in("Condiciones", f"{conditions}/3"),
+                  _in("Orden ejecutable", "si" if sig in ("BUY", "SELL") else "no")],
+          caveat="Mide cercania al gatillo, no calidad: un 3/3 en un activo sin "
+                 "edge historico cobra los 5 puntos igual.")
 
     score = s1 + s2 + s3 + s4 + s5 + s6
 
@@ -1277,7 +1374,26 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
                     _why += (f" — descontada en parte: {n_side - n_trend} de "
                              f"{n_side} trades medidos fueron contra-tendencia")
             score -= pen
-            _part("Penalizacion contra-tendencia", -pen, None, _why)
+            _part("Penalizacion contra-tendencia", -pen, None, _why, key="trend",
+                  what="Resta cuando la señal pelea contra la tendencia de "
+                       "fondo (comprar bajo la SMA200 o vender sobre ella). La "
+                       "pena crece en rampa con la distancia a la media: "
+                       "pegado a ella el regimen todavia no esta definido. Y "
+                       "se descuenta en la proporcion en que la muestra "
+                       "historica YA se midio en este mismo regimen, porque "
+                       "entonces el edge ya lo tiene en cuenta.",
+                  inputs=[_in("Precio", f"${price:,.2f}"),
+                          _in("SMA200", f"${sma200:,.2f}"),
+                          _in("Distancia", f"{abs(price - sma200) / _atr_sc:.1f} ATR"),
+                          _in("Pena aplicada", f"{_ramp * 100:.0f}% de la base"),
+                          _in("Trades con-tendencia", f"{n_trend} de {n_side}" if n_side else None),
+                          _in("Win rate con-tendencia",
+                              f"{wr_trend * 100:.0f}%" if wr_trend is not None else
+                              ("ningun trade con-tendencia" if n_side else None))],
+                  caveat="Es un prior sobre lo NO observado, no una medicion "
+                         "de este setup. Queda un piso del 40% aunque toda la "
+                         "muestra sea de este regimen: operar contra la SMA200 "
+                         "es estructuralmente mas fragil.")
 
     # Confluencia con una MEDIA MAYOR (SMA200 / SMA100): bonus ACOTADO.
     #
@@ -1318,7 +1434,20 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
               f"(<2 ATR de la 200 o la 100) rindieron +0.81% vs +0.59% del resto "
               f"comprando (NO significativo, t=0.6) y +0.42% vs -0.37% vendiendo "
               f"(t=2.1), 217 simbolos x 10A; sobre entradas al azar la cercania "
-              f"no aporta nada, es una interaccion con la señal")
+              f"no aporta nada, es una interaccion con la señal",
+              key="ma",
+              what="Si el precio esta apoyado en la SMA200 o la SMA100, que es "
+                   "la referencia que mas se mira para entrar. Suma igual sea "
+                   "soporte o techo: lo que importa es que haya un nivel. El "
+                   "credito cae en rampa entre 1 y 2 ATR de distancia y es "
+                   "bonus puro, nunca castigo.",
+              inputs=[_in(d["name"], f"${d['level']:,.2f} a {d['dist_atr']:.1f} ATR "
+                                     f"({d['role']}, {d['credit'] * 100:.0f}% del credito)")
+                      for d in _ma_near],
+              caveat="Es una interaccion con la señal, no una propiedad de la "
+                     "media: sobre entradas al azar la cercania no aporta nada. "
+                     "Comprando el efecto medido NO es significativo (t=0.6); "
+                     "por eso el tope son 6 puntos y no mas.")
 
     # Confluencia con figura tecnica (patterns.py): bonus/malus ACOTADO — una
     # figura chartista alineada con el label refuerza el setup; una confirmada
@@ -1342,12 +1471,50 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
             _part("Figura tecnica", _d, None,
                   f"{pat.get('name', 'figura')} {pat_dir} ({pat.get('status')}) — "
                   + ("a favor de la tesis" if aligned else "CONTRA la tesis")
-                  + ", edge medido sobre 217 simbolos x 10A")
+                  + ", edge medido sobre 217 simbolos x 10A",
+                  key="figura",
+                  what="Suma o resta segun la figura chartista detectada. Solo "
+                       "pesan las figuras con edge MEDIDO (217 simbolos x 10 "
+                       "años, hit-rate contra su propio baseline aleatorio): "
+                       "las de tier contexto aportan niveles pero no mueven el "
+                       "ranking. Alineada y confirmada +5, alineada en "
+                       "formacion +2.5, confirmada en contra -3.",
+                  inputs=[_in("Figura", pat.get("name")),
+                          _in("Direccion", pat_dir),
+                          _in("Estado", pat.get("status")),
+                          _in("Encuadre", "a favor de la tesis" if aligned else "CONTRA la tesis"),
+                          _in("Objetivo medido", f"${pat['target']:,.2f}" if pat.get("target") else None),
+                          _in("Se anula en", f"${pat['invalidation']:,.2f}" if pat.get("invalidation") else None)],
+                  caveat="El edge de la figura se midio con un limite de 40 "
+                         "ruedas: una figura de objetivo lejano queda "
+                         "castigada por el test, no necesariamente por el "
+                         "mercado.")
 
+    _raw = score
     score = max(0.0, min(100.0, score))
     if parts is not None:
+        # Los seis componentes con techo suman 100; la confluencia (+6), la
+        # figura (-3..+5) y la penalizacion contra-tendencia son AJUSTES fuera
+        # de esa escala, asi que el crudo puede pasarse de 100 y recortarse.
+        # Decirlo: antes el panel mostraba filas que sumaban hasta 106 debajo
+        # de un TOTAL que decia "/ 100" sin explicar el recorte.
+        _tot_why = "suma de los seis componentes base (100) mas los ajustes"
+        if abs(_raw - score) > 0.05:
+            _tot_why += f"; el crudo dio {_raw:.1f} y se recorto a 0-100"
         parts.append({"lab": "TOTAL", "pts": round(score, 1), "max": 100,
-                      "why": "acotado a 0-100"})
+                      "why": _tot_why, "key": "total",
+                      "what": "Ranking 0-100 para ordenar oportunidades entre "
+                              "si. Los seis primeros componentes tienen techo "
+                              "y suman 100; la confluencia, la figura y la "
+                              "penalizacion son ajustes que se suman despues y "
+                              "pueden sacar el crudo de esa escala, por eso se "
+                              "recorta al final.",
+                      "inputs": [], "caveat":
+                          "NO es probabilidad de acierto ni retorno esperado. "
+                          "Mide calidad de la señal — si le gana a entrar al "
+                          "azar en ESTE activo —, asi que un setup bajista "
+                          "puede puntuar bien y aun asi perder plata "
+                          "ejecutado como corto."})
     return score
 
 
@@ -2448,20 +2615,43 @@ def compute_top3(cache, min_target_pct=None, universe=None):
                     c3 += MA_CONFLUENCE_EXTRA_PTS * _near[1]["credit"]
             s = c1 + c2 + c3
             if s > 0:
+                # Mismas claves que el desglose completo para que el panel las
+                # sepa desplegar. El techo REAL de este score es 46, no 100:
+                # decirlo, porque si no un 40 relajado parece comparable con un
+                # 40 del ranking completo y no lo es.
                 scored.append((sym, data, round(s, 1), [
                     {"lab": "Fuerza de la señal", "pts": round(c1, 1), "max": 25,
-                     "why": f"{strength:.1f} de 5.1"},
+                     "why": f"{strength:.1f} de 5.1", "key": "fuerza",
+                     "what": "Cuantos indicadores confirman hoy y con que "
+                             "intensidad. 3.0 = los tres alineados.",
+                     "inputs": [], "caveat": "Es la foto de hoy, sin historia."},
                     {"lab": "Confianza del backtest", "pts": round(c2, 1), "max": 15,
-                     "why": f"{confidence:.0f}/100"},
+                     "why": f"{confidence:.0f}/100", "key": "conf",
+                     "what": "Significancia estadistica del edge historico, "
+                             "castigada por el tamaño de la muestra.",
+                     "inputs": [], "caveat": "NO es probabilidad de ganar."},
                 ] + ([{"lab": "Confluencia con media mayor", "pts": round(c3, 1),
                        "max": MA_CONFLUENCE_PTS + MA_CONFLUENCE_EXTRA_PTS,
+                       "key": "ma", "inputs": [],
+                       "what": "El precio esta apoyado en la SMA200 o la SMA100.",
+                       "caveat": "Es una interaccion con la señal, no una "
+                                 "propiedad de la media.",
                        "why": "precio apoyado en " + " y ".join(
                            f"{d['name']} ${d['level']:,.2f} a {d['dist_atr']:.1f} ATR "
                            f"({d['role']})" for d in _near)}] if c3 else []) + [
                     {"lab": "TOTAL", "pts": round(s, 1), "max": 100,
+                     "key": "total", "inputs": [],
                      "why": "score relajado: el setup no califica para el ranking "
                             "completo, se puntua conviccion + robustez (+ la "
-                            "confluencia con una media mayor si la hay)"},
+                            "confluencia con una media mayor si la hay)",
+                     "what": "Este simbolo entro al Top por el fallback "
+                             "relajado: no califica para el ranking completo, "
+                             "asi que no se le midieron edge, profit factor ni "
+                             "win rate. Solo puntua conviccion de hoy y "
+                             "robustez historica.",
+                     "caveat": "El techo real de este score es 46, no 100: no "
+                               "es comparable con el de una tarjeta del "
+                               "ranking completo."},
                 ]))
         scored.sort(key=lambda x: x[2], reverse=True)
 
@@ -2834,8 +3024,27 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 /* Desglose del score: de donde sale cada punto */
 .sco{background:var(--glass);border:1px solid var(--glass-border);border-radius:var(--radius);padding:14px;margin-bottom:14px}
 .sco-t{font-size:10px;font-weight:700;color:#2456e6;text-transform:uppercase;letter-spacing:.6px;margin-bottom:9px}
-.sco-r{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;font-size:12px;padding:3px 0 6px;cursor:help}
-.sco-r:hover{background:rgba(36,86,230,.04)}
+.sco-r{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;font-size:12px;padding:3px 0 6px}
+.sco-r.sco-c{cursor:pointer;border-radius:6px;margin:0 -6px;padding-left:6px;padding-right:6px}
+.sco-r.sco-c:hover{background:rgba(36,86,230,.05)}
+.sco-hint{font-weight:500;text-transform:none;letter-spacing:0;color:var(--dim);font-size:9px;margin-left:6px}
+.sco-ar{display:inline-block;font-style:normal;color:var(--dim);margin-right:5px;transition:transform .12s ease;font-size:9px}
+.sco-r.open>.sco-l>.sco-ar{transform:rotate(90deg);color:var(--accent)}
+.sco-sep{grid-column:1/-1;font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--dim);margin:8px 0 4px;border-top:1px dashed var(--glass-border);padding-top:7px}
+.sco-sep span{font-weight:500;text-transform:none;letter-spacing:0}
+/* Detalle desplegable: oculto por defecto para que el recuadro no crezca */
+.sco-d{grid-column:1/-1;display:none;margin:4px 0 8px;padding:10px 11px;background:var(--surface);border:1px solid var(--border-subtle);border-radius:8px;cursor:default}
+.sco-r.open>.sco-d{display:block}
+.sco-d-s{font-size:11px;line-height:1.5;color:var(--text);margin-bottom:7px}
+.sco-d-s b{color:var(--accent);font-weight:700}
+.sco-d-h{font-size:9px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);margin:9px 0 4px}
+.sco-in{display:flex;justify-content:space-between;gap:12px;font-size:11px;padding:2px 0;border-bottom:1px dotted var(--border-subtle)}
+.sco-in span{color:var(--muted)}
+.sco-in b{color:var(--text);font-variant-numeric:tabular-nums;text-align:right}
+.sco-rb{font-size:11px;line-height:1.45;color:var(--muted);padding:2px 0 2px 10px;border-left:2px solid var(--border);margin:3px 0}
+.sco-d-w{font-size:11px;line-height:1.45;color:var(--text);margin-top:9px;padding:7px 9px;background:rgba(180,83,9,.07);border-radius:6px}
+.sco-d-w b{color:var(--hold);font-weight:700}
+.sco-ctx .sco-l{color:var(--dim)}
 .sco-l{color:var(--muted);font-weight:600}
 .sco-v{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--text);white-space:nowrap}
 .sco-v.neg{color:var(--sell)}
@@ -4481,7 +4690,7 @@ function renderPortAnalysisList(positions){
     html+='<div class="rec-m"><span class="rec-ml" title="Retorno promedio historico de este setup en el backtest 5A — no es el retorno de tu posicion">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
     let bearPos=_labelIsBearish(rec.signal_label||sig);
-    html+=scoreBreakdownHTML(rec.score_parts);
+    html+=scoreBreakdownHTML(rec.score_parts,rec.rationale);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio'+(opt?(' &middot; '+usym):'')+'</div>';
     if(opt&&opt.is_strategy){
       // Un paquete no tiene strike ni prima unica: lo que lo define son los
@@ -4524,10 +4733,10 @@ function renderPortAnalysisList(positions){
     html+='</div>'; // end right
     html+='</div>'; // end 2col
 
-    // Rationale
-    html+='<div class="rec-rat"><div class="rec-rt">Detalle del Análisis</div>';
-    if(rec.rationale&&rec.rationale.length>0){for(let l of rec.rationale)html+='<div class="rec-ri">'+l+'</div>';}
-    html+='</div>';
+    // El "Detalle del Analisis" suelto se retiro: sus bullets ahora viven
+    // DENTRO del componente del score que alimentan (ver _ratRoute), y los que
+    // no puntuan quedan en la fila "Contexto que no puntua". Repetirlos abajo
+    // era la tercera copia de los mismos datos en la misma tarjeta.
 
     html+='</div></details>';
   }
@@ -5645,26 +5854,101 @@ function figChips(r){
   }
   return h;
 }
-function scoreBreakdownHTML(sp){
+// Enruta los bullets del racional al componente del score que ALIMENTAN.
+// El ruteo va por PREFIJO literal (los emite _generate_rationale) y en JS a
+// proposito: el HTML es compartido con el cloud, asi que de este lado el
+// espejo sale gratis. Hay test de que ningun bullet queda huerfano: si alguien
+// cambia un prefijo, el bullet cae en 'contexto' y el test lo caza.
+const _RAT_ROUTE=[
+  [/^MACD /,'fuerza'], [/^RSI /,'fuerza'], [/^Koncorde /,'fuerza'],
+  [/^Señal de /,'activa'], [/condiciones del sistema/,'activa'],
+  [/^Backtest 5Y:/,'edge'],
+  [/^Tendencia:/,'trend'],
+  [/^Media mayor:/,'ma'],
+  [/^Figura:/,'figura'], [/^Figura secundaria:/,'figura'], [/^Fibonacci:/,'figura'],
+];
+function _ratRoute(rat){
+  let out={contexto:[]};
+  for(let b of (rat||[])){
+    let hit=_RAT_ROUTE.find(([re])=>re.test(b));
+    let k=hit?hit[1]:'contexto';
+    (out[k]=out[k]||[]).push(b);
+  }
+  return out;
+}
+
+let _scoSeq=0;
+function toggleSco(id){
+  // Mismo patron liviano que toggleThTrade/toggleOlabStrat: classList.toggle,
+  // sin re-render. Re-renderizar aca destruiria los charts de la tarjeta padre.
+  let r=document.getElementById(id);
+  if(r)r.classList.toggle('open');
+}
+
+function scoreBreakdownHTML(sp,rationale){
   // Desglose de la formula del score. Las filas vienen del SERVIDOR
   // (_score_stock las llena junto al calculo) — reconstruirlas aca se
   // desincronizaria con la formula en el primer cambio de pesos.
   if(!sp||!sp.length)return '';
-  let h='<div class="sco"><div class="sco-t" title="Cada componente con los puntos que aporto y por que. Pasa el cursor por una fila para el detalle.">Cómo se compone el Score</div>';
-  for(let p of sp){
-    let tot=(p.lab==='TOTAL');
-    let neg=(p.pts<0);
+  let rat=_ratRoute(rationale);
+  let esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let gid='sco'+(++_scoSeq);
+  let h='<div class="sco"><div class="sco-t">Cómo se compone el Score '+
+        '<span class="sco-hint">tocá cada fila para ver de dónde sale</span></div>';
+  let ajustesAbierto=false;
+  for(let i=0;i<sp.length;i++){
+    let p=sp[i];
+    let tot=(p.lab==='TOTAL'), neg=(p.pts<0);
+    let base=(p.max!=null&&p.max>0&&!tot);
+    // Separador entre los componentes con techo (suman 100) y los ajustes que
+    // quedan fuera de esa escala. Sin esto, las filas sumaban hasta 106 debajo
+    // de un TOTAL que decia "/ 100".
+    if(!tot&&!base&&!ajustesAbierto){
+      ajustesAbierto=true;
+      h+='<div class="sco-sep">Ajustes <span>fuera de la escala de 100</span></div>';
+    }
     let val=(p.pts>0&&!tot?'+':'')+p.pts.toFixed(1);
-    h+='<div class="sco-r'+(tot?' sco-tot':'')+'" title="'+String(p.why||'').replace(/"/g,'&quot;')+'">';
-    h+='<span class="sco-l">'+p.lab+'</span>';
+    let rid=gid+'_'+i;
+    let bullets=(p.key&&rat[p.key])||[];
+    let tieneDetalle=!!(p.what||p.why||bullets.length||(p.inputs||[]).length||p.caveat);
+    h+='<div class="sco-r'+(tot?' sco-tot':'')+(tieneDetalle?' sco-c':'')+'" id="'+rid+'"'+
+       (tieneDetalle?' onclick="toggleSco(\''+rid+'\')"':'')+'>';
+    h+='<span class="sco-l">'+(tieneDetalle?'<i class="sco-ar">&#9656;</i>':'')+esc(p.lab)+'</span>';
     h+='<span class="sco-v'+(neg?' neg':'')+'">'+val+(p.max!=null?'<span class="sco-max"> / '+p.max+'</span>':'')+'</span>';
-    if(!tot&&p.max!=null&&p.max>0){
+    if(base){
       h+='<span class="sco-bar"><i style="width:'+Math.max(0,Math.min(100,p.pts/p.max*100)).toFixed(0)+'%"></i></span>';
     }else if(!tot){
-      // Ajuste sin techo (penalizacion / figura): barra relativa a ±15
-      h+='<span class="sco-bar'+(neg?' neg':'')+'"><i style="width:'+Math.min(100,Math.abs(p.pts)/15*100).toFixed(0)+'%"></i></span>';
+      // Ajuste sin techo: la barra es relativa a +-15, que es el rango que
+      // pueden mover entre todos. Se dice, en vez de dejar una barra muda.
+      h+='<span class="sco-bar'+(neg?' neg':'')+'" title="proporcion sobre los ±15 puntos que los ajustes pueden mover"><i style="width:'+Math.min(100,Math.abs(p.pts)/15*100).toFixed(0)+'%"></i></span>';
+    }
+    if(tieneDetalle){
+      h+='<div class="sco-d">';
+      if(p.what)h+='<div class="sco-d-s"><b>Qué mide.</b> '+esc(p.what)+'</div>';
+      if(p.why)h+='<div class="sco-d-s"><b>En este caso.</b> '+esc(p.why)+'</div>';
+      if((p.inputs||[]).length){
+        h+='<div class="sco-d-h">De dónde sale</div>';
+        for(let x of p.inputs)h+='<div class="sco-in"><span>'+esc(x.lab)+'</span><b>'+esc(x.val)+'</b></div>';
+      }
+      if(bullets.length){
+        h+='<div class="sco-d-h">Lo que el análisis vio</div>';
+        for(let b of bullets)h+='<div class="sco-rb">'+esc(b)+'</div>';
+      }
+      if(p.caveat)h+='<div class="sco-d-w"><b>Ojo.</b> '+esc(p.caveat)+'</div>';
+      h+='</div>';
     }
     h+='</div>';
+  }
+  // Lo que el racional dice y NO entra en el score: no se esconde, pero se
+  // rotula para que no se confunda con un insumo del ranking.
+  if((rat.contexto||[]).length){
+    let cid=gid+'_ctx';
+    h+='<div class="sco-r sco-c sco-ctx" id="'+cid+'" onclick="toggleSco(\''+cid+'\')">';
+    h+='<span class="sco-l"><i class="sco-ar">&#9656;</i>Contexto que no puntúa</span>';
+    h+='<span class="sco-v"><span class="sco-max">'+rat.contexto.length+'</span></span>';
+    h+='<div class="sco-d"><div class="sco-d-s">Niveles, fundamentales y datos de mercado: informan la decisión pero no mueven el Score.</div>';
+    for(let b of rat.contexto)h+='<div class="sco-rb">'+esc(b)+'</div>';
+    h+='</div></div>';
   }
   return h+'</div>';
 }
@@ -6127,7 +6411,7 @@ function renderTop3(top3,asOfRef){
     html+='<div class="rec-m"><span class="rec-ml" title="Porcentaje de veces que este mismo setup cerro en ganancia en 5A (neto de costes). Leerlo junto al R/R: un WR bajo con ganadores grandes puede ser mejor negocio.">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml" title="Retorno promedio por trade de este setup en el backtest 5A, neto de costes — no es el retorno de una posicion tuya.">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+=scoreBreakdownHTML(r.score_parts);
+    html+=scoreBreakdownHTML(r.score_parts,r.rationale);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
@@ -6147,10 +6431,10 @@ function renderTop3(top3,asOfRef){
     html+='</div>'; // end right
     html+='</div>'; // end 2col
 
-    // Rationale
-    html+='<div class="rec-rat"><div class="rec-rt">Detalle del Análisis</div>';
-    if(r.rationale&&r.rationale.length>0){for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';}
-    html+='</div>';
+    // El "Detalle del Analisis" suelto se retiro: sus bullets ahora viven
+    // DENTRO del componente del score que alimentan (ver _ratRoute), y los que
+    // no puntuan quedan en la fila "Contexto que no puntua". Repetirlos abajo
+    // era la tercera copia de los mismos datos en la misma tarjeta.
     // Score bar
     html+='<div class="rec-sb"><div class="rec-sf" style="width:'+r.score+'%"></div></div>';
 
@@ -7012,7 +7296,7 @@ function renderEtfTop3(top3,asOfRef){
     html+='<div class="rec-m"><span class="rec-ml" title="Porcentaje de veces que este mismo setup cerro en ganancia en 5A (neto de costes). Leerlo junto al R/R: un WR bajo con ganadores grandes puede ser mejor negocio.">Win Rate</span><span class="rec-mv" style="color:'+(r.win_rate>=0.6?'var(--buy)':'var(--muted)')+'">'+wr+'%</span></div>';
     html+='<div class="rec-m"><span class="rec-ml" title="Retorno promedio por trade de este setup en el backtest 5A, neto de costes — no es el retorno de una posicion tuya.">Ret. Prom.</span><span class="rec-mv" style="color:'+arCol+'">'+ar+'</span></div>';
     html+='</div>';
-    html+=scoreBreakdownHTML(r.score_parts);
+    html+=scoreBreakdownHTML(r.score_parts,r.rationale);
     html+='<div class="rec-levels"><div class="rec-lt">Niveles de Precio</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Entrada</span><span class="rec-lv lv-entry">$'+r.entry_low.toFixed(2)+' — $'+r.entry_high.toFixed(2)+'</span></div>';
     html+=recWhy(r.entry_basis?('Zona apoyada en '+r.entry_basis):'');
@@ -7032,7 +7316,10 @@ function renderEtfTop3(top3,asOfRef){
     html+='</div>'; // end right
     html+='</div>'; // end 2col
 
-    if(r.rationale&&r.rationale.length>0){html+='<div class="rec-rat"><div class="rec-rt">Detalle del Análisis</div>';for(let l of r.rationale)html+='<div class="rec-ri">'+l+'</div>';html+='</div>';}
+    // El "Detalle del Analisis" suelto se retiro: sus bullets ahora viven
+    // DENTRO del componente del score que alimentan (ver _ratRoute), y los que
+    // no puntuan quedan en la fila "Contexto que no puntua". Repetirlos abajo
+    // era la tercera copia de los mismos datos en la misma tarjeta.
     html+='<div class="rec-sb"><div class="rec-sf" style="width:'+r.score+'%"></div></div>';
 
     html+='</div>';

@@ -1502,3 +1502,118 @@ def test_un_calendar_no_se_inventa_como_vertical():
     out = ost.collapse(legs)
     assert len(out) == 2
     assert all(not p.get("option", {}).get("is_strategy") for p in out)
+
+
+# ── 15. El desglose del score se explica solo ────────────────────────
+# El panel mostraba una etiqueta, unos puntos y el "por que" escondido en un
+# tooltip (invisible en tactil). Ahora cada componente viaja con lo necesario
+# para explicarse: que mide, de que numeros sale y que NO es.
+
+def _analisis_puntuable():
+    """Analisis sintetico que pasa la elegibilidad de _score_stock."""
+    n = 300
+    ohlc = [{"time": f"2026-{(i % 12) + 1:02d}-15", "open": 100.0, "high": 101.0,
+             "low": 99.0, "close": 100.0} for i in range(n)]
+    return {
+        "signal": "BUY", "signal_label": "COMPRA FUERTE", "strength": 4.3,
+        "conditions_met": 3, "price": 100.0, "rsi_ok": True,
+        "macd_detail": "hist=-1.0 hace3r=-2.0 PISO CONFIRMADO",
+        "rsi_detail": "RSI=28.3 SOBREVENTA", "konc_detail": "marron=14 media=47",
+        "values": {"rsi": 28.3},
+        "backtest": {"confidence": 61, "buy_win_rate": .67, "buy_expectancy": 4.17,
+                     "buy_profit_factor": 4.79, "buy_count": 14, "buy_count_trend": 14,
+                     "buy_win_rate_trend": .7, "buy_avg_win": 7.9, "buy_avg_loss": -3.3,
+                     "buy_baseline_expectancy": -0.17, "buy_baseline_profit_factor": .93,
+                     "buy_baseline_win_rate": .36, "baseline_count": 199},
+        "chart": {"ohlc": ohlc, "mas": {"sma200_val": 90.0, "sma100_val": 97.0}},
+    }
+
+
+_SCORE_KEYS = {"fuerza", "edge", "pf", "conf", "wr", "activa", "ma", "trend",
+               "figura", "total"}
+
+
+def test_cada_componente_del_score_se_explica():
+    """Sin `key` el front tendria que matchear por la etiqueta en castellano,
+    que es exactamente la trampa de subcadenas que este repo ya pago."""
+    parts = []
+    assert vw._score_stock("TEST", _analisis_puntuable(), parts=parts) is not None
+    assert parts, "no se lleno el desglose"
+    for p in parts:
+        assert p.get("key") in _SCORE_KEYS, f"fila sin key reconocible: {p['lab']}"
+        assert p.get("what"), f"{p['key']}: no dice QUE MIDE"
+        assert p.get("caveat"), f"{p['key']}: no dice que NO es"
+        assert isinstance(p.get("inputs"), list)
+    # y los insumos no pueden traer huecos
+    for p in parts:
+        for x in p["inputs"]:
+            assert x["val"] not in (None, ""), f"{p['key']}: insumo vacio {x['lab']}"
+
+
+def test_los_componentes_con_techo_suman_exactamente_100():
+    """El panel decia '/ 100' mientras las filas sumaban hasta 106 con la
+    confluencia: el score crudo se pasaba y se recortaba en silencio."""
+    parts = []
+    vw._score_stock("TEST", _analisis_puntuable(), parts=parts)
+    base = [p for p in parts if p["key"] in ("fuerza", "edge", "pf", "conf", "wr", "activa")]
+    assert sum(p["max"] for p in base) == 100, [(p["key"], p["max"]) for p in base]
+    # los ajustes van sin techo, para que no se sumen a esa escala
+    for p in parts:
+        if p["key"] in ("ma",):
+            continue          # la confluencia si tiene techo propio (6)
+        if p["key"] in ("trend", "figura"):
+            assert p["max"] is None, f"{p['key']} no deberia tener techo"
+
+
+def test_el_total_avisa_cuando_recorto():
+    a = _analisis_puntuable()
+    a["strength"] = 5.1
+    parts = []
+    vw._score_stock("TEST", a, parts=parts)
+    tot = [p for p in parts if p["key"] == "total"][0]
+    assert tot["max"] == 100
+    assert "ajustes" in tot["why"]
+    assert tot["pts"] <= 100
+
+
+def test_el_ruteo_del_racional_cubre_los_prefijos_que_emite():
+    """El router vive en JS (el HTML es compartido con el cloud). Si alguien
+    renombra un prefijo del racional, el bullet cae en 'contexto' y deja de
+    explicar su componente — esto lo caza."""
+    h = vw.DASHBOARD_HTML
+    assert "_RAT_ROUTE" in h and "function _ratRoute" in h
+    tabla = h[h.index("const _RAT_ROUTE"):h.index("function _ratRoute")]
+    for prefijo, destino in [("MACD ", "fuerza"), ("RSI ", "fuerza"),
+                             ("Koncorde ", "fuerza"), ("Backtest 5Y:", "edge"),
+                             ("Tendencia:", "trend"), ("Media mayor:", "ma"),
+                             ("Figura:", "figura"), ("Fibonacci:", "figura")]:
+        assert prefijo in tabla, f"el router no conoce '{prefijo}'"
+        assert destino in tabla
+    # y el generador tiene que seguir emitiendo esos prefijos
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index("def _generate_rationale")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    for prefijo in ("Backtest 5Y:", "Tendencia:", "Media mayor:", "Figura:", "Fibonacci:"):
+        assert prefijo in cuerpo, f"_generate_rationale ya no emite '{prefijo}'"
+
+
+def test_el_racional_no_se_muestra_dos_veces():
+    """Sus bullets viven dentro del componente que alimentan. Repetirlos en un
+    bloque suelto era la tercera copia de lo mismo en la misma tarjeta; solo
+    las ordenes PENDIENTES lo conservan, porque ahi no hay panel de score."""
+    h = vw.DASHBOARD_HTML
+    assert h.count("Detalle del Análisis") == 1, "quedo un bloque duplicado"
+    assert h.count("scoreBreakdownHTML(") == 4   # 1 definicion + 3 usos
+    for sitio in ("scoreBreakdownHTML(rec.score_parts,rec.rationale)",
+                  "scoreBreakdownHTML(r.score_parts,r.rationale)"):
+        assert sitio in h, sitio
+
+
+def test_el_score_relajado_dice_que_es_relajado():
+    """Un 40 relajado no es comparable con un 40 del ranking completo: su
+    techo real es 46 porque no se le miden edge, PF ni win rate."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index("def compute_top3")
+    cuerpo = src[i:src.index("\ndef ", i + 10)]
+    assert "El techo real de este score es 46" in cuerpo
+    assert '"key": "fuerza"' in cuerpo and '"key": "total"' in cuerpo

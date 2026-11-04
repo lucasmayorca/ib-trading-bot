@@ -955,6 +955,37 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   (`pen *= 1 − 0.6·frac_counter·sample_w`), con **piso del 40%** — que el edge se haya medido
   acá no borra que operar contra la SMA200 es estructuralmente más frágil. Barrido de 60 large
   caps: los 9 elegibles suben (CRWD 48.1 → 54.1; los de muestra 100% contra-tendencia +6).
+- **El desglose se EXPLICA, no solo se muestra (2026-11)**: cada fila de `score_parts` viaja
+  ahora con `key` (id estable), `what` (qué mide el componente), `inputs` (los números crudos de
+  los que sale) y `caveat` (qué NO es), llenados **dentro** de `_score_stock` junto al cálculo por
+  el mismo motivo que el desglose: un texto escrito en otro lado se desincroniza con la fórmula.
+  El `why` dejó de vivir en un `title` (invisible en táctil) y se muestra al desplegar la fila —
+  patrón `classList.toggle('open')` de `toggleThTrade`, sin re-render, porque re-renderizar
+  destruiría los charts de la tarjeta padre.
+  - **Enrutar por `key`, NUNCA por `lab`**: matchear la etiqueta en castellano es la trampa de
+    subcadenas que ya costó un bug ("SOBREVENTA" contiene "VENTA").
+  - **Los bullets del racional son los INSUMOS del componente que alimentan.** `_ratRoute` (JS,
+    tabla `_RAT_ROUTE`) los enruta por prefijo literal: MACD/RSI/Koncorde → fuerza, "Backtest 5Y:"
+    → edge, "Tendencia:" → penalización, "Media mayor:" → confluencia, "Figura:"/"Fibonacci:" →
+    figura. Lo que no puntúa (objetivo, stop, volatilidad, liquidez, fundamentales, analistas)
+    queda en una fila aparte rotulada **"Contexto que no puntúa"** — se muestra, pero no se
+    confunde con un insumo del ranking. El ruteo va en JS a propósito: el HTML es compartido con
+    el cloud, así que el espejo sale gratis y `cloud/server.py` no se toca.
+  - **El bloque suelto "Detalle del Análisis" se retiró** de las tres tarjetas que tienen panel de
+    score (era la tercera copia de los mismos datos). Sobrevive solo en **órdenes pendientes**,
+    que no muestra score. Hay test de que no vuelva a duplicarse.
+  - **El "/ 100" era mentira**: los seis componentes con techo suman 100, pero la confluencia
+    (+6), la figura (−3..+5) y la penalización son ajustes fuera de esa escala, así que el crudo
+    se pasaba y `max(0, min(100, score))` lo recortaba **en silencio**. Ahora hay un separador
+    "Ajustes — fuera de la escala de 100" y el `why` del TOTAL dice el crudo cuando hubo recorte.
+  - **El fallback relajado dice que es relajado**: su techo real es 46 (solo fuerza + confianza +
+    confluencia), así que un 40 relajado no es comparable con un 40 del ranking completo.
+  - Se empezaron a leer tres campos del backtest que ya se exportaban y nadie usaba: `avg_win`,
+    `avg_loss` y `baseline_count` (el n del baseline). Siguen SIN exponerse `t_stat`, `std` y
+    `edge_conf` por lado — viven como locales en `backtester._side_stats` y se descartan, así que
+    la confianza llega como un escalar sin trazabilidad: se explica el mecanismo y la muestra,
+    no el t exacto. Exponerlos obligaría a tocar `bridge/backtester.py` (reinstalación).
+  - Tests: §15.
 - **Desglose del score en cada análisis (2026-09)**: `_score_stock(..., parts=[])` llena la lista
   con `{lab, pts, max, why}` por componente **dentro del cálculo**, no afuera — un desglose
   reconstruido en otro lado se desincroniza con la fórmula en el primer cambio de pesos y la
