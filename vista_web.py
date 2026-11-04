@@ -1053,7 +1053,7 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     strength = data.get("strength", 0) or 0
     conditions = data.get("conditions_met", 0) or 0
     bt = data.get("backtest", {}) or {}
-    confidence = bt.get("confidence", 0) or 0
+    confidence = bt.get("confidence") or 0 or 0
 
     # Eligibility: an active order signal, or a coherent INMINENTE setup.
     # Tras la regla de coherencia de zonas (signals._zones_coherent_*), un 2/3
@@ -1074,7 +1074,7 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         wr = bt.get("sell_win_rate", 0) or 0
         expectancy = bt.get("sell_expectancy")
         pf = bt.get("sell_profit_factor")
-        n_side = bt.get("sell_count", 0) or 0
+        n_side = bt.get("sell_count") or 0 or 0
         n_trend = bt.get("sell_count_trend", 0) or 0
         wr_trend = bt.get("sell_win_rate_trend")
         base_exp = bt.get("sell_baseline_expectancy")
@@ -1086,7 +1086,7 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         wr = bt.get("buy_win_rate", 0) or 0
         expectancy = bt.get("buy_expectancy")
         pf = bt.get("buy_profit_factor")
-        n_side = bt.get("buy_count", 0) or 0
+        n_side = bt.get("buy_count") or 0 or 0
         n_trend = bt.get("buy_count_trend", 0) or 0
         wr_trend = bt.get("buy_win_rate_trend")
         base_exp = bt.get("buy_baseline_expectancy")
@@ -1472,7 +1472,8 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
         score += _d
         if _d:
             _part("Figura tecnica", _d, None,
-                  f"{pat.get('name', 'figura')} {pat_dir} ({pat.get('status')}) — "
+                  f"{pat.get('name') or 'figura'} {pat_dir}"
+                  + (f" ({pat['status']})" if pat.get("status") else "") + " — "
                   + ("a favor de la tesis" if aligned else "CONTRA la tesis")
                   + ", edge medido sobre 217 simbolos x 10A",
                   key="figura",
@@ -2048,13 +2049,13 @@ def _generate_rationale(sym, data, levels=None):
     # "10 señales de compra, win rate 70%" debajo de una tesis bajista (y de
     # las tarjetas, que sí eligen el lado por el label).
     if not is_bearish:
-        cnt = bt.get("buy_count", 0)
-        wr = bt.get("buy_win_rate", 0) or 0
+        cnt = bt.get("buy_count") or 0
+        wr = bt.get("buy_win_rate") or 0
         ar = bt.get("buy_avg_return")
         direction = "compra"
     else:
-        cnt = bt.get("sell_count", 0)
-        wr = bt.get("sell_win_rate", 0) or 0
+        cnt = bt.get("sell_count") or 0
+        wr = bt.get("sell_win_rate") or 0
         ar = bt.get("sell_avg_return")
         direction = "venta"
     bt_text = f"Backtest 5Y: {cnt} señales de {direction}, win rate {wr * 100:.0f}%"
@@ -2607,7 +2608,7 @@ def compute_top3(cache, min_target_pct=None, universe=None):
                 continue
             strength = data.get("strength", 0) or 0
             bt = data.get("backtest", {}) or {}
-            confidence = bt.get("confidence", 0) or 0
+            confidence = bt.get("confidence") or 0 or 0
             # Relaxed score for weak HOLDs: same scale as _score_stock's
             # conviction (25) + robustness (15) components, no edge credit.
             c1 = min(strength / 5.1, 1.0) * 25
@@ -2725,7 +2726,7 @@ def compute_top3(cache, min_target_pct=None, universe=None):
             "price": data.get("price", 0),
             "strength": data.get("strength", 0) or 0,
             "conditions_met": data.get("conditions_met", 0) or 0,
-            "confidence": bt.get("confidence", 0) or 0,
+            "confidence": bt.get("confidence") or 0 or 0,
             "score": round(score, 1),
             # Desglose de la formula, generado DENTRO de _score_stock para que
             # no se desincronice con el calculo — la UI lo muestra tal cual.
@@ -6305,7 +6306,9 @@ function toggleEtfTop3Sec(){_etfTop3Collapsed=!_etfTop3Collapsed;renderEtfTop3(_
 function recObjetivo(r){
   if(!r||r.target_pct==null)return null;
   let sl=(r.signal_label||r.signal||'');
-  let bear=sl.indexOf('VENTA')>=0||sl.indexOf('SOBRECOMPRA')>=0||r.signal==='SELL';
+  // Nunca reimplementar el test direccional con subcadenas: _labelIsBearish
+  // ya excluye el prefijo SOBRE- (esta en este mismo archivo).
+  let bear=_labelIsBearish(sl);
   return {txt:(bear?'-':'+')+Math.abs(r.target_pct).toFixed(0)+'%',col:bear?'var(--sell)':'var(--buy)'};
 }
 // Badge "datos del <fecha>" en una recomendacion cuyo cierre NO es el de
@@ -7455,7 +7458,9 @@ function renderStockForecast(d){
 
   let targetPct=pl.target_pct||0;
   let rr=pl.risk_reward||0;
-  let stopDist=price>0?Math.abs(pl.stop_loss-price)/price*100:0;
+  // Con lectura bajista el stop va ARRIBA del precio: el signo se deriva,
+  // no se hardcodea (decia '-4.2%' sobre un nivel 4.2% mas alto).
+  let stopDist=price>0?(pl.stop_loss-price)/price*100:0;
 
   // Backtest expected move (median 30d if available)
   let bt=d.backtest||{};
@@ -7492,7 +7497,7 @@ function renderStockForecast(d){
   html+='<div class="olab-forecast-card">'+
     '<div class="olab-fc-label">Stop Loss</div>'+
     '<div class="olab-fc-value" style="color:#c22436">$'+_n(pl.stop_loss,2)+'</div>'+
-    '<div class="olab-fc-sub">-'+_n(stopDist,1)+'% | R/R: '+_n(rr,1)+'x</div>'+
+    '<div class="olab-fc-sub">'+(stopDist>=0?'+':'')+_n(stopDist,1)+'% | R/R: '+_n(rr,1)+'x</div>'+
   '</div>';
 
   // Backtest expected card
@@ -8153,11 +8158,11 @@ function toggleOlabMulti(idx,sym){
     if(plm.target){
       let isBear=plm.target<(d.price||0);
       let dirC=isBear?'#c22436':'#0b7a4b';
-      let stopDist=(d.price||1)>0?Math.abs(plm.stop_loss-(d.price||0))/(d.price||1)*100:0;
+      let stopDist=(d.price||1)>0?(plm.stop_loss-(d.price||0))/(d.price||1)*100:0;
       html+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">';
       html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Objetivo</div><div style="font-size:16px;font-weight:800;color:'+dirC+'">$'+_n(plm.target,2)+' <span style="font-size:11px">'+(isBear?'-':'+')+_n(plm.target_pct,1)+'%</span></div></div>';
       html+='<div style="flex:1;min-width:120px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Entrada</div><div style="font-size:14px;font-weight:700;color:var(--text)">$'+_n(plm.entry_low,2)+' &ndash; $'+_n(plm.entry_high,2)+'</div></div>';
-      html+='<div style="flex:1;min-width:100px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Stop Loss</div><div style="font-size:14px;font-weight:700;color:#c22436">$'+_n(plm.stop_loss,2)+' <span style="font-size:10px">(-'+_n(stopDist,1)+'%)</span></div></div>';
+      html+='<div style="flex:1;min-width:100px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Stop Loss</div><div style="font-size:14px;font-weight:700;color:#c22436">$'+_n(plm.stop_loss,2)+' <span style="font-size:10px">('+(stopDist>=0?'+':'')+_n(stopDist,1)+'%)</span></div></div>';
       html+='<div style="flex:1;min-width:80px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">R/R</div><div style="font-size:14px;font-weight:700;color:var(--text)">'+_n(plm.risk_reward||0,1)+'x</div></div>';
       if(plm.horizon_weeks) html+='<div style="flex:1;min-width:80px"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;font-weight:600">Horizonte</div><div style="font-size:14px;font-weight:700;color:#4262d9">'+plm.horizon_weeks+'</div></div>';
       html+='</div>';
@@ -8679,11 +8684,11 @@ def api_data():
 
         # Backtest metrics
         bt = sig.get("backtest", {})
-        entry["confidence"] = bt.get("confidence", 0)
+        entry["confidence"] = bt.get("confidence") or 0
         entry["buy_avg_return"] = bt.get("buy_avg_return")
         entry["sell_avg_return"] = bt.get("sell_avg_return")
-        entry["buy_count"] = bt.get("buy_count", 0)
-        entry["sell_count"] = bt.get("sell_count", 0)
+        entry["buy_count"] = bt.get("buy_count") or 0
+        entry["sell_count"] = bt.get("sell_count") or 0
 
         # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
         entry["ext"] = enrichment.get_ext(sym)
@@ -8751,11 +8756,11 @@ def api_etf_data():
         }
 
         bt = sig.get("backtest", {})
-        entry["confidence"] = bt.get("confidence", 0)
+        entry["confidence"] = bt.get("confidence") or 0
         entry["buy_avg_return"] = bt.get("buy_avg_return")
         entry["sell_avg_return"] = bt.get("sell_avg_return")
-        entry["buy_count"] = bt.get("buy_count", 0)
-        entry["sell_count"] = bt.get("sell_count", 0)
+        entry["buy_count"] = bt.get("buy_count") or 0
+        entry["sell_count"] = bt.get("sell_count") or 0
 
         # Enriquecimiento (beta/RS/RVOL + analistas/insiders/short)
         entry["ext"] = enrichment.get_ext(sym)
@@ -9488,6 +9493,21 @@ def _compute_position_verdict(data, position, levels=None):
             _what = "EL PAQUETE"
         _fav_dom = fav >= 50 and fav >= adv + 10
         _adv_dom = adv >= 50 and adv >= fav + 10
+        # Vara de DECISION: pnl_pct se divide por el costo NETO, que en una
+        # estrategia a credito tiende a cero y hace explotar el cociente (un
+        # collar de $30 de credito con +$300 marca +1000% y disparaba "TOMAR
+        # GANANCIAS"). Cuando hay riesgo acotado se decide contra el capital
+        # en riesgo, que no degenera; el pnl_pct se sigue MOSTRANDO igual.
+        _pnl_dec = pos.get("pnl_vs_risk_pct")
+        if _pnl_dec is None:
+            # Perdida NO acotada (p.ej. un short sintetico sin las acciones):
+            # no hay capital en riesgo contra el cual medir, y el pnl_pct sobre
+            # el credito neto es justo el que explota. Se neutraliza para que
+            # no dispare "TOMAR GANANCIAS" ni "CERRAR": la decision la toma el
+            # balance fav/adv y el factor de riesgo abierto, que ya existen.
+            _unb = ((pos.get("strategy") or {}).get("loss_unbounded")
+                    or (opt.get("loss_unbounded") if isinstance(opt, dict) else False))
+            _pnl_dec = 0.0 if _unb else pnl_pct
         _nodir = opt.get("is_strategy") and not opt.get("exposure")
         if _nodir:
             # Straddle/strangle/condor: el sistema lee DIRECCION y esta apuesta
@@ -9509,21 +9529,21 @@ def _compute_position_verdict(data, position, levels=None):
             override_reason = (
                 f"El contrato vence en {_dte} dias. {_pnl_text()}. Lo que quede de valor "
                 f"temporal se va a cero en esta semana: cerrar o rolar, pero no dejarlo correr.")
-        elif _long and _dte is not None and _dte <= 15 and pnl_pct > 10:
+        elif _long and _dte is not None and _dte <= 15 and _pnl_dec > 10:
             verdict = "REDUCE"; urgency = "high"
             headline = "TOMAR GANANCIAS — POCO TIEMPO"
         elif _adv_dom:
-            verdict = "SELL" if pnl_pct <= -40 else "REDUCE"
-            urgency = "high" if pnl_pct <= -40 else "medium"
-            headline = ("CERRAR — TESIS DADA VUELTA" if pnl_pct <= -40
+            verdict = "SELL" if _pnl_dec <= -40 else "REDUCE"
+            urgency = "high" if _pnl_dec <= -40 else "medium"
+            headline = ("CERRAR — TESIS DADA VUELTA" if _pnl_dec <= -40
                         else f"REDUCIR — {_what.upper()} JUEGA EN CONTRA")
-        elif pnl_pct >= 80:
+        elif _pnl_dec >= 80:
             verdict = "REDUCE"; urgency = "medium"
             headline = "TOMAR GANANCIAS"
         elif _fav_dom:
             verdict = "HOLD"; urgency = "low"
             headline = "HOLD — LA TESIS SE ESTA CUMPLIENDO"
-        elif pnl_pct <= -60 and fav < 30:
+        elif _pnl_dec <= -60 and fav < 30:
             verdict = "REDUCE"; urgency = "medium"
             headline = "REVISAR — PERDIDA GRANDE"
         else:
@@ -10544,7 +10564,7 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "signal_label": data.get("signal_label", sig),
         "strength": data.get("strength", 0) or 0,
         "conditions_met": data.get("conditions_met", 0) or 0,
-        "confidence": bt.get("confidence", 0) or 0,
+        "confidence": bt.get("confidence") or 0 or 0,
         "score": score,
         "score_parts": score_parts,
         "price": data.get("price", 0),
@@ -10745,7 +10765,7 @@ def api_options_lab_top():
         strength = data.get("strength", 0) or 0
         conditions = data.get("conditions_met", 0) or 0
         bt = data.get("backtest", {}) or {}
-        confidence = bt.get("confidence", 0) or 0
+        confidence = bt.get("confidence") or 0 or 0
 
         # IV pre-check (fast)
         closes = [b["close"] for b in ohlc]
@@ -11732,11 +11752,18 @@ def _breadth_from_results(*result_dicts):
         for r in (results or {}).values():
             if not isinstance(r, dict):
                 continue
-            label = (r.get("signal_label") or "").upper()
-            if "COMPRA" in label:
-                bull += 1
-            elif "VENTA" in label:
+            label = r.get("signal_label") or ""
+            if not label or label.upper() == "NEUTRAL":
+                continue
+            # TRAMPA DE SUBCADENAS, reintroducida aca y medida: "SOBRECOMPRA"
+            # contiene "COMPRA" (y es BAJISTA) y "SOBREVENTA" contiene "VENTA"
+            # (y es ALCISTA). Contarlas por substring daba vuelta el gauge
+            # justo en los extremos: en un selloff medio universo queda en
+            # SOBREVENTA y la amplitud marcaba panico maximo al reves.
+            if _label_is_bearish(label):
                 bear += 1
+            else:
+                bull += 1
     total = bull + bear
     if total < 5:
         return None

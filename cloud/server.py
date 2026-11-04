@@ -633,11 +633,11 @@ def api_data():
             "pattern": sig.get("pattern"),
             "fib": sig.get("fib"),
             "candles": sig.get("candles"),
-            "confidence": bt.get("confidence", 0),
+            "confidence": bt.get("confidence") or 0,
             "buy_avg_return": bt.get("buy_avg_return"),
             "sell_avg_return": bt.get("sell_avg_return"),
-            "buy_count": bt.get("buy_count", 0),
-            "sell_count": bt.get("sell_count", 0),
+            "buy_count": bt.get("buy_count") or 0,
+            "sell_count": bt.get("sell_count") or 0,
             # Enriquecimiento server-side (beta/RS/RVOL + analistas/insiders/
             # short) — calculado aca, no en el bridge (cero reinstalls).
             "ext": enrichment.get_ext(symbol),
@@ -701,11 +701,11 @@ def api_etf_data():
             "pattern": sig.get("pattern"),
             "fib": sig.get("fib"),
             "candles": sig.get("candles"),
-            "confidence": bt.get("confidence", 0),
+            "confidence": bt.get("confidence") or 0,
             "buy_avg_return": bt.get("buy_avg_return"),
             "sell_avg_return": bt.get("sell_avg_return"),
-            "buy_count": bt.get("buy_count", 0),
-            "sell_count": bt.get("sell_count", 0),
+            "buy_count": bt.get("buy_count") or 0,
+            "sell_count": bt.get("sell_count") or 0,
             # Enriquecimiento server-side (beta/RS/RVOL + analistas/insiders/
             # short) — calculado aca, no en el bridge (cero reinstalls).
             "ext": enrichment.get_ext(symbol),
@@ -908,7 +908,7 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "signal_label": data.get("signal_label", sig),
         "strength": data.get("strength", 0) or 0,
         "conditions_met": data.get("conditions_met", 0) or 0,
-        "confidence": bt.get("confidence", 0) or 0,
+        "confidence": bt.get("confidence") or 0 or 0,
         "score": score,
         "score_parts": score_parts,
         "price": data.get("price", 0),
@@ -1039,18 +1039,27 @@ def api_portfolio():
         cantidad = p.get("position", 0)
         costo_prom = p.get("averageCost", 0) or 0
         precio_actual = p.get("marketPrice", 0) or 0
-        valor_mercado = abs(p.get("marketValue", 0) or 0)
+        _vm_raw = p.get("marketValue", 0) or 0
+        valor_mercado = abs(_vm_raw)        # magnitud: pesos y orden
+        valor_neto = _vm_raw                # neto: un corto RESTA
         pnl = p.get("unrealizedPNL", 0) or 0
         pnl_realizado = p.get("realizedPNL", 0) or 0
 
+        # El multiplicador va ANTES del fallback: `averageCost` de una opcion
+        # viene POR CONTRATO y `marketPrice` POR ACCION — copiar uno en el otro
+        # deja la prima x100 ("Prima $14.10 / Prima hoy $1410.00").
+        _opt_pre = option_position.describe(p)
+        _es_opt_pre = option_position.is_option(p)
+        _mult_pre = ((_opt_pre or {}).get("multiplier") or 100) if _es_opt_pre else 1
         if not precio_actual or precio_actual <= 0:
-            precio_actual = costo_prom
-            valor_mercado = abs(cantidad) * precio_actual
+            precio_actual = (costo_prom / _mult_pre) if (_mult_pre and costo_prom) else costo_prom
+            valor_mercado = abs(cantidad) * precio_actual * _mult_pre
+            valor_neto = cantidad * precio_actual * _mult_pre
 
         costo_total = abs(cantidad) * costo_prom
         pnl_pct = (pnl / costo_total * 100) if costo_total > 0 else 0.0
 
-        total_value += valor_mercado
+        total_value += valor_neto
         total_cost += costo_total
         total_pnl_realizado += pnl_realizado
 
@@ -1062,8 +1071,7 @@ def api_portfolio():
         # Opciones: `averageCost` viene POR CONTRATO (prima x multiplicador) y
         # `marketPrice` POR ACCION. El total en dolares ya se calculo con el de
         # contrato; lo que se muestra tiene que ser la prima por accion.
-        opt = option_position.describe(p)
-        _is_opt = option_position.is_option(p)
+        opt, _is_opt = _opt_pre, _es_opt_pre
         cost_show = costo_prom
         if _is_opt:
             cost_show = (costo_prom / ((opt or {}).get("multiplier") or 100)
@@ -1089,6 +1097,7 @@ def api_portfolio():
             "precio_actual": round(precio_actual, 2) if precio_actual else None,
             "costo_total": round(costo_total, 2),
             "valor_mercado": round(valor_mercado, 2),
+            "valor_neto": round(valor_neto, 2),
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 2),
             "pnl_realizado": round(pnl_realizado, 2),
@@ -1108,7 +1117,8 @@ def api_portfolio():
         if len(positions_enriched) != _before:
             # Los totales se acumularon pata por pata y en un spread las patas
             # se compensan: sumar sus valores absolutos infla la cartera.
-            total_value = sum(p["valor_mercado"] for p in positions_enriched)
+            total_value = sum(p.get("valor_neto", p["valor_mercado"])
+                              for p in positions_enriched)
             total_cost = sum(p["costo_total"] for p in positions_enriched)
     except Exception as e:
         print(f"[PORTFOLIO] Error agrupando estrategias: {e}", flush=True)

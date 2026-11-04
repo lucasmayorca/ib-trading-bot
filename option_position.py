@@ -188,7 +188,7 @@ def describe(pos, underlying_price=None, atr=None, today=None):
         except (TypeError, ValueError):
             premium = None
     premium_now = None
-    raw_px = p.get("precio_actual", p.get("marketPrice"))
+    raw_px = p.get("precio_actual") or p.get("marketPrice") or p.get("precio_mercado")
     if raw_px not in (None, 0):
         try:
             premium_now = abs(float(raw_px))

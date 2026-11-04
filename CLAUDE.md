@@ -1299,6 +1299,66 @@ User's machine                          Railway (shared)
   does not pull new code. After any `bridge/` change, the fix requires `rm -rf ~/.ib-bridge &&
   curl -sL .../install-bridge.sh | bash` (a fresh `pip install --upgrade`), not just relaunching.
 
+## QA exhaustivo 2026-11 — "estoy operando con dinero real"
+El disparador: un `float(None)` en un insumo del desglose tiraba `_score_stock`, y como
+`cloud/server.py` envuelve `compute_top3` en un `try/except` que devuelve `[]`, **Top
+Recomendaciones quedaba EN BLANCO con 99 análisis sanos en el cache**. No lo cazó nadie leyendo
+código: lo cazó el usuario mirando la pantalla.
+
+**La lección, y el criterio de todo lo que sigue**: una pantalla en blanco molesta pero es segura
+— **lo que cuesta plata es un número equivocado que se ve bien**. El QA se ordenó por eso, no por
+visibilidad.
+
+### `tests/test_degradado.py` — el arnés que caza esta clase sola
+1.689 casos, ~2s. Alimenta cada función que produce texto o números con datos incompletos
+(backtest ausente/vacío/todo-None, chart sin OHLC o sin medias, figura con campos en None,
+posición corta/pendiente/costo 0, patas de opción sin right ni strike, 7 estrategias) y exige dos
+invariantes: **ninguna lanza** y **ninguna filtra un centinela** ("None", "nan", "undefined").
+Un `"Backtest 5Y: None señales"` es una mentira con cara de dato. Si agregás un componente al
+score, una línea al racional o un factor al veredicto, el arnés lo cubre solo.
+
+### Bugs de NÚMERO EQUIVOCADO que encontró y cerró (no reintroducir)
+1. **La amplitud del mercado estaba INVERTIDA en las dos etiquetas ZONA.** `_breadth_from_results`
+   contaba por substring: `"SOBRECOMPRA"` contiene `"COMPRA"` (y es BAJISTA), `"SOBREVENTA"`
+   contiene `"VENTA"` (y es ALCISTA). Es la TRAMPA DE SUBCADENAS documentada arriba, reintroducida.
+   Se daba vuelta **justo en los extremos**: en un selloff medio universo queda en SOBREVENTA y el
+   gauge marcaba pánico máximo al revés. Afectaba el chip de amplitud y `_pulse_sentiment`, local
+   y cloud.
+2. **Un CORTO se sumaba al Valor Total en vez de restarse.** IB manda `marketValue` negativo y
+   `abs()` lo convertía en activo. Medido sobre un caso de dos posiciones: **$358k de error**.
+   `valor_mercado` sigue siendo la MAGNITUD (pesos, orden, composición la quieren) y se agregó
+   `valor_neto` para el total. ⚠ Cambia un número de portada.
+3. **La prima de una opción salía ×100 cuando IB no mandaba precio.** El fallback hacía
+   `precio_actual = costo_prom`, y `averageCost` viene POR CONTRATO mientras `marketPrice` es POR
+   ACCIÓN: "Prima $14.10 / Prima hoy $1410.00". El multiplicador ahora se resuelve ANTES del
+   fallback, en los dos lados.
+4. **El P&L que DECIDE no puede degenerar.** `pnl_pct` se divide por el costo NETO, que en una
+   estrategia a crédito tiende a cero: el collar WMT real marcaba **+142%** y disparaba la rama
+   `>= 80` → "TOMAR GANANCIAS". Ahora la decisión usa `pnl_vs_risk_pct` (P&L contra el capital en
+   riesgo); con pérdida NO acotada vale `None` y la rama se neutraliza, dejando decidir al balance
+   fav/adv y al factor de riesgo abierto. El `pnl_pct` se sigue MOSTRANDO igual (es la convención).
+   **Ojo con las unidades**: `max_loss` sale del payoff en acción-equivalente y `pnl` en dólares —
+   sin el multiplicador el cociente da 100× (un spread con +$600 sobre $3.600 marcaba 1666%).
+5. **El signo del stop estaba hardcodeado en `-`.** Con lectura bajista el stop va ARRIBA del
+   precio: la tarjeta decía "-4.2%" sobre un nivel 4.2% más alto, con BAJISTA escrito al lado.
+6. **`recObjetivo` reimplementaba el test direccional con subcadenas** (`indexOf('VENTA')`). Hoy
+   no se disparaba sólo porque el gate de `_score_stock` excluye ZONA: estaba a un gate de
+   distancia. Llama a `_labelIsBearish`.
+7. **`premium_now` nunca se resolvía en el local**: `describe` buscaba `marketPrice` y la fila
+   cruda de `updatePortfolio` guarda `precio_mercado`. Rompía "local y cloud narran idéntico".
+8. **`.get(clave, 0)` NO usa el default cuando la clave existe con `None`** — y el backtest manda
+   `None`, no ausencia, en 18 de sus 27 claves. De ahí salía `"Backtest 5Y: None señales"`.
+   Barridas y guardadas las 20 ocurrencias sobre claves anulables.
+9. **`compute_top3` aísla cada símbolo**: uno que explota se saltea y se loguea. Sin eso, el
+   `try/except` del cloud convierte un fallo puntual en una sección vacía.
+
+### Lo que se VERIFICÓ y resultó NO ser un bug
+- Los `levels` en cero del fallback **no corrompen el veredicto**: `_compute_position_verdict`
+  calcula su propio ATR del chart. Mismo veredicto, mismo bull/bear; lo único que se pierde es el
+  párrafo de niveles de la narrativa.
+- `"Score 0"` **no se muestra** en la ficha de posición (el header no lleva chip de Score) ni en
+  Top Recomendaciones (un símbolo sólo entra si `_score_stock` devolvió algo).
+
 ## Invariantes de la revisión 2026-09 (no reintroducir)
 Cada uno costó debugging real. **Los que son verificables viven en `tests/test_invariantes.py`** —
 `./venv/bin/python -m pytest tests/ -q`, corre en ~2s. Antes eran prosa acá y por eso nadie los corría:

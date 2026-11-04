@@ -1412,20 +1412,31 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
 
         # Datos directos de IB (updatePortfolio)
         precio_actual = p.get("precio_mercado", 0)
-        valor_mercado = abs(p.get("valor_mercado", 0))
+        _vm_raw = p.get("valor_mercado", 0) or 0
+        valor_mercado = abs(_vm_raw)        # magnitud: pesos y orden
+        valor_neto = _vm_raw                # neto: un corto RESTA
         pnl = p.get("pnl_no_realizado", 0)
         pnl_realizado = p.get("pnl_realizado", 0)
+
+        # El multiplicador se resuelve ANTES del fallback: `costo_promedio` de
+        # una opcion viene POR CONTRATO y `precio_mercado` POR ACCION, asi que
+        # copiar uno en el otro deja la prima x100 ("Prima $14.10 / Prima hoy
+        # $1410.00"). Es el bug de unidades en su forma mas literal.
+        opt = option_position.describe(p)
+        _es_opt = option_position.is_option(p)
+        _mult = ((opt or {}).get("multiplier") or 100) if _es_opt else 1
 
         # Fallback si IB no mando precio
         if not precio_actual or precio_actual <= 0:
             warnings.append(f"{sym}: sin precio de mercado de IB, usando costo promedio.")
-            precio_actual = costo_prom
-            valor_mercado = abs(cantidad) * precio_actual
+            precio_actual = (costo_prom / _mult) if (_mult and costo_prom) else costo_prom
+            valor_mercado = abs(cantidad) * precio_actual * _mult
+            valor_neto = cantidad * precio_actual * _mult
 
         costo_total = abs(cantidad) * costo_prom
         pnl_pct = (pnl / costo_total * 100) if costo_total > 0 else 0.0
 
-        total_value += valor_mercado
+        total_value += valor_neto
         total_cost += costo_total
         total_pnl_realizado += pnl_realizado
 
@@ -1438,11 +1449,7 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
         # `precio_mercado` POR ACCION. El total en dolares usa el de contrato
         # (ya calculado arriba); lo que se MUESTRA y lo que se compara contra
         # el strike tiene que ser la prima por accion.
-        opt = option_position.describe(p)
-        cost_show = costo_prom
-        if option_position.is_option(p):
-            mult = (opt or {}).get("multiplier") or 100
-            cost_show = costo_prom / mult if costo_prom else 0.0
+        cost_show = (costo_prom / _mult) if (_es_opt and costo_prom) else costo_prom
 
         enriched = {
             "symbol": sym,
@@ -1454,6 +1461,7 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
             "precio_actual": round(precio_actual, 2) if precio_actual else None,
             "costo_total": round(costo_total, 2),
             "valor_mercado": round(valor_mercado, 2),
+            "valor_neto": round(valor_neto, 2),
             "pnl": round(pnl, 2),
             "pnl_pct": round(pnl_pct, 2),
             "pnl_realizado": round(pnl_realizado, 2),
@@ -1493,7 +1501,8 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
         if len(positions_enriched) != _before:
             # Los totales se acumularon pata por pata y en un spread las patas
             # se compensan: sumar sus valores absolutos infla la cartera.
-            total_value = sum(p["valor_mercado"] for p in positions_enriched)
+            total_value = sum(p.get("valor_neto", p["valor_mercado"])
+                              for p in positions_enriched)
             total_cost = sum(p["costo_total"] for p in positions_enriched)
             print(f"  [Portfolio] {_before} posiciones -> {len(positions_enriched)} "
                   f"(patas agrupadas en estrategias)")

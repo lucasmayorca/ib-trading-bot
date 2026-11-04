@@ -380,6 +380,28 @@ def collapse(positions):
     return out
 
 
+def _pnl_vs_risk(pnl, st, members):
+    """P&L en dolares contra el capital en riesgo, tambien en dolares.
+
+    None cuando la perdida no esta acotada: ahi no hay capital contra el cual
+    medir, y el caller neutraliza la decision en vez de inventar un porcentaje.
+    """
+    ml = st.get("max_loss")
+    if ml in (None, 0):
+        return None
+    mult = 100
+    for m in members:
+        try:
+            mm = int(float((m.get("option") or {}).get("multiplier") or 0))
+            if mm > 0:
+                mult = mm
+                break
+        except (TypeError, ValueError):
+            continue
+    riesgo = abs(float(ml)) * mult
+    return round(pnl / riesgo * 100, 2) if riesgo else None
+
+
 def _merge(group):
     """Una posicion unica a partir de las patas del grupo."""
     st = group["strategy"]
@@ -407,6 +429,14 @@ def _merge(group):
         "valor_mercado": round(val, 2),
         "pnl": round(pnl, 2),
         "pnl_pct": round(pnl / cost * 100, 2) if cost > 0 else 0.0,
+        # El denominador de pnl_pct es el COSTO NETO: en una estrategia a
+        # credito tiende a cero y el porcentaje explota (+1000% con $300 de
+        # ganancia sobre $30 de credito). Para DECIDIR se usa esta otra vara,
+        # el P&L contra el capital realmente en riesgo, que no degenera.
+        # OJO con las unidades: `max_loss` sale del payoff en ACCION-equivalente
+        # y `pnl` viene en DOLARES — sin el multiplicador el cociente da 100x
+        # (un spread con +$600 sobre $3.600 de riesgo marcaba 1666%).
+        "pnl_vs_risk_pct": _pnl_vs_risk(pnl, st, members),
         "pnl_realizado": round(sum(m.get("pnl_realizado") or 0 for m in members), 2),
         "es_etf": first.get("es_etf", False),
         "sector": "Opciones",

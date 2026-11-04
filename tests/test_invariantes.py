@@ -1654,3 +1654,117 @@ def test_un_simbolo_roto_no_vacia_el_ranking():
     antes = [l for l in cuerpo[:j].splitlines() if l.strip()][-1]
     assert antes.strip() == "try:", f"la llamada no esta aislada: {antes!r}"
     assert "continue" in cuerpo[j:j + 900]
+
+
+# ── 18. QA exhaustivo 2026-11 (dinero real) ──────────────────────────
+# Clase de bug: un numero EQUIVOCADO mostrado como si fuera correcto. Una
+# pantalla en blanco molesta; un signo o una unidad dada vuelta cuesta plata.
+
+def test_la_amplitud_no_invierte_las_zonas():
+    """`_breadth_from_results` contaba por substring: "SOBRECOMPRA" contiene
+    "COMPRA" (y es BAJISTA), "SOBREVENTA" contiene "VENTA" (y es ALCISTA). El
+    gauge se daba vuelta justo en los extremos — en un selloff medio universo
+    queda en SOBREVENTA y marcaba panico maximo al reves."""
+    res = {"a": {"signal_label": "ZONA DE SOBREVENTA"},
+           "b": {"signal_label": "ZONA DE SOBRECOMPRA"},
+           "c": {"signal_label": "COMPRA FUERTE"},
+           "d": {"signal_label": "VENTA FUERTE"},
+           "e": {"signal_label": "VIRANDO A COMPRA"},
+           "f": {"signal_label": "NEUTRAL"}}
+    assert vw._breadth_from_results(res) == 60      # a, c, e alcistas de 5
+    solo_sobreventa = {k: {"signal_label": "ZONA DE SOBREVENTA"} for k in "abcde"}
+    assert vw._breadth_from_results(solo_sobreventa) == 100
+    solo_sobrecompra = {k: {"signal_label": "ZONA DE SOBRECOMPRA"} for k in "abcde"}
+    assert vw._breadth_from_results(solo_sobrecompra) == 0
+
+
+def test_un_corto_resta_del_valor_total():
+    """IB manda `marketValue` NEGATIVO en un corto y el abs() lo sumaba como
+    si fuera un activo: con el BRK B -320 real eso son ~$350k de error."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "portfolio.py")).read()
+    i = src.index("def analyze_portfolio")
+    cuerpo = src[i:i + 9000]
+    assert "valor_neto = _vm_raw" in cuerpo
+    assert "total_value += valor_neto" in cuerpo
+    assert "total_value += valor_mercado" not in cuerpo, "el total volvio a sumar la magnitud"
+    # y el espejo del cloud
+    cs = open(os.path.join(os.path.dirname(__file__), "..", "cloud", "server.py")).read()
+    assert "total_value += valor_neto" in cs
+    assert "total_value += valor_mercado" not in cs
+
+
+def test_la_prima_de_una_opcion_no_se_multiplica_por_cien():
+    """`averageCost` de una opcion viene POR CONTRATO y `marketPrice` POR
+    ACCION: copiar uno en el otro daba "Prima $14.10 / Prima hoy $1410.00"."""
+    for f in ("portfolio.py", "cloud/server.py"):
+        src = open(os.path.join(os.path.dirname(__file__), "..", f)).read()
+        assert "precio_actual = costo_prom\n" not in src, f"{f}: fallback sin multiplicador"
+        assert "_mult" in src or "_mult_pre" in src, f
+
+
+def test_el_pnl_que_decide_no_puede_degenerar():
+    """pnl_pct se divide por el costo NETO: en una estrategia a credito tiende
+    a cero y explota (+142% en el collar WMT real) disparando "TOMAR
+    GANANCIAS". La decision usa el P&L contra el capital en riesgo."""
+    import option_position as op
+    import option_strategy as os_
+
+    def pata(right, qty, strike, prima, pnl):
+        p = {"symbol": "W", "tipo": "OPT", "cantidad": qty, "costo_promedio": prima,
+             "precio_actual": prima, "right": right, "strike": strike,
+             "expiry": "20261120", "multiplier": "100", "pnl": pnl, "pnl_pct": 0.0,
+             "valor_mercado": abs(qty) * prima * 100,
+             "costo_total": abs(qty) * prima * 100}
+        p["option"] = op.describe(p)
+        return p
+
+    # riesgo ACOTADO: el ratio sale en las mismas unidades que el P&L (dolares)
+    spread = [p for p in os_.collapse([pata("C", 3, 750, 20.0, 900.0),
+                                       pata("C", -3, 850, 8.0, -300.0)])
+              if p.get("strategy")][0]
+    assert spread["strategy"]["max_loss"] is not None
+    # +$600 sobre $3.600 de riesgo = 16.67%, NO 1666% (max_loss viene por accion)
+    assert abs(spread["pnl_vs_risk_pct"] - 16.67) < 0.1, spread["pnl_vs_risk_pct"]
+
+    # riesgo ABIERTO: no hay capital contra el cual medir -> None, y el
+    # veredicto se neutraliza en vez de inventar un porcentaje
+    collar = [p for p in os_.collapse([pata("P", 7, 116, 3.10, 200.0),
+                                       pata("C", -7, 127, 2.80, 100.0)])
+              if p.get("strategy")][0]
+    assert collar["strategy"]["loss_unbounded"] is True
+    assert collar["pnl_vs_risk_pct"] is None
+    assert collar["pnl_pct"] > 80, "el caso peligroso es justo este"
+    src = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    i = src.index('_pnl_dec = pos.get("pnl_vs_risk_pct")')
+    assert "loss_unbounded" in src[i:i + 700]
+    # ninguna rama de decision puede volver a mirar pnl_pct crudo
+    j = src.index('headline = "TOMAR GANANCIAS"')
+    assert "_pnl_dec >= 80" in src[j - 200:j + 80], src[j - 200:j + 80]
+
+
+def test_el_signo_del_stop_se_deriva_no_se_escribe():
+    """Con lectura bajista el stop va ARRIBA del precio: el '-' hardcodeado
+    decia "-4.2%" sobre un nivel 4.2% mas alto, con BAJISTA al lado."""
+    h = vw.DASHBOARD_HTML
+    assert "Math.abs(pl.stop_loss-price)" not in h
+    assert "Math.abs(plm.stop_loss-" not in h
+    assert "(stopDist>=0?'+':'')" in h
+
+
+def test_el_chip_de_objetivo_usa_el_helper_direccional():
+    h = vw.DASHBOARD_HTML
+    i = h.index("function recObjetivo")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "_labelIsBearish(sl)" in cuerpo
+    assert "indexOf('VENTA')" not in cuerpo, "volvio la trampa de subcadenas"
+
+
+def test_la_prima_viva_se_resuelve_igual_en_local_y_cloud():
+    """La fila cruda de updatePortfolio guarda el precio como `precio_mercado`;
+    el local lo buscaba como `marketPrice` y premium_now quedaba None siempre."""
+    import option_position as op
+    base = {"symbol": "T", "tipo": "OPT", "cantidad": 1, "costo_promedio": 500.0,
+            "right": "C", "strike": 100.0, "expiry": "20270115", "multiplier": "100"}
+    for clave in ("precio_actual", "marketPrice", "precio_mercado"):
+        d = op.describe({**base, clave: 5.0})
+        assert d and d.get("premium_now") == 5.0, clave
