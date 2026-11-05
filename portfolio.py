@@ -79,6 +79,11 @@ _PORTFOLIO_MKT_REQ_BASE = 9500
 _PORTFOLIO_HIST_REQ_BASE = 10000
 _PORTFOLIO_ACCT_REQ_ID = 9900
 
+# Ultimo AccountCode visto en un accountSummary. El PUERTO no dice si la cuenta
+# es real o de practica (en TWS el puerto de la API es configurable), pero el
+# codigo de cuenta si: las paper de IB empiezan con "DU"/"DF", las reales con "U".
+_LAST_ACCOUNT = {"code": None}
+
 # Charts de posicion: contador bajo lock en vez de hash(symbol) % 400. Dos
 # requests concurrentes de simbolos distintos podian caer en el mismo req_id y
 # pisarse el buffer de historical_data, sirviendo velas del otro activo.
@@ -1659,8 +1664,30 @@ def analyze_portfolio(app, analyze_symbol_fn=None, fetch_historical_fn=None,
     return result
 
 
+def remember_account(code):
+    """Registra el codigo de cuenta visto en un callback de IB (ver account_mode)."""
+    if code:
+        _LAST_ACCOUNT["code"] = str(code).split(",")[0].strip()
+
+
+def account_mode():
+    """
+    Tipo de la cuenta conectada, derivado del AccountCode.
+
+    Devuelve {"code": <str|None>, "mode": "LIVE"|"PAPER"|None}. `mode` es None
+    mientras no se haya visto ninguna cuenta: quien lo muestre debe decir que no
+    sabe, no adivinar — rotular "PAPER" una cuenta real es peor que no rotular.
+    """
+    code = _LAST_ACCOUNT.get("code")
+    if not code:
+        return {"code": None, "mode": None}
+    return {"code": code,
+            "mode": "PAPER" if str(code).upper().startswith(("DU", "DF")) else "LIVE"}
+
+
 def _format_account_data(account_data):
     """Formatea los datos de cuenta en algo mas usable."""
+    remember_account((account_data.get("AccountCode") or {}).get("value"))
     formatted = {}
     for tag, info in account_data.items():
         try:

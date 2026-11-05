@@ -94,6 +94,13 @@ class VistaIB(EWrapper, EClient):
     def nextValidId(self, orderId):
         self.connected_event.set()
 
+    def managedAccounts(self, accountsList):
+        """
+        IB manda esto solo al conectar, sin pedirlo: es la via mas barata de
+        saber si la cuenta es real o de practica (el puerto no lo dice).
+        """
+        portfolio.remember_account(accountsList)
+
     # --- Portfolio callbacks (reqAccountUpdates) ---
     def updatePortfolio(self, contract, position, marketPrice, marketValue,
                         averageCost, unrealizedPNL, realizedPNL, accountName):
@@ -6637,7 +6644,14 @@ function _renderStockList(data){
   // Save scroll position before update
   let scrollY=window.scrollY;
   {
-    if(data.port)document.getElementById("port-info").textContent="Puerto: "+data.port+" ("+(data.port===7497?"PAPER":"LIVE")+")";
+    if(data.port){
+      // El tipo de cuenta sale del AccountCode, NUNCA del puerto: en TWS el puerto
+      // de la API es configurable, asi que 7497 puede estar sirviendo la cuenta real.
+      // Sin cuenta conocida (TWS caido, o el cloud) no se afirma nada.
+      let _acc=data.account||{},_mode=_acc.mode;
+      document.getElementById("port-info").textContent=
+        "Puerto: "+data.port+(_mode?(" \u00b7 "+_mode+" "+(_acc.code||"")).trimEnd():"");
+    }
     document.getElementById("footer-port").textContent="Puerto: "+data.port;
     document.getElementById("last-update").textContent=data.last_update||"--";
     let _sigTxt=data.signals_label||(data.signals_as_of?('cierre del '+data.signals_as_of):'');
@@ -8754,6 +8768,7 @@ def api_data():
                              default=""),
         "signals_label": signals_label(snapshot),
         "port": config.IB_PORT,
+        "account": portfolio.account_mode(),
         "top3": top3,
     }), mimetype="application/json")
 
@@ -8828,6 +8843,7 @@ def api_etf_data():
                              default=""),
         "signals_label": signals_label(snapshot),
         "port": config.IB_PORT,
+        "account": portfolio.account_mode(),
         "top3": etf_top3,
     }), mimetype="application/json")
 
