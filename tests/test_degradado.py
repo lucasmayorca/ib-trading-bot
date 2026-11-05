@@ -157,7 +157,8 @@ def test_la_ficha_de_posicion_degradada_ni_lanza_ni_miente(label, pos_k):
 
 
 def _pata(right, qty, strike, prima=5.0, expiry="20270115", **extra):
-    p = {"symbol": "T", "tipo": "OPT", "cantidad": qty, "costo_promedio": prima,
+    # `costo_promedio` POR CONTRATO, como lo manda IB (ver describe)
+    p = {"symbol": "T", "tipo": "OPT", "cantidad": qty, "costo_promedio": prima * 100,
          "precio_actual": prima, "right": right, "strike": strike,
          "expiry": expiry, "multiplier": "100", "pnl": 0.0, "pnl_pct": 0.0,
          "valor_mercado": abs(qty) * prima * 100, **extra}

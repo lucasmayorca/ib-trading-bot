@@ -381,7 +381,14 @@ def collapse(positions):
 
 
 def _pnl_vs_risk(pnl, st, members):
-    """P&L en dolares contra el capital en riesgo, tambien en dolares.
+    """P&L contra el capital en riesgo. Los dos en DOLARES.
+
+    `max_loss` sale de `analyze_payoff`, que ya multiplica cada pata por su
+    multiplicador (`q * mult * (intr - prem)`): o sea que YA esta en dolares,
+    en la misma escala que `costo_total` — en un debito los dos son iguales.
+    Multiplicarlo otra vez por 100 fue un bug real en produccion: el spread de
+    CAT mostraba -0.96% en vez de -96.05%, y lo tapaba un test cuyo fixture
+    pasaba la prima por accion donde IB manda la prima por contrato.
 
     None cuando la perdida no esta acotada: ahi no hay capital contra el cual
     medir, y el caller neutraliza la decision en vez de inventar un porcentaje.
@@ -389,16 +396,7 @@ def _pnl_vs_risk(pnl, st, members):
     ml = st.get("max_loss")
     if ml in (None, 0):
         return None
-    mult = 100
-    for m in members:
-        try:
-            mm = int(float((m.get("option") or {}).get("multiplier") or 0))
-            if mm > 0:
-                mult = mm
-                break
-        except (TypeError, ValueError):
-            continue
-    riesgo = abs(float(ml)) * mult
+    riesgo = abs(float(ml))
     return round(pnl / riesgo * 100, 2) if riesgo else None
 
 

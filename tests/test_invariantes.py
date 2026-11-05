@@ -1710,21 +1710,32 @@ def test_el_pnl_que_decide_no_puede_degenerar():
     import option_strategy as os_
 
     def pata(right, qty, strike, prima, pnl):
-        p = {"symbol": "W", "tipo": "OPT", "cantidad": qty, "costo_promedio": prima,
-             "precio_actual": prima, "right": right, "strike": strike,
-             "expiry": "20261120", "multiplier": "100", "pnl": pnl, "pnl_pct": 0.0,
+        # `costo_promedio` POR CONTRATO: es como lo manda IB (averageCost) y
+        # como lo lee option_position.describe, que divide por el multiplicador.
+        p = {"symbol": "W", "tipo": "OPT", "cantidad": qty,
+             "costo_promedio": prima * 100, "precio_actual": prima,
+             "right": right, "strike": strike, "expiry": "20261120",
+             "multiplier": "100", "pnl": pnl, "pnl_pct": 0.0,
              "valor_mercado": abs(qty) * prima * 100,
              "costo_total": abs(qty) * prima * 100}
         p["option"] = op.describe(p)
         return p
 
-    # riesgo ACOTADO: el ratio sale en las mismas unidades que el P&L (dolares)
+    # riesgo ACOTADO. La invariante, no un numero magico: en un DEBITO puro el
+    # capital en riesgo ES el debito pagado, asi que los dos porcentajes tienen
+    # que COINCIDIR. Un test contra una constante no caza un factor 100 si el
+    # fixture no es como IB manda los datos — paso exactamente eso: el spread
+    # de CAT mostro -0.96% en produccion donde debia decir -96.05%.
     spread = [p for p in os_.collapse([pata("C", 3, 750, 20.0, 900.0),
                                        pata("C", -3, 850, 8.0, -300.0)])
               if p.get("strategy")][0]
-    assert spread["strategy"]["max_loss"] is not None
-    # +$600 sobre $3.600 de riesgo = 16.67%, NO 1666% (max_loss viene por accion)
-    assert abs(spread["pnl_vs_risk_pct"] - 16.67) < 0.1, spread["pnl_vs_risk_pct"]
+    st = spread["strategy"]
+    assert st["max_loss"] is not None
+    # el capital en riesgo y el costo del paquete son la misma escala
+    assert abs(abs(st["max_loss"]) - spread["costo_total"]) < 0.01, (
+        st["max_loss"], spread["costo_total"])
+    assert abs(spread["pnl_vs_risk_pct"] - spread["pnl_pct"]) < 0.5, (
+        spread["pnl_vs_risk_pct"], spread["pnl_pct"])
 
     # riesgo ABIERTO: no hay capital contra el cual medir -> None, y el
     # veredicto se neutraliza en vez de inventar un porcentaje
