@@ -3925,6 +3925,22 @@ function loadPortfolio(){
 // analisis. El default `||'HOLD'` la mostraba con badge HOLD: se lee como "el
 // sistema lo evaluo y dice mantener", cuando no lo miro nunca. Caso real:
 // GOOG, SPCX e IBIT, 3 de 12 posiciones con dinero puesto.
+// El % de P&L se divide por el COSTO NETO: en una estrategia a credito tiende
+// a cero y el cociente explota. Caso real en pantalla: el collar de WMT marcaba
+// -6690.9%, que se lee como catastrofe y no significa nada. Cuando hay riesgo
+// acotado se prefiere el P&L contra el capital en riesgo; si no lo hay y el
+// porcentaje degenero, se muestran los dolares, que siempre son verdad.
+function _pnlPctTxt(p){
+  let vr=p.pnl_vs_risk_pct;
+  if(vr!=null)return {txt:(vr>=0?'+':'')+vr.toFixed(1)+'%',
+    tip:'P&L sobre el capital en riesgo de la estrategia ($'+Math.abs(p.pnl||0).toFixed(2)+')'};
+  let pct=p.pnl_pct||0;
+  if(Math.abs(pct)>500)return {txt:(p.pnl>=0?'+':'-')+'$'+Math.abs(p.pnl||0).toFixed(0),
+    tip:'El % no se muestra porque el costo neto de esta posicion es casi cero y el cociente '+
+        'no significa nada (daba '+pct.toFixed(0)+'%). El P&L en dolares si es exacto.'};
+  return {txt:(pct>=0?'+':'')+pct.toFixed(1)+'%', tip:''};
+}
+
 function _sinAnalisis(a){return !a||Object.keys(a).length===0||!a.signal_label;}
 
 // Map de accion a class CSS del verdict card
@@ -4127,7 +4143,8 @@ function _posFacts(pos,rec){
   add('Costo prom.',cost>0?f(cost):'—',null,'Lo que te costo cada accion, segun IB');
   add('Precio hoy',f(px));
   }
-  add('P&L',(pnl>=0?'+':'-')+'$'+Math.abs(pnl).toFixed(2)+' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%)','color:'+col,
+  let _pf=_pnlPctTxt(pos);
+  add('P&L',(pnl>=0?'+':'-')+'$'+Math.abs(pnl).toFixed(2)+(_pf.txt.indexOf('$')<0?(' ('+_pf.txt+')'):''),'color:'+col,
       opt?'Sobre la prima pagada, no sobre el precio del subyacente':null);
   if(pos.valor_mercado!=null)add('Valor',f(pos.valor_mercado));
   if(pos.peso_portafolio!=null)add('Peso',(pos.peso_portafolio*100).toFixed(1)+'%',null,'Cuanto pesa en tu cartera');
@@ -4345,8 +4362,9 @@ function renderPortfolio(d){
       vHtml+='<span class="pi-sym">'+(_o?(_o.is_strategy
                 ?(p.symbol+' '+((_st&&_st.name)||'estrategia'))
                 :(p.symbol+' '+_o.right_label+' '+_o.strike.toFixed(0))):p.symbol)+'</span>';
-      vHtml+='<span class="pi-pnl" style="color:'+(pnlPct>=0?'var(--buy)':'var(--sell)')+'">'+
-             (pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%</span>';
+      let _pp=_pnlPctTxt(p);
+      vHtml+='<span class="pi-pnl" style="color:'+(pnlPct>=0?'var(--buy)':'var(--sell)')+'"'+
+             (_pp.tip?' title="'+_pp.tip.replace(/"/g,'&quot;')+'"':'')+'>'+_pp.txt+'</span>';
       vHtml+='<span class="pi-act '+cls+'">'+label+'</span>';
       if(dot)vHtml+=dot;
       vHtml+='</button>';

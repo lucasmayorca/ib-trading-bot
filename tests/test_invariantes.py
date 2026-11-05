@@ -1789,3 +1789,20 @@ def test_sin_analisis_no_se_muestra_un_veredicto():
     # la frase viaja partida entre dos literales JS: se busca el trozo final
     assert "lo evaluó" in h[i:i + 1200]
     assert "no está en el universo" in h[i:i + 1200]
+
+
+def test_el_porcentaje_de_pnl_no_se_muestra_cuando_degenera():
+    """Caso real en pantalla: el collar de WMT marcaba -6690.9% porque su
+    costo neto es casi cero. Se lee como catastrofe y no significa nada; los
+    dolares si son verdad."""
+    h = vw.DASHBOARD_HTML
+    assert "function _pnlPctTxt" in h
+    i = h.index("function _pnlPctTxt")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "pnl_vs_risk_pct" in cuerpo, "no prefiere el P&L contra el capital en riesgo"
+    assert "Math.abs(pct)>500" in cuerpo, "no detecta el cociente degenerado"
+    # las dos superficies (chip del indice y ficha) tienen que usarlo
+    assert "_pnlPctTxt(p)" in h and "_pnlPctTxt(pos)" in h
+    # y ninguna puede volver a imprimir pnl_pct crudo en el chip
+    j = h.index('class="pi-pnl"')
+    assert "pnlPct.toFixed(1)" not in h[j:j + 400]
