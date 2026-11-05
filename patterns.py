@@ -67,8 +67,8 @@ import numpy as np
 # ══════════════════════════════════════════════════════════════
 
 # Medicion vigente: 2026-09-18 sobre el UNIVERSO COMPLETO — 217 simbolos (100
-# acciones + 118 ETFs de las listas del scanner; solo falta MMC, que yfinance no
-# sirve) x 10 años: 6.935 eventos, 4.742 resueltos. Detectores actuales y modo
+# acciones + 118 ETFs de las listas del scanner; falto MMC — no era yfinance:
+# el ticker habia muerto, Marsh & McLennan cotiza MRSH) x 10 años: 6.935 eventos, 4.742 resueltos. Detectores actuales y modo
 # crudo (detect(apply_policy=False)); la medicion original corria sobre la
 # deteccion ya filtrada, asi que las figuras suprimidas no podian re-medirse.
 #

@@ -1295,6 +1295,28 @@ User's machine                          Railway (shared)
   Conectar TWS → "Ver historial completo de trades". When the trade list is empty, the dashboard
   shows a CTA pointing here instead of a bare "no trades" message (empty ≠ no history — it usually
   just means Flex isn't connected yet).
+- **El log del bridge mentia en tres lugares (2026-11)** — ninguno movia un numero del
+  dashboard, pero la consola es lo unico que se mira para saber si el sistema esta vivo:
+  (1) **"Scan completo — N BUY, M SELL"** contaba sobre `results`, el buffer del lote, que se
+  vacia cada 10 simbolos: con 103 acciones describia las ultimas 3, nunca los ETFs, y daba
+  **0 BUY / 0 SELL fijo** en cuanto el gate horario ya tenia todo vigente. Ahora
+  `count_signals(full_results, etf_full)` cuenta el ciclo completo e informa el total de activos.
+  (2) **`IB Error 2100`** en amarillo cada ciclo era IB acusando NUESTRA propia
+  `reqAccountUpdates(False)` (todos los call sites pasan ahora por `unsubscribe_account()`, que
+  anota el momento). **No se mete en la lista de `ignored`**: el mismo 2100 llega cuando otro
+  cliente API pisa la suscripcion de cuenta — p.ej. levantar `vista_web.py` local contra la
+  misma TWS — y ahi la cartera deja de actualizarse en silencio. Se silencia por ventana de 5s.
+  (3) **"No bars for X (timeout after 25s)"** se imprimia para cualquier lista vacia: con el
+  error 200 el handler marca `hist_done` al instante y el loop sale en <1s, asi que el mensaje
+  mandaba a buscar un problema de red inexistente. `no_bars_reason()` distingue contrato no
+  reconocido (200), sin datos (162), respuesta vacia y timeout real.
+  **El caso que lo destapo: MMC ya no existe** — Marsh & McLennan cotiza **MRSH**, asi que IB
+  tiraba error 200 todos los ciclos y yfinance devolvia 0 filas (el "yfinance no sirve" anotado
+  en `patterns.py` era un diagnostico equivocado). Barrido de las 218 entradas de
+  `FALLBACK_STOCKS`+`FALLBACK_ETFS`: era el unico ticker muerto. Las listas de acciones del
+  local y del bridge tienen que seguir siendo identicas (hay test); los ETFs difieren a
+  proposito (el bridge no cubre los de cripto). Tests: §18.
+  ⚠ Cambia `bridge/main.py` ⇒ **requiere reinstalar el bridge**.
 - **Bridge reinstall**: `run-bridge.sh` only *launches* the already-installed `ib-bridge` CLI — it
   does not pull new code. After any `bridge/` change, the fix requires `rm -rf ~/.ib-bridge &&
   curl -sL .../install-bridge.sh | bash` (a fresh `pip install --upgrade`), not just relaunching.

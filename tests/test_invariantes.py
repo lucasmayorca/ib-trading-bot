@@ -1817,3 +1817,98 @@ def test_el_porcentaje_de_pnl_no_se_muestra_cuando_degenera():
     # y ninguna puede volver a imprimir pnl_pct crudo en el chip
     j = h.index('class="pi-pnl"')
     assert "pnlPct.toFixed(1)" not in h[j:j + 400]
+
+
+# ── 18. EL LOG DEL BRIDGE DICE LO QUE PASO ───────────────────────────
+# Los tres defectos de abajo no movian un solo numero del dashboard: mentian
+# en la consola del bridge, que es lo unico que se mira para saber si el
+# sistema esta vivo. Un resumen que dice "0 BUY" cuando hubo senales, o
+# "timeout" cuando el ticker no existe, manda a buscar el problema al lugar
+# equivocado — y el ticker muerto SI sacaba un simbolo del universo.
+
+import bridge.main as bmain
+
+
+def test_las_dos_listas_de_acciones_son_la_misma():
+    """scanner.FALLBACK_STOCKS y su copia del bridge son universos paralelos:
+    si divergen, el local y el cloud escanean cosas distintas y el usuario ve
+    dos tablas que no coinciden sin ninguna explicacion. (Los ETFs si difieren
+    a proposito: el bridge no cubre los de cripto — ver IBIT en CLAUDE.md.)"""
+    import scanner
+    assert scanner.FALLBACK_STOCKS == bmain.FALLBACK_STOCKS
+    assert len(set(scanner.FALLBACK_STOCKS)) == len(scanner.FALLBACK_STOCKS), "ticker repetido"
+
+
+def test_el_ticker_de_marsh_mclennan_esta_vivo():
+    """MMC dejo de existir (Marsh & McLennan cotiza MRSH): IB contestaba
+    'error 200 - no se encuentra definicion del activo' todos los ciclos y
+    yfinance devolvia 0 filas, asi que el simbolo nunca se analizaba."""
+    import scanner
+    assert "MRSH" in scanner.FALLBACK_STOCKS
+    assert "MMC" not in scanner.FALLBACK_STOCKS
+    assert "MMC" not in bmain.FALLBACK_STOCKS
+
+
+def test_el_resumen_cuenta_el_ciclo_entero_no_el_ultimo_lote():
+    """Se contaba sobre el buffer del lote, que se vacia cada 10 simbolos: con
+    103 acciones el resumen describia las ultimas 3, y daba 0 BUY / 0 SELL
+    fijo en cuanto el cache horario ya tenia todo vigente."""
+    acciones = {f"S{i}": {"signal": "HOLD"} for i in range(100)}
+    acciones["S3"] = {"signal": "BUY"}      # en un lote YA despachado
+    acciones["S101"] = {"signal": "SELL"}   # en la cola
+    etfs = {"SPY": {"signal": "BUY"}}       # los ETFs nunca entraban en la cuenta
+
+    assert bmain.count_signals(acciones, etfs) == (2, 1, 102)
+    # un ciclo enteramente reusado del cache sigue reportando sus senales
+    assert bmain.count_signals(acciones, etfs)[0] == 2
+    assert bmain.count_signals({}, {}) == (0, 0, 0)
+    assert bmain.count_signals(None, {"X": {"signal": "BUY"}}) == (1, 0, 1)
+
+
+class _FakeIB:
+    def __init__(self):
+        self.hist_done = {}
+        self.hist_error = {}
+
+
+def test_sin_barras_no_es_siempre_un_timeout():
+    """'No bars for MMC (timeout after 25s)' mandaba a buscar un problema de
+    red: con el error 200 el handler marca hist_done al instante y el loop
+    sale en menos de un segundo. El sintoma real es el simbolo."""
+    app = _FakeIB()
+
+    app.hist_done[1], app.hist_error[1] = True, 200
+    assert "error 200" in bmain.no_bars_reason(app, 1, 25)
+    assert "timeout" not in bmain.no_bars_reason(app, 1, 25)
+
+    app.hist_done[2], app.hist_error[2] = True, 162
+    assert "error 162" in bmain.no_bars_reason(app, 2, 25)
+
+    app.hist_done[3] = True                     # respondio, sin barras y sin error
+    assert "sin barras" in bmain.no_bars_reason(app, 3, 25)
+
+    assert "timeout after 25s" == bmain.no_bars_reason(app, 99, 25)   # nunca contesto
+
+
+def test_el_2100_propio_se_calla_pero_el_ajeno_no():
+    """IB contesta 2100 a nuestra propia reqAccountUpdates(False) y no es una
+    falla. Pero manda el MISMO codigo cuando otro cliente API pisa la
+    suscripcion de cuenta, y ahi la cartera deja de actualizarse en silencio:
+    meterlo en la lista de ignorados taparia justo el caso que hay que ver."""
+    import time as _t
+    app = bmain.BridgeIB()
+    vistos = []
+    orig, bmain.log = bmain.log, lambda msg, *a, **k: vistos.append(msg)
+    try:
+        app.account_unsub_at = _t.time()        # como si acabaramos de darnos de baja
+        app.error(-1, 2100, "El cliente API ha sido dado de baja...")
+        assert vistos == [], "silencio el 2100 propio"
+
+        app.account_unsub_at = 0.0              # nadie se dio de baja aca
+        app.error(-1, 2100, "El cliente API ha sido dado de baja...")
+        assert len(vistos) == 1, "un 2100 ajeno tiene que verse"
+
+        app.error(7, 200, "No se encuentra definicion del activo")
+        assert app.hist_done[7] is True and app.hist_error[7] == 200
+    finally:
+        bmain.log = orig

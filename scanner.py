@@ -181,7 +181,10 @@ FALLBACK_STOCKS = [
     # 51-100
     "NOW", "ISRG", "BKNG", "AMGN", "AMAT", "AXP", "IBM", "GE", "CAT",
     "LRCX", "MDLZ", "ADI", "GILD", "REGN", "VRTX", "PANW", "SYK", "SNPS",
-    "CDNS", "KLAC", "BSX", "MMC", "CME", "CB", "PGR", "ABNB", "SHOP",
+    "CDNS", "KLAC", "BSX", "MRSH", "CME", "CB", "PGR", "ABNB", "SHOP",
+    # MRSH = Marsh & McLennan (ex MMC). Con el ticker viejo IB tiraba
+    # "Error 200: no se encuentra definicion del activo" todos los ciclos
+    # y yfinance devolvia 0 filas: el simbolo quedaba fuera del universo.
     "ICE", "MCO", "APH", "CRWD", "WDAY", "MAR", "HLT", "FTNT", "MRVL",
     "DASH", "ROP", "MNST", "MSCI", "DXCM", "CPRT", "IDXX", "TTD", "ON",
     "MCHP", "TEAM", "GEN", "FSLR", "ENPH",

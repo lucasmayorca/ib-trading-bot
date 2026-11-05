@@ -93,6 +93,11 @@ class BridgeIB(EWrapper, EClient):
         self.connected_event = threading.Event()
         self.historical_data = {}
         self.hist_done = {}
+        self.hist_error = {}          # req_id -> errorCode de IB (162/200), si hubo
+        # Momento de nuestra ultima baja de datos de cuenta. IB contesta con un
+        # 2100 que NO es una falla; ver error() para por que se silencia por
+        # ventana de tiempo y no metiendolo en la lista de ignorados.
+        self.account_unsub_at = 0.0
         self.market_data = {}
         self.portfolio_positions = []
         self.portfolio_done = False
@@ -119,10 +124,23 @@ class BridgeIB(EWrapper, EClient):
         ignored = [2104, 2106, 2158, 2119, 2108, 2103, 2105, 2174, 2176]
         if errorCode in ignored:
             return
+        if errorCode == 2100 and time.time() - self.account_unsub_at < 5:
+            # IB acusando NUESTRA propia reqAccountUpdates(False, "") de recien.
+            # No va a la lista de ignorados a proposito: el mismo 2100 llega
+            # cuando otro cliente API nos pisa la suscripcion de cuenta, y ahi
+            # la cartera deja de actualizarse en silencio. Silenciarlo siempre
+            # taparia justo el caso que hay que ver.
+            return
         if errorCode in [162, 200]:
             self.hist_done[reqId] = True
-        if errorCode not in ignored:
-            log(f"IB Error {errorCode}: {errorString}", Y)
+            self.hist_error[reqId] = errorCode
+        log(f"IB Error {errorCode}: {errorString}", Y)
+
+    def unsubscribe_account(self):
+        """Baja de los datos de cuenta, anotando cuando — para distinguir el
+        2100 que contesta IB de uno que mande otro cliente API."""
+        self.account_unsub_at = time.time()
+        self.reqAccountUpdates(False, "")
 
     def historicalData(self, reqId, bar):
         if reqId not in self.historical_data:
@@ -245,9 +263,38 @@ def make_contract(symbol):
     return c
 
 
+def count_signals(*pools):
+    """BUY/SELL del ciclo COMPLETO (acciones + ETFs, incluido lo que se reuso
+    del cache horario). Se contaba sobre el buffer del ultimo lote, que se
+    vacia cada 10 simbolos: el resumen describia los ultimos <10 simbolos de
+    acciones, y daba 0 BUY / 0 SELL fijo en cuanto la hora ya estaba
+    analizada. Es el unico numero que se mira de un vistazo para saber si el
+    sistema encontro algo."""
+    rows = [r for pool in pools for r in (pool or {}).values()]
+    buys = sum(1 for r in rows if r.get("signal") == "BUY")
+    sells = sum(1 for r in rows if r.get("signal") == "SELL")
+    return buys, sells, len(rows)
+
+
+def no_bars_reason(app, req_id, timeout):
+    """Por que no hay barras. Decir "timeout" para cualquier lista vacia
+    mandaba a buscar un problema de red que no existia: con el error 200 el
+    handler marca hist_done al instante y el loop sale en menos de un segundo
+    — el sintoma es un simbolo que IB no conoce, no una demora."""
+    err = app.hist_error.get(req_id)
+    if err == 200:
+        return "IB no reconoce el contrato (error 200) — revisar el simbolo"
+    if err == 162:
+        return "IB no devolvio datos historicos (error 162)"
+    if app.hist_done.get(req_id):
+        return "IB respondio sin barras"
+    return f"timeout after {timeout}s"
+
+
 def fetch_historical(app, symbol, req_id, duration="1 Y"):
     app.historical_data[req_id] = []
     app.hist_done[req_id] = False
+    app.hist_error.pop(req_id, None)
     app.reqHistoricalData(
         req_id, make_contract(symbol), "",
         duration, "1 day", "TRADES", 1, 1, False, [],
@@ -258,7 +305,7 @@ def fetch_historical(app, symbol, req_id, duration="1 Y"):
         time.sleep(0.1)  # More responsive polling
     bars = app.historical_data.get(req_id, [])
     if not bars:
-        log(f"  No bars for {symbol} (timeout after {timeout}s)", Y)
+        log(f"  No bars for {symbol} ({no_bars_reason(app, req_id, timeout)})", Y)
     elif len(bars) < 50:
         log(f"  {symbol}: only {len(bars)} bars (need 50)", Y)
     return bars
@@ -299,7 +346,10 @@ FALLBACK_STOCKS = [
     # 51-100
     "NOW", "ISRG", "BKNG", "AMGN", "AMAT", "AXP", "IBM", "GE", "CAT",
     "LRCX", "MDLZ", "ADI", "GILD", "REGN", "VRTX", "PANW", "SYK", "SNPS",
-    "CDNS", "KLAC", "BSX", "MMC", "CME", "CB", "PGR", "ABNB", "SHOP",
+    "CDNS", "KLAC", "BSX", "MRSH", "CME", "CB", "PGR", "ABNB", "SHOP",
+    # MRSH = Marsh & McLennan (ex MMC). Con el ticker viejo IB tiraba
+    # "Error 200: no se encuentra definicion del activo" todos los ciclos
+    # y yfinance devolvia 0 filas: el simbolo quedaba fuera del universo.
     "ICE", "MCO", "APH", "CRWD", "WDAY", "MAR", "HLT", "FTNT", "MRVL",
     "DASH", "ROP", "MNST", "MSCI", "DXCM", "CPRT", "IDXX", "TTD", "ON",
     "MCHP", "TEAM", "GEN", "FSLR", "ENPH",
@@ -753,7 +803,7 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
     # they'd only show up starting cycle 2, once a portfolio_data refresh
     # has actually run once).
     _refresh_portfolio(ib_app, log)
-    ib_app.reqAccountUpdates(False, "")
+    ib_app.unsubscribe_account()
 
     # Emit inmediato al servidor: sin esto el usuario ve Mi Cartera vacia
     # hasta que termine el primer scan de stocks+ETFs (~2-3 min).
@@ -918,16 +968,16 @@ def run_bridge(server_url, bridge_token, ib_host="127.0.0.1", ib_port=7497):
                     "open_orders": ib_app.open_orders,
                     "executions": [],
                 }), server_url, authenticated)
-                ib_app.reqAccountUpdates(False, "")
+                ib_app.unsubscribe_account()
 
                 new_fills = fetch_new_fills(ib_app, 7000)
                 if new_fills:
                     log(f"  {len(new_fills)} fills nuevos detectados, enviando al servidor...", C)
                     safe_emit(sio, "trades_data", clean({"fills": new_fills}), server_url, authenticated)
 
-                buy_count = sum(1 for r in results.values() if r.get("signal") == "BUY") if results else 0
-                sell_count = sum(1 for r in results.values() if r.get("signal") == "SELL") if results else 0
-                log(f"Scan completo — {buy_count} BUY, {sell_count} SELL senales", G)
+                buy_count, sell_count, scanned = count_signals(full_results, etf_full)
+                log(f"Scan completo — {buy_count} BUY, {sell_count} SELL senales "
+                    f"sobre {scanned} activos", G)
                 log(f"Proximo scan en {SCAN_INTERVAL // 60} minutos...", W)
                 time.sleep(SCAN_INTERVAL)
             except (KeyboardInterrupt, SystemExit):
