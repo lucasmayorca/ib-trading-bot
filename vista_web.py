@@ -3237,6 +3237,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .pi-sym{font-weight:700;font-size:13px;color:var(--text);letter-spacing:-.2px}
 .pi-pnl{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
 .pi-act{font-size:10px;font-weight:700;letter-spacing:.3px;padding:2px 6px;border-radius:4px;background:var(--glass);color:var(--muted)}
+.pi-act.v-none,.rec-rank-badge.v-none{color:var(--muted);background:var(--glass)}
 .pi-act.v-sell{color:#c22436}.pi-act.v-add{color:#0b7a4b}.pi-act.v-reduce{color:#b45309}.pi-act.v-hold{color:#2456e6}
 .pi-dot{width:7px;height:7px;border-radius:50%;display:inline-block}
 .pi-urg{font-size:12px;color:#b45309}
@@ -3920,6 +3921,12 @@ function loadPortfolio(){
   });
 }
 
+// Una posicion cuyo simbolo no esta en el universo escaneado llega SIN
+// analisis. El default `||'HOLD'` la mostraba con badge HOLD: se lee como "el
+// sistema lo evaluo y dice mantener", cuando no lo miro nunca. Caso real:
+// GOOG, SPCX e IBIT, 3 de 12 posiciones con dinero puesto.
+function _sinAnalisis(a){return !a||Object.keys(a).length===0||!a.signal_label;}
+
 // Map de accion a class CSS del verdict card
 function _portVerdictClass(v){
   if(v==='SELL')return 'v-sell';
@@ -4321,8 +4328,9 @@ function renderPortfolio(d){
   }else{
     for(let p of positions){
       let deep=p.analysis||{};
-      let cls=_portVerdictClass(deep.verdict||'HOLD');
-      let label=_portVerdictLabel(deep.verdict||'HOLD');
+      let nd=_sinAnalisis(deep);
+      let cls=nd?'v-none':_portVerdictClass(deep.verdict||'HOLD');
+      let label=nd?'SIN ANÁLISIS':_portVerdictLabel(deep.verdict||'HOLD');
       let pnlPct=(p.pnl_pct||0);
       let et=deep.entry_thesis||null;
       let dot=_thDot(et);
@@ -4594,9 +4602,10 @@ function renderPortAnalysisList(positions){
     let opt=p.option||(p.analysis&&p.analysis.option)||null;
     let rec=p.analysis||{};
     let sig=rec.signal||'HOLD';
+    let noAnal=_sinAnalisis(rec);
     let verdict=rec.verdict||'HOLD';
-    let vc=_portVerdictClass(verdict);
-    let vlabel=_portVerdictLabel(verdict);
+    let vc=noAnal?'v-none':_portVerdictClass(verdict);
+    let vlabel=noAnal?'SIN ANÁLISIS':_portVerdictLabel(verdict);
     let sc=sig==='BUY'?'rec-buy':(sig==='SELL'?'rec-sell':'rec-hold');
     let curP=_portAnalPeriods[sym]||'1Y';
     let wr=((rec.win_rate||0)*100).toFixed(0);
@@ -4642,6 +4651,18 @@ function renderPortAnalysisList(positions){
 
     // 1. TU POSICION
     html+=_posFacts(p,rec);
+
+    // Sin analisis no hay tesis, ni veredicto, ni niveles: decirlo. Dejar la
+    // ficha muda con un badge HOLD es afirmar algo que el sistema no calculo.
+    if(noAnal){
+      html+='<div class="rec-thesis" style="border-left:4px solid var(--muted)">'+
+        '<div class="rec-thesis-title">Sin análisis para esta posición</div>'+
+        '<div class="rec-thesis-text">Este símbolo no está en el universo que escanea tu bridge, '+
+        'así que no hay señal, tesis, niveles ni veredicto para él. Los datos de arriba '+
+        '(cantidad, costo y P&amp;L) vienen de IB y son correctos; lo que falta es el análisis '+
+        'técnico. <b>El badge no dice HOLD porque el sistema recomiende mantener: dice que no '+
+        'lo evaluó.</b></div></div>';
+    }
     html+=_legsTable(p.strategy);
 
     // 2. LA TESIS DE ENTRADA (+ que paso en el medio)

@@ -1768,3 +1768,24 @@ def test_la_prima_viva_se_resuelve_igual_en_local_y_cloud():
     for clave in ("precio_actual", "marketPrice", "precio_mercado"):
         d = op.describe({**base, clave: 5.0})
         assert d and d.get("premium_now") == 5.0, clave
+
+
+def test_sin_analisis_no_se_muestra_un_veredicto():
+    """Una posicion cuyo simbolo no esta en el universo escaneado llega SIN
+    analisis, y el default `||'HOLD'` la mostraba con badge HOLD: se lee como
+    "el sistema lo evaluo y dice mantener". Caso real cazado en produccion con
+    dinero puesto: GOOG ($92.652), SPCX e IBIT, 3 de 12 posiciones."""
+    h = vw.DASHBOARD_HTML
+    assert "function _sinAnalisis" in h
+    # el chip del indice y la ficha tienen que ramificar por ahi
+    for ancla in ("let nd=_sinAnalisis(deep);", "let noAnal=_sinAnalisis(rec);"):
+        assert ancla in h, ancla
+    assert "'SIN ANÁLISIS'" in h
+    # y ninguna de las dos puede volver a etiquetar con el default a secas
+    assert "let label=_portVerdictLabel(deep.verdict||'HOLD');" not in h
+    assert "let vlabel=_portVerdictLabel(verdict);" not in h
+    # el cuerpo explica por que, en vez de quedar mudo
+    i = h.index("Sin análisis para esta posición")
+    # la frase viaja partida entre dos literales JS: se busca el trozo final
+    assert "lo evaluó" in h[i:i + 1200]
+    assert "no está en el universo" in h[i:i + 1200]
