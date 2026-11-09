@@ -2996,6 +2996,12 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .mp-st.sell{background:rgba(194,36,54,.10);color:var(--sell)}
 .mp-st.hold{background:rgba(180,83,9,.12);color:var(--hold)}
 .mp-sec{font-size:11.5px;color:var(--muted);margin-top:2px}
+.mp-conc{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mp-pct{display:inline-flex;align-items:baseline;gap:3px;background:var(--glass);border:1px solid var(--glass-border);border-radius:5px;padding:1px 6px;cursor:help}
+.mp-pct i{font-style:normal;font-size:9px;font-weight:700;color:var(--dim);letter-spacing:.3px}
+.mp-pct b{font-size:11.5px;font-variant-numeric:tabular-nums}
+.mp-conc-r{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums;cursor:help}
+.mp-conc-t{font-size:11px;color:var(--muted);line-height:1.45;margin-top:4px}
 .mp-period-bar{display:flex;gap:4px;margin-bottom:8px}
 .mp-err{font-size:12px;color:var(--muted);padding:8px 0}
 @media(max-width:700px){.mp-k{flex-basis:60px}.mp-upd{display:none}}
@@ -7041,6 +7047,7 @@ function _mpHeadInner(){
     ['Momentum',d.momentum?_mpEsc(d.momentum.text):null],
     ['Niveles',d.levels?_mpEsc(d.levels.text):null],
     ['Figura',_mpFiguraHTML(d.pattern)],
+    ['Concentracion',_mpConcHTML(d.concentration)],
     ['Sesion',d.session?_mpEsc(d.session.text):null],
     ['Lectura',d.reading?('<b>'+_mpEsc(d.reading)+'</b>'):null],
   ];
@@ -7048,6 +7055,36 @@ function _mpHeadInner(){
   for(let r of rows){if(!r[1])continue;h+='<div class="mp-row"><span class="mp-k">'+r[0]+'</span><span class="mp-v">'+r[1]+'</span></div>';}
   h+='</div>';
   return h;
+}
+
+// Concentracion del mercado (cap-weighted vs equal-weight). Es el primo EN
+// PRECIO del premio de valuacion del grafico de Goldman, y a diferencia del P/E
+// tiene distribucion propia: sale de dos series que ya bajamos.
+// CADA percentil se muestra con SU ventana a proposito — el mismo ratio daba
+// percentil 11 contra el ultimo año y 76 contra cinco. Sin la ventana al lado,
+// un percentil no informa.
+function _mpConcHTML(c){
+  if(!c)return null;
+  let pts=(c.percentiles||[]);
+  if(!pts.length)return null;
+  let chips=pts.map(p=>{
+    // NO se pinta verde/rojo: eso afirmaria que la concentracion alta es
+    // bajista, y este proyecto no lo midio. Ambar = "mirar", no "vender".
+    let col=(p.pct>=80||p.pct<=20)?'var(--hold)':'var(--text)';
+    return '<span class="mp-pct" title="Percentil del ratio '+_mpEsc(c.pair)+
+      ' contra sus ultimas '+p.ruedas+' ruedas ('+_mpEsc(p.ventana)+'). '+
+      'Alto = el indice ponderado por capitalizacion paga mas sobre el de pesos iguales.">'+
+      '<i>'+_mpEsc(p.ventana)+'</i>'+
+      '<b style="color:'+col+'">p'+p.pct+'</b></span>';
+  }).join('');
+  let d1=c.change_1y_pct;
+  return '<span class="mp-conc">'+chips+
+    '<span class="mp-conc-r" title="Cociente de cierres '+_mpEsc(c.pair)+
+    ', medido sobre '+c.bars+' ruedas comunes (rango '+c.min+'-'+c.max+
+    ', mediana '+c.median+')">'+_mpEsc(c.pair)+' '+c.ratio+
+    (d1!=null?(' <span style="color:var(--muted)">'+
+      (d1>=0?'+':'')+_n(d1,1)+'% 12m</span>'):'')+'</span></span>'+
+    '<div class="mp-conc-t">'+_mpEsc(c.text||'')+'</div>';
 }
 
 function renderMarketPulse(){

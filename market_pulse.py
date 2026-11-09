@@ -89,6 +89,145 @@ def _download_daily():
     return df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
 
 
+# ══════════════════════════════════════════════════════════════
+#  CONCENTRACION DEL MERCADO (cap-weighted vs equal-weight)
+# ══════════════════════════════════════════════════════════════
+# Por que esto y no el P/E del grafico de Goldman: ese grafico es NTM FORWARD
+# y lo util no es el numero (18x) sino la CAJA — el percentil contra 20 años.
+# Medido antes de escribir esto: yfinance no da `forwardPE` para ningun ETF de
+# indice (None en SPY/QQQ/IWM/RSP/MDY), el `trailingPE` que si da NO es
+# comparable (ordena al reves: Russell 2000 es el MAS caro para Goldman, 21x, y
+# el MAS barato en yfinance, 16.4x — agregan ganancias de forma distinta), y
+# sobre todo es un ESCALAR: sin serie no hay percentil, y sin percentil un P/E
+# no dice si algo esta caro.
+#
+# El ratio SPY/RSP es el primo EN PRECIO de ese premio de valuacion: cuanto
+# paga el indice ponderado por capitalizacion sobre el mismo indice con pesos
+# iguales. Tiene dos virtudes que el P/E no tiene: sale de series que ya
+# bajamos (5 años diarios de los dos) y por lo tanto SI tiene distribucion
+# propia, medible hoy.
+CONC_PEER = "RSP"            # S&P 500 equal-weight
+CONC_WINDOWS = ((252, "1A"), (756, "3A"), (None, "5A"))
+
+
+def _download_peer_daily(symbol=CONC_PEER):
+    """Cierres diarios 5A del par de comparacion. None si no hay datos."""
+    import yfinance as yf
+    try:
+        h = yf.Ticker(symbol).history(period="5y", interval="1d", auto_adjust=False)
+    except Exception as e:
+        print(f"[PULSE] {symbol}: descarga fallo ({e})", flush=True)
+        return None
+    if h is None or h.empty or len(h) < 260:
+        return None
+    df = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in h.index],
+        "close": h["Close"].astype(float).values,
+    })
+    return df.dropna(subset=["close"]).reset_index(drop=True)
+
+
+def _concentration_cached(df_spy, epoch):
+    """Concentracion congelada por epoca (como `_analysis_frame`).
+
+    Es una lectura de REGIMEN, no de sesion: si latiera con el TTL de 10 min el
+    percentil parpadearia dentro de la misma hora, igual que parpadeaban las
+    condiciones x/3 antes de que el analisis se congelara por epoca.
+    """
+    if epoch and _cache.get("conc_epoch") == epoch and "conc" in _cache:
+        return _cache["conc"]
+    try:
+        out = _concentration(df_spy)
+    except Exception as e:
+        print(f"[PULSE] concentracion: {e}", flush=True)
+        out = None
+    _cache["conc_epoch"] = epoch
+    _cache["conc"] = out
+    return out
+
+
+def _concentration(df_spy):
+    """Ratio SPY/RSP con su percentil por ventana. None si falta el par.
+
+    ALINEA POR FECHA, no por posicion: son dos descargas independientes y un
+    feriado o una fila faltante en una sola de las dos desplazaria toda la
+    serie, comparando el SPY de hoy contra el RSP de ayer sin avisar.
+
+    Cada percentil viaja con SU ventana a proposito: medido hoy, el mismo
+    ratio da percentil 76 contra 5 años y 13 contra el ultimo año. Un
+    percentil sin la ventana al lado no informa, miente.
+    """
+    peer = _download_peer_daily()
+    if peer is None or df_spy is None or df_spy.empty:
+        return None
+    try:
+        m = pd.merge(df_spy[["date", "close"]], peer, on="date",
+                     how="inner", suffixes=("_a", "_b"))
+    except Exception as e:
+        print(f"[PULSE] concentracion: merge fallo ({e})", flush=True)
+        return None
+    m = m[(m["close_b"] > 0) & m["close_a"].notna() & m["close_b"].notna()]
+    if len(m) < 260:
+        return None
+
+    r = (m["close_a"] / m["close_b"]).to_numpy(dtype=float)
+    hoy = float(r[-1])
+    pcts = []
+    for n, etiqueta in CONC_WINDOWS:
+        seg = r if n is None else r[-n:]
+        if len(seg) < 60:
+            continue
+        pcts.append({"ventana": etiqueta, "ruedas": int(len(seg)),
+                     "pct": int(round(float((seg < hoy).mean() * 100)))})
+    if not pcts:
+        return None
+
+    # Direccion en el margen: la concentracion puede estar alta contra la
+    # decada y aflojando igual. Las dos cosas importan y dicen distinto.
+    hace_un_ano = float(r[-252]) if len(r) > 252 else float(r[0])
+    delta_1a = (hoy / hace_un_ano - 1) * 100 if hace_un_ano else 0.0
+
+    p5 = next((p["pct"] for p in pcts if p["ventana"] == "5A"), None)
+    p1 = next((p["pct"] for p in pcts if p["ventana"] == "1A"), None)
+    return {
+        "pair": f"{SYMBOL}/{CONC_PEER}",
+        "ratio": round(hoy, 3),
+        "percentiles": pcts,
+        "min": round(float(r.min()), 3),
+        "median": round(float(np.median(r)), 3),
+        "max": round(float(r.max()), 3),
+        "change_1y_pct": round(delta_1a, 1),
+        "as_of": str(m["date"].iloc[-1]),
+        "bars": int(len(r)),
+        "text": _conc_text(p5, p1, delta_1a),
+    }
+
+
+def _conc_text(p5, p1, delta_1a):
+    """Lectura en castellano. Nunca afirma mas de lo que el percentil dice."""
+    if p5 is None:
+        return ""
+    if p5 >= 80:
+        base = (f"La concentracion esta en el percentil {p5} de 5 años: el indice "
+                f"ponderado por capitalizacion paga mucho mas que el de pesos "
+                f"iguales, o sea que el movimiento depende de pocos nombres.")
+    elif p5 <= 20:
+        base = (f"La concentracion esta en el percentil {p5} de 5 años: la suba "
+                f"esta repartida, no la cargan unos pocos nombres.")
+    else:
+        base = (f"La concentracion esta en el percentil {p5} de 5 años, dentro de "
+                f"su rango habitual.")
+    if p1 is not None and abs(p5 - p1) >= 25:
+        base += (f" Pero contra el ULTIMO AÑO esta en el percentil {p1}: "
+                 f"{'se aflojo' if p1 < p5 else 'se acelero'} en el margen.")
+    if abs(delta_1a) >= 3:
+        base += (f" El ratio {'subio' if delta_1a > 0 else 'bajo'} "
+                 f"{abs(delta_1a):.1f}% en 12 meses.")
+    base += (" Es CONTEXTO de regimen, no una señal: no entra en el veredicto "
+             "ni en el score.")
+    return base
+
+
 def _download_intraday():
     """Velas 15m de los ultimos dias para leer la sesion (gap/rango)."""
     import yfinance as yf
@@ -663,6 +802,9 @@ def _build_pulse():
                    "text": levels_text},
         "pattern": pattern,
         "fibonacci": fib,
+        # Concentracion cap-weighted vs equal-weight: contexto de REGIMEN.
+        # None si no se pudo bajar el par — se dice, no se omite en silencio.
+        "concentration": _concentration_cached(df, _epoch),
         # Velas japonesas recientes (timing corto, cierres confirmados)
         "candles": patterns.detect_candles(
             df["open"].tolist(), df["high"].tolist(),

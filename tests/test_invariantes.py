@@ -1912,3 +1912,115 @@ def test_el_2100_propio_se_calla_pero_el_ajeno_no():
         assert app.hist_done[7] is True and app.hist_error[7] == 200
     finally:
         bmain.log = orig
+
+
+# ── 19. Concentracion del mercado (cap-weighted vs equal-weight) ─────
+# Reemplaza al P/E del grafico de Goldman, que NO se puede reproducir: yfinance
+# no da `forwardPE` para ningun ETF de indice, el `trailingPE` que si da ordena
+# al REVES (Russell 2000 es el mas caro para Goldman y el mas barato ahi) y es
+# un escalar — sin serie no hay percentil, y el percentil es el grafico.
+
+def _serie_par(n=400, seed=3):
+    """Dos series de cierres con fechas, como las que se mergean."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    fechas = pd.date_range("2024-01-01", periods=n, freq="B").strftime("%Y-%m-%d")
+    a = 100 + np.cumsum(rng.normal(0.08, 1.0, n))
+    b = 100 + np.cumsum(rng.normal(0.02, 1.0, n))
+    return (pd.DataFrame({"date": fechas, "close": a}),
+            pd.DataFrame({"date": fechas, "close": b}))
+
+
+def test_la_concentracion_alinea_por_fecha_no_por_posicion():
+    """Son dos descargas independientes: un feriado o una fila faltante en UNA
+    sola desplazaria toda la serie y compararia el SPY de hoy contra el RSP de
+    ayer, sin avisar."""
+    import market_pulse as mp
+    a, b = _serie_par()
+    b_hueco = b.drop(index=[10, 150, 300]).reset_index(drop=True)  # faltan 3 ruedas
+    orig = mp._download_peer_daily
+    try:
+        mp._download_peer_daily = lambda symbol=None: b_hueco
+        r = mp._concentration(a)
+    finally:
+        mp._download_peer_daily = orig
+    assert r is not None
+    # el ratio de hoy tiene que salir de la MISMA fecha en las dos series
+    esperado = float(a["close"].iloc[-1]) / float(b_hueco["close"].iloc[-1])
+    assert abs(r["ratio"] - round(esperado, 3)) < 0.002, (r["ratio"], esperado)
+    assert r["bars"] == len(b_hueco), "no se mergeo por fecha"
+
+
+def test_cada_percentil_viaja_con_su_ventana():
+    """Medido en vivo: el mismo ratio daba percentil 11 contra el ultimo año y
+    76 contra cinco. Un percentil sin su ventana al lado no informa."""
+    import market_pulse as mp
+    a, b = _serie_par()
+    orig = mp._download_peer_daily
+    try:
+        mp._download_peer_daily = lambda symbol=None: b
+        r = mp._concentration(a)
+    finally:
+        mp._download_peer_daily = orig
+    assert r and r["percentiles"]
+    for p in r["percentiles"]:
+        assert p["ventana"] in ("1A", "3A", "5A")
+        assert isinstance(p["ruedas"], int) and p["ruedas"] >= 60
+        assert 0 <= p["pct"] <= 100
+    # y el front las muestra todas, no solo una
+    h = vw.DASHBOARD_HTML
+    i = h.index("function _mpConcHTML")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "p.ventana" in cuerpo and "p.ruedas" in cuerpo
+    assert "percentiles" in cuerpo
+
+
+def test_sin_el_par_la_concentracion_se_omite_no_se_inventa():
+    import market_pulse as mp
+    a, _ = _serie_par()
+    orig = mp._download_peer_daily
+    try:
+        mp._download_peer_daily = lambda symbol=None: None
+        assert mp._concentration(a) is None
+        # y una serie demasiado corta tampoco produce un percentil de adorno
+        import pandas as pd
+        corta = pd.DataFrame({"date": ["2026-01-%02d" % (i + 1) for i in range(30)],
+                              "close": [100.0] * 30})
+        mp._download_peer_daily = lambda symbol=None: corta
+        assert mp._concentration(a) is None
+    finally:
+        mp._download_peer_daily = orig
+
+
+def test_la_concentracion_es_contexto_no_señal():
+    """No puede entrar al veredicto ni al score: no tiene edge medido. Es el
+    mismo criterio que la politica de figuras — nada mueve el ranking sin
+    evidencia."""
+    import market_pulse as mp
+    a, b = _serie_par()
+    orig = mp._download_peer_daily
+    try:
+        mp._download_peer_daily = lambda symbol=None: b
+        r = mp._concentration(a)
+    finally:
+        mp._download_peer_daily = orig
+    assert "no entra en el veredicto" in r["text"]
+    src = open(os.path.join(os.path.dirname(__file__), "..", "market_pulse.py")).read()
+    # el veredicto del pulso no puede leer la concentracion
+    i = src.index("def _verdict")
+    assert "concentration" not in src[i:i + 4000]
+    # ni el score del escaner
+    vs = open(os.path.join(os.path.dirname(__file__), "..", "vista_web.py")).read()
+    j = vs.index("def _score_stock")
+    assert "concentration" not in vs[j:vs.index("\ndef ", j + 10)]
+
+
+def test_la_concentracion_no_se_pinta_como_direccional():
+    """Pintar percentil alto en rojo afirma que la concentracion es bajista —
+    no esta medido. Ambar = "mirar", no "vender"."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("function _mpConcHTML")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "var(--sell)" not in cuerpo and "var(--buy)" not in cuerpo, (
+        "la concentracion no puede pintarse verde/rojo sin edge medido")

@@ -1198,6 +1198,44 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   la barra viva A PROPÓSITO y sí laten cada 10 min (leen la sesión, no son señal). El payload
   expone `analysis_as_of` + `analysis_live`, mostrados en `.mp-upd` ("analisis de la rueda en
   curso" vs "analisis al cierre del <fecha>").
+- **CONCENTRACION cap-weighted vs equal-weight (2026-11, pedido: "el P/E tiene que estar en el
+  gráfico... como termómetro de mercado")**. Lo que se pidió fue reproducir el gráfico de Goldman
+  (*US equity index NTM P/E vs. 20-year distribution*). **No se puede, y conviene saber por qué
+  antes de volver a intentarlo** — los tres hechos están medidos:
+  1. **No hay forward P/E gratis**: `forwardPE` viene `None` en yfinance para SPY, QQQ, IWM, RSP
+     y MDY. El gráfico es NTM (ganancias estimadas a 12 meses) y eso es dato pago.
+  2. **El `trailingPE` que sí da NO es comparable: ordena al revés.** Goldman: Russell 2000 21x
+     (el más CARO) › Nasdaq 20x › S&P 18x › EW 16x › Midcap 14x. yfinance trailing: Nasdaq 27.9 ›
+     S&P 23.9 › EW 20.1 ≈ Midcap 20.0 › **Russell 16.4 (el más BARATO)**. No es un desfasaje de
+     nivel: Goldman agrega ganancias a nivel índice (los small caps tienen muchos que pierden
+     plata) y yfinance pondera los ratios de las tenencias. Ponerlo al lado de esa imagen haría
+     que el dashboard se contradiga con su propia fuente.
+  3. **Y es un ESCALAR**: `trailingPE` no tiene serie. Sin distribución no hay percentil, y el
+     percentil es lo único que convierte "18x" en "caro". Las cajas SON el gráfico.
+  **Lo que se implementó en su lugar**: el ratio **SPY/RSP** — cuánto paga el índice ponderado por
+  capitalización sobre el mismo índice con pesos iguales. Es el primo EN PRECIO de ese premio de
+  valuación y tiene la virtud que al P/E le falta: sale de dos series que ya bajamos, así que
+  **tiene distribución propia medible hoy** (1.255 ruedas comunes).
+  - **ALINEA POR FECHA, no por posición** (`pd.merge` on `date`): son dos descargas independientes
+    y un feriado o una fila faltante en UNA sola desplazaría toda la serie, comparando el SPY de
+    hoy contra el RSP de ayer sin avisar. Hay test con huecos.
+  - **Cada percentil viaja con SU ventana.** Medido el 2026-11-09: ratio 3.41 ⇒ percentil **11 a
+    1 año, 60 a 3 años, 76 a 5 años**, con el ratio cayendo 4.8% en 12 meses. El mismo número da
+    11 o 76 según contra qué se lo mida: **un percentil sin su ventana al lado no informa, miente**.
+    Por eso el chip muestra las tres y el tooltip dice cuántas ruedas tiene cada una.
+  - **Congelada por ÉPOCA**, como `_analysis_frame`: es una lectura de RÉGIMEN, no de sesión. Con
+    el TTL de 10 min el percentil parpadearía dentro de la misma hora, igual que parpadeaban las
+    condiciones x/3 antes del gate horario.
+  - **Es CONTEXTO: no entra en el veredicto ni en el score**, y el texto lo dice. Mismo criterio
+    que la política de figuras — nada mueve el ranking sin edge medido. Antes de conectarla habría
+    que medirla con el protocolo de `tools/medir_ma.py` (percentil al entrar vs retorno forward,
+    señal contra baseline incondicional). **Aviso honesto, como expectativa y no como medición**:
+    la valuación es mal timing — predice retornos a 10 años, no a semanas.
+  - Si falta el par (`RSP` no baja, o hay menos de 260 ruedas comunes) devuelve `None` y la fila
+    no se dibuja: no se inventa un percentil de adorno. Hay test.
+  - **Lo que queda pendiente y por qué**: el percentil de P/E PROPIO exige acumular (grabar el P/E
+    diario, patrón `save_daily_snapshot`); a los 6 meses hay percentil usable. Hoy no sirve, pero
+    sin arrancar nunca se tiene. Tests: §19.
 - **Endpoint `/api/spy-pulse`** (local y espejo cloud con `@login_required`). ¡OJO!:
   `/api/market-pulse` YA EXISTE y es OTRA cosa (quotes + sentimiento miedo/codicia del ticker
   del header/briefing) — no reutilizar ese nombre.
