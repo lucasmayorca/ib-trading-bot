@@ -1226,11 +1226,46 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   - **Congelada por ÉPOCA**, como `_analysis_frame`: es una lectura de RÉGIMEN, no de sesión. Con
     el TTL de 10 min el percentil parpadearía dentro de la misma hora, igual que parpadeaban las
     condiciones x/3 antes del gate horario.
-  - **Es CONTEXTO: no entra en el veredicto ni en el score**, y el texto lo dice. Mismo criterio
-    que la política de figuras — nada mueve el ranking sin edge medido. Antes de conectarla habría
-    que medirla con el protocolo de `tools/medir_ma.py` (percentil al entrar vs retorno forward,
-    señal contra baseline incondicional). **Aviso honesto, como expectativa y no como medición**:
-    la valuación es mal timing — predice retornos a 10 años, no a semanas.
+  - **Es CONTEXTO: no entra en el veredicto ni en el score**, y el texto lo dice. Eso ya **no es
+    una precaución, es un resultado MEDIDO** (`tools/medir_conc.py`, 218 símbolos × 10 años,
+    194.868 entradas: señal 3/3 y baseline incondicional cada 5 ruedas, mismo motor de ejecución
+    intradía del backtest). Ver "La trampa del n" abajo — el método es lo más importante de esta
+    medición.
+    - **Sobre las entradas de SEÑAL, que son las que el score rankea, no hay nada.** Compra:
+      alto (p≥80) vs bajo (p≤20) da **+0.45 pp, p(rotación)=0.50**; venta **−0.27 pp, p=0.66**. Y
+      los buckets no son monótonos (compra: p[20,40) +1.01%, p[60,80) **+0.07%**, p[80,101)
+      +0.83%): eso es ruido con forma de gradiente, no un gradiente.
+    - **La INTERACCIÓN con la señal —la única que justificaría tocar el score— es cero.** La
+      diferencia-en-diferencias (edge sobre baseline en régimen alto menos en régimen bajo) da
+      **+0.08 pp comprando (p=0.91)** y **+0.06 pp vendiendo (p=0.93)**. Mismo criterio que
+      `_major_ma_proximity`: ahí el efecto estaba en la señal y NO en el baseline, y por eso vale
+      6 puntos; acá no está en ninguno de los dos.
+    - **Lo único que sí se ve es del MERCADO, no de la señal, y va al revés de la intuición**: en
+      régimen de concentración alta el baseline LARGO rinde mejor (+0.37 pp) y el CORTO peor
+      (−0.33 pp). O sea que "concentración alta = caro = cuidado" no aparece: lo que aparece es
+      que los años de concentración alta fueron años de suba. Un efecto direccional de mercado no
+      va en un score por símbolo.
+    - **Como termómetro directo del SPY tampoco**: percentil vs retorno forward del SPY (4.661
+      fechas, 2008-2026) da **+0.10 pp a 20 ruedas (p=0.88)** y **−0.24 a 60 (p=0.91)** con el
+      percentil de 1 año. A 252 ruedas aparece +6.0 pp (p=0.04) con el de 5 años — pero es el
+      horizonte equivocado (el hold mediano del sistema es de 6 ruedas) y está confundido con el
+      punto siguiente.
+    - **El percentil de 5 AÑOS es un proxy de TENDENCIA, no de régimen.** La concentración subió
+      en forma casi monótona: sus fechas de percentil alto son 2018-2026 y las de percentil bajo
+      2009-2015 (contra 17 y 15 años distintos del percentil de 1 año). Comparar "alto vs bajo"
+      con esa ventana es comparar dos décadas, no dos regímenes — y sobre la ventana de trades
+      (2017-2026) el bucket bajo tiene **18 entradas de compra**: ni siquiera es testeable. El
+      percentil de **1 año es el único que mide régimen de verdad**, y es el que no predice nada.
+    - **LA TRAMPA DEL n (lo que hay que recordar de todo esto).** El percentil de concentración es
+      **uno solo para todo el mercado en cada fecha**: los trades del mismo día comparten su valor
+      Y comparten el movimiento del mercado, así que no son observaciones independientes. El n
+      efectivo es la cantidad de **regímenes**, no de trades. Medido: el baseline largo da
+      **t=+7.89** (p1a) y **t=+9.75** (p3a) sobre 95.568 trades — evidencia aplastante si uno se la
+      cree — y el test de rotación los deja en **p=0.30 y p=0.032**. Por eso la inferencia va por
+      **rotación circular** de la serie de percentiles contra el calendario (preserva exactamente
+      su autocorrelación y destruye solo su alineación temporal), nunca por un t sobre trades.
+      Cualquier variable MACRO que se quiera agregar al score (VIX, breadth, tasas, el P/E del
+      punto siguiente) cae en la misma trampa y se mide igual.
   - Si falta el par (`RSP` no baja, o hay menos de 260 ruedas comunes) devuelve `None` y la fila
     no se dibuja: no se inventa un percentil de adorno. Hay test.
   - **Lo que queda pendiente y por qué**: el percentil de P/E PROPIO exige acumular (grabar el P/E
