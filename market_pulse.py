@@ -146,6 +146,16 @@ def _concentration_cached(df_spy, epoch):
     return out
 
 
+def _downsample(arr, puntos):
+    """Serie corta para dibujar: `puntos` muestras equiespaciadas, con los
+    extremos intactos (el ultimo valor ES el de hoy y no puede promediarse)."""
+    a = np.asarray(arr, dtype=float)
+    if len(a) <= puntos:
+        return [round(float(x), 4) for x in a]
+    idx = np.linspace(0, len(a) - 1, puntos).round().astype(int)
+    return [round(float(a[i]), 4) for i in idx]
+
+
 def _concentration(df_spy):
     """Ratio SPY/RSP con su percentil por ventana. None si falta el par.
 
@@ -177,8 +187,16 @@ def _concentration(df_spy):
         seg = r if n is None else r[-n:]
         if len(seg) < 60:
             continue
+        # El RANGO de la ventana viaja con el percentil porque es lo que lo
+        # vuelve legible: "p76" no dice nada hasta ver entre que dos numeros
+        # esta el 76%. Es el eje de las cajas del grafico que origino esto.
         pcts.append({"ventana": etiqueta, "ruedas": int(len(seg)),
-                     "pct": int(round(float((seg < hoy).mean() * 100)))})
+                     "pct": int(round(float((seg < hoy).mean() * 100))),
+                     "min": round(float(seg.min()), 3),
+                     "q1": round(float(np.percentile(seg, 25)), 3),
+                     "med": round(float(np.median(seg)), 3),
+                     "q3": round(float(np.percentile(seg, 75)), 3),
+                     "max": round(float(seg.max()), 3)})
     if not pcts:
         return None
 
@@ -197,6 +215,12 @@ def _concentration(df_spy):
         "median": round(float(np.median(r)), 3),
         "max": round(float(r.max()), 3),
         "change_1y_pct": round(delta_1a, 1),
+        # Camino, no solo posicion: el percentil dice DONDE estamos y la serie
+        # dice COMO llegamos (medido: la concentracion subio de forma casi
+        # monotona desde 2015, asi que el nivel solo no cuenta la historia).
+        # Downsample a ~90 puntos — el mismo criterio que `trendSparkCell`.
+        "serie": _downsample(r, 90),
+        "serie_1a": _downsample(r[-252:], 60) if len(r) > 252 else None,
         "as_of": str(m["date"].iloc[-1]),
         "bars": int(len(r)),
         "text": _conc_text(p5, p1, delta_1a),

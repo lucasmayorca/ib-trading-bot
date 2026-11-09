@@ -1219,6 +1219,29 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   - **ALINEA POR FECHA, no por posición** (`pd.merge` on `date`): son dos descargas independientes
     y un feriado o una fila faltante en UNA sola desplazaría toda la serie, comparando el SPY de
     hoy contra el RSP de ayer sin avisar. Hay test con huecos.
+  - **SE DIBUJA, no se escribe (2026-11, feedback: "no se entiende la situación, tiene que haber
+    un gráfico... o una línea de alguna manera, para tener un sense")**. La primera versión eran
+    chips con el número (`1A p12 · 3A p60 · 5A p76`) y no se entendía: un percentil suelto no dice
+    entre qué dos valores cae ese porcentaje ni por dónde se venía viniendo. Ahora es el mismo
+    idioma visual del gráfico que lo originó — **caja con el rango y un punto adentro** — más la
+    línea del camino:
+    - **EJE COMÚN para las tres ventanas.** Se probó primero con una escala por ventana y era peor
+      que los chips: el MISMO ratio caía en tres lugares distintos del dibujo. Compartiendo eje las
+      cajas **se anidan** (la de 1A es una franja angosta adentro de la de 5A) y el punto de hoy
+      queda en la misma vertical en las tres. Eso es lo único que se lee de un vistazo, y es justo
+      la situación: hoy está **abajo** en la franja del último año y **arriba** en la de cinco. El
+      dominio incluye a `hoy` explícitamente (`Math.min(hoy, ...)`) o el punto se dibujaría fuera.
+      Hay test de que el dominio y la x de hoy se calculen UNA vez, antes de armar las barras.
+    - Cada barra lleva el rango como track, la **mitad central (q1-q3)** como caja, la mediana como
+      raya y hoy como punto; el eje se rotula una sola vez abajo. El payload trae
+      `min/q1/med/q3/max` **por ventana** (antes solo un min/median/max global, que no sirve de
+      eje) y una `serie` downsampleada a 90 puntos para el camino — su último valor ES el de hoy
+      (hay test), así que la línea termina en el punto y no en una muestra promediada.
+    - La línea es de **TIEMPO**, no del ratio: va rotulada "camino"/"hoy" aparte de las cajas para
+      que no se lea como una cuarta ventana. Está porque la concentración subió de forma casi
+      monótona desde 2015 — medido —, así que el nivel solo no cuenta la historia.
+    - Sigue sin pintarse verde/rojo en ningún lado (hay test): ámbar solo en los extremos
+      (p≥80 / p≤20) y como "mirar", nunca como "vender".
   - **Cada percentil viaja con SU ventana.** Medido el 2026-11-09: ratio 3.41 ⇒ percentil **11 a
     1 año, 60 a 3 años, 76 a 5 años**, con el ratio cayendo 4.8% en 12 meses. El mismo número da
     11 o 76 según contra qué se lo mida: **un percentil sin su ventana al lado no informa, miente**.

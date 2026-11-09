@@ -2996,12 +2996,20 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .mp-st.sell{background:rgba(194,36,54,.10);color:var(--sell)}
 .mp-st.hold{background:rgba(180,83,9,.12);color:var(--hold)}
 .mp-sec{font-size:11.5px;color:var(--muted);margin-top:2px}
-.mp-conc{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
-.mp-pct{display:inline-flex;align-items:baseline;gap:3px;background:var(--glass);border:1px solid var(--glass-border);border-radius:5px;padding:1px 6px;cursor:help}
-.mp-pct i{font-style:normal;font-size:9px;font-weight:700;color:var(--dim);letter-spacing:.3px}
-.mp-pct b{font-size:11.5px;font-variant-numeric:tabular-nums}
-.mp-conc-r{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums;cursor:help}
-.mp-conc-t{font-size:11px;color:var(--muted);line-height:1.45;margin-top:4px}
+.mp-conc{display:flex;flex-direction:column;gap:5px;max-width:470px}
+.mp-conc-hd{display:flex;align-items:baseline;gap:7px;font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.mp-conc-hd b{font-size:13px;color:var(--text)}
+.mp-cleg{font-size:9px;color:var(--dim);margin:-1px 0 1px 31px}
+.mp-cbar{display:grid;grid-template-columns:24px 1fr 38px;align-items:center;gap:7px;font-size:9.5px;color:var(--dim);font-variant-numeric:tabular-nums;cursor:help}
+.mp-cbar i{font-style:normal;font-weight:700;letter-spacing:.3px}
+.mp-cbar svg{display:block;width:100%;height:15px}
+.mp-cbar b{font-size:11px;text-align:right}
+.mp-cax{display:grid;grid-template-columns:24px 1fr 38px;gap:7px;font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}
+.mp-cax span{display:flex;justify-content:space-between}
+.mp-conc-t{font-size:11px;color:var(--muted);line-height:1.45;margin-top:3px}
+.mp-sparkw{display:grid;grid-template-columns:24px 1fr 38px;align-items:center;gap:7px;font-size:9.5px;color:var(--dim)}
+.mp-sparkw i{font-style:normal;font-weight:700;letter-spacing:.3px}
+.mp-sparkw svg{display:block;width:100%;height:30px}
 .mp-period-bar{display:flex;gap:4px;margin-bottom:8px}
 .mp-err{font-size:12px;color:var(--muted);padding:8px 0}
 @media(max-width:700px){.mp-k{flex-basis:60px}.mp-upd{display:none}}
@@ -7060,31 +7068,82 @@ function _mpHeadInner(){
 // Concentracion del mercado (cap-weighted vs equal-weight). Es el primo EN
 // PRECIO del premio de valuacion del grafico de Goldman, y a diferencia del P/E
 // tiene distribucion propia: sale de dos series que ya bajamos.
-// CADA percentil se muestra con SU ventana a proposito — el mismo ratio daba
-// percentil 11 contra el ultimo año y 76 contra cinco. Sin la ventana al lado,
-// un percentil no informa.
+//
+// SE DIBUJA, no se escribe. Un chip que dice "p76" no deja ver la situacion:
+// hace falta saber entre que dos numeros cae ese 76% y por donde se venia
+// viniendo. Son las dos cosas que tiene el grafico que origino esto — rango con
+// un punto adentro — mas la LINEA, porque la concentracion subio de forma casi
+// monotona desde 2015 y el nivel solo no cuenta esa historia.
+//
+// CADA ventana lleva SU caja a proposito: hoy el mismo ratio cae en el percentil
+// 12 del ultimo año y en el 76 de cinco. Una sola caja elegiria la conclusion.
+function _mpConcSpark(c){
+  let a=c.serie||[];
+  if(a.length<10)return '';
+  let W=300,H=30,pad=3,lo=Math.min.apply(null,a),hi=Math.max.apply(null,a),rng=(hi-lo)||1;
+  let X=i=>pad+i*(W-2*pad)/(a.length-1), Y=v=>pad+(1-(v-lo)/rng)*(H-2*pad);
+  let pts=a.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ');
+  let lx=X(a.length-1),ly=Y(a[a.length-1]);
+  return '<span class="mp-sparkw"><i>camino</i>'+
+    '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+
+    '<title>Como llego hasta aca: el ratio '+_mpEsc(c.pair)+' rueda a rueda en los '+
+    'ultimos 5 años. El eje de abajo es TIEMPO, no el ratio.</title>'+
+    '<polyline points="'+pts+'" fill="none" stroke="var(--muted)" stroke-width="1.3" '+
+    'vector-effect="non-scaling-stroke"/>'+
+    '<circle cx="'+lx.toFixed(1)+'" cy="'+ly.toFixed(1)+'" r="2.8" fill="var(--hold)" '+
+    'stroke="var(--surface)" stroke-width="1.4"/></svg><b>hoy</b></span>';
+}
+
 function _mpConcHTML(c){
   if(!c)return null;
-  let pts=(c.percentiles||[]);
+  let pts=(c.percentiles||[]).filter(p=>p.min!=null&&p.max!=null);
   if(!pts.length)return null;
-  let chips=pts.map(p=>{
-    // NO se pinta verde/rojo: eso afirmaria que la concentracion alta es
-    // bajista, y este proyecto no lo midio. Ambar = "mirar", no "vender".
-    let col=(p.pct>=80||p.pct<=20)?'var(--hold)':'var(--text)';
-    return '<span class="mp-pct" title="Percentil del ratio '+_mpEsc(c.pair)+
-      ' contra sus ultimas '+p.ruedas+' ruedas ('+_mpEsc(p.ventana)+'). '+
-      'Alto = el indice ponderado por capitalizacion paga mas sobre el de pesos iguales.">'+
+  let hoy=c.ratio;
+  // EJE COMUN para las tres ventanas. Con una escala por ventana el MISMO ratio
+  // cae en tres lugares distintos del dibujo y no se entiende nada; compartiendo
+  // eje las cajas se ANIDAN (la de 1A es una franja angosta adentro de la de 5A)
+  // y el punto de hoy queda en la misma vertical en las tres. Eso es lo que se
+  // lee de un vistazo: hoy esta abajo en la franja del ultimo año y arriba en la
+  // de cinco.
+  let dlo=Math.min(hoy,...pts.map(p=>p.min)), dhi=Math.max(hoy,...pts.map(p=>p.max));
+  let W=300,H=15,cy=H/2,R=3.1,drng=(dhi-dlo)||1;
+  let X=v=>((Math.min(dhi,Math.max(dlo,v))-dlo)/drng)*(W-2*R)+R;
+  let xh=X(hoy);
+  let bars=pts.map(p=>{
+    // NO se pinta verde/rojo en ningun lado: eso afirmaria que la concentracion
+    // alta es bajista, y este proyecto lo MIDIO y no lo es (tools/medir_conc.py).
+    // Ambar marca "mirar" en los extremos, nunca "vender".
+    let ext=(p.pct>=80||p.pct<=20);
+    let col=ext?'var(--hold)':'var(--text)';
+    let x0=X(p.min),x9=X(p.max),x1=X(p.q1),x3=X(p.q3),xm=X(p.med);
+    return '<span class="mp-cbar" title="En las ultimas '+p.ruedas+' ruedas ('+
+      _mpEsc(p.ventana)+') el ratio '+_mpEsc(c.pair)+' fue de '+p.min+' a '+p.max+
+      ' — mitad central '+p.q1+'-'+p.q3+', mediana '+p.med+'. Hoy '+_n(hoy,3)+
+      ', por encima del '+p.pct+'% de esas ruedas.">'+
       '<i>'+_mpEsc(p.ventana)+'</i>'+
-      '<b style="color:'+col+'">p'+p.pct+'</b></span>';
+      '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+
+      '<line x1="'+x0.toFixed(1)+'" y1="'+cy+'" x2="'+x9.toFixed(1)+'" y2="'+cy+
+        '" stroke="var(--border)" stroke-width="2.4" stroke-linecap="round" '+
+        'vector-effect="non-scaling-stroke"/>'+
+      '<rect x="'+x1.toFixed(1)+'" y="'+(cy-4.5)+'" width="'+Math.max(.6,x3-x1).toFixed(1)+
+        '" height="9" rx="1" fill="var(--glass)" stroke="var(--glass-border)" '+
+        'stroke-width="1" vector-effect="non-scaling-stroke"/>'+
+      '<line x1="'+xm.toFixed(1)+'" y1="'+(cy-5.5)+'" x2="'+xm.toFixed(1)+'" y2="'+(cy+5.5)+
+        '" stroke="var(--dim)" stroke-width="1" vector-effect="non-scaling-stroke"/>'+
+      '<circle cx="'+xh.toFixed(1)+'" cy="'+cy+'" r="'+R+'" fill="'+col+
+        '" stroke="var(--surface)" stroke-width="1.2"/>'+
+      '</svg><b style="color:'+col+'">p'+p.pct+'</b></span>';
   }).join('');
   let d1=c.change_1y_pct;
-  return '<span class="mp-conc">'+chips+
-    '<span class="mp-conc-r" title="Cociente de cierres '+_mpEsc(c.pair)+
-    ', medido sobre '+c.bars+' ruedas comunes (rango '+c.min+'-'+c.max+
-    ', mediana '+c.median+')">'+_mpEsc(c.pair)+' '+c.ratio+
-    (d1!=null?(' <span style="color:var(--muted)">'+
-      (d1>=0?'+':'')+_n(d1,1)+'% 12m</span>'):'')+'</span></span>'+
-    '<div class="mp-conc-t">'+_mpEsc(c.text||'')+'</div>';
+  return '<span class="mp-conc"><span class="mp-conc-hd"><b>'+_mpEsc(c.pair)+' '+_n(hoy,3)+'</b>'+
+    (d1!=null?('<span>'+(d1>=0?'+':'')+_n(d1,1)+'% en 12 meses</span>'):'')+
+    '</span>'+
+    '<span class="mp-cleg">el punto es HOY · la caja, la mitad central de cada ventana · '+
+    'la raya, su mediana</span>'+bars+
+    '<span class="mp-cax"><i></i><span><span>'+_n(dlo,2)+'</span><span>'+_n(dhi,2)+
+    '</span></span><i></i></span>'+
+    _mpConcSpark(c)+
+    '<span class="mp-conc-t">'+_mpEsc(c.text||'')+'</span></span>';
 }
 
 function renderMarketPulse(){

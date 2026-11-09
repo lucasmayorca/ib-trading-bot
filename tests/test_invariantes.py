@@ -1976,6 +1976,51 @@ def test_cada_percentil_viaja_con_su_ventana():
     assert "percentiles" in cuerpo
 
 
+def test_cada_ventana_trae_su_rango_para_poder_dibujarla():
+    """Feedback que lo origino: "no se entiende la situacion, tiene que haber un
+    grafico". Un percentil suelto no se puede dibujar ni leer — hace falta entre
+    que dos numeros cae ese porcentaje. El rango ES el eje de las cajas."""
+    import market_pulse as mp
+    a, b = _serie_par()
+    orig = mp._download_peer_daily
+    try:
+        mp._download_peer_daily = lambda symbol=None: b
+        r = mp._concentration(a)
+    finally:
+        mp._download_peer_daily = orig
+    assert r and r["percentiles"]
+    for p in r["percentiles"]:
+        for k in ("min", "q1", "med", "q3", "max"):
+            assert p.get(k) is not None, (p["ventana"], k)
+        assert p["min"] <= p["q1"] <= p["med"] <= p["q3"] <= p["max"], p
+        # hoy SIEMPRE cae dentro de su propia ventana (es parte de ella)
+        assert p["min"] <= r["ratio"] <= p["max"], (p["ventana"], r["ratio"])
+    # y el camino: la linea termina HOY, nunca en una muestra promediada
+    assert r["serie"] and len(r["serie"]) >= 10
+    assert abs(r["serie"][-1] - r["ratio"]) < 0.002, (r["serie"][-1], r["ratio"])
+
+
+def test_las_tres_cajas_comparten_el_eje():
+    """Con una escala por ventana el MISMO ratio cae en tres lugares distintos
+    del dibujo (se probo asi primero y no se entendia nada). Compartiendo eje
+    las cajas se ANIDAN y el punto de hoy queda en la misma vertical en las
+    tres, que es lo unico que se lee de un vistazo."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("function _mpConcHTML")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    # OJO: el primer `.map(` del cuerpo es el `pts.map(p=>p.min)` del dominio.
+    # El corte va en el map que ARMA las barras.
+    j = cuerpo.index("let bars=pts.map(")
+    cabeza, barras = cuerpo[:j], cuerpo[j:]
+    # el dominio y la x de hoy se calculan UNA vez, antes de las barras
+    for tok in ("dlo", "dhi", "xh=X(hoy)"):
+        assert tok in cabeza.replace(" ", ""), tok
+    # y cada barra usa ESA x, no una propia
+    assert "cx=\"\'+xh" in barras.replace(" ", "") or "xh.toFixed" in barras
+    assert "Math.min(hoy" in cabeza and "Math.max(hoy" in cabeza, (
+        "el dominio tiene que incluir a hoy o el punto se dibuja fuera de la caja")
+
+
 def test_sin_el_par_la_concentracion_se_omite_no_se_inventa():
     import market_pulse as mp
     a, _ = _serie_par()
