@@ -146,16 +146,6 @@ def _concentration_cached(df_spy, epoch):
     return out
 
 
-def _downsample(arr, puntos):
-    """Serie corta para dibujar: `puntos` muestras equiespaciadas, con los
-    extremos intactos (el ultimo valor ES el de hoy y no puede promediarse)."""
-    a = np.asarray(arr, dtype=float)
-    if len(a) <= puntos:
-        return [round(float(x), 4) for x in a]
-    idx = np.linspace(0, len(a) - 1, puntos).round().astype(int)
-    return [round(float(a[i]), 4) for i in idx]
-
-
 def _concentration(df_spy):
     """Ratio SPY/RSP con su percentil por ventana. None si falta el par.
 
@@ -182,6 +172,13 @@ def _concentration(df_spy):
 
     r = (m["close_a"] / m["close_b"]).to_numpy(dtype=float)
     hoy = float(r[-1])
+    # Serie alineada al eje del chart: `df_spy` ES el frame del analisis, el
+    # mismo del que sale `ohlc`, asi que indexar por fecha da un array
+    # indice-paralelo a las velas. Las fechas sin par (el RSP arranca despues,
+    # un feriado de uno solo) quedan en None = whitespace para Lightweight
+    # Charts, que conserva el slot temporal sin romper la alineacion.
+    por_fecha = dict(zip(m["date"].tolist(), (round(float(x), 4) for x in r)))
+    alineada = [por_fecha.get(d) for d in df_spy["date"].astype(str).tolist()]
     pcts = []
     for n, etiqueta in CONC_WINDOWS:
         seg = r if n is None else r[-n:]
@@ -215,12 +212,10 @@ def _concentration(df_spy):
         "median": round(float(np.median(r)), 3),
         "max": round(float(r.max()), 3),
         "change_1y_pct": round(delta_1a, 1),
-        # Camino, no solo posicion: el percentil dice DONDE estamos y la serie
-        # dice COMO llegamos (medido: la concentracion subio de forma casi
-        # monotona desde 2015, asi que el nivel solo no cuenta la historia).
-        # Downsample a ~90 puntos — el mismo criterio que `trendSparkCell`.
-        "serie": _downsample(r, 90),
-        "serie_1a": _downsample(r[-252:], 60) if len(r) > 252 else None,
+        # La serie va al CHART, como un indicador mas: es un panel del stack
+        # sincronizado (eje de tiempo y crosshair compartidos con velas/MACD/
+        # RSI/Koncorde), no un dibujito al costado. Se lee igual que el RSI.
+        "serie_chart": alineada,
         "as_of": str(m["date"].iloc[-1]),
         "bars": int(len(r)),
         "text": _conc_text(p5, p1, delta_1a),
@@ -786,6 +781,8 @@ def _build_pulse():
 
     reading = _build_reading(verdict, sups, ress, sig, buy_c, sell_c, price, high_52w)
 
+    conc = _concentration_cached(df, _epoch)
+
     # --- payload de chart (mismo shape que el scanner + extras del pulso) ---
     ohlc = [{"time": df["date"].iloc[i],
              "open": _r(df["open"].iloc[i]), "high": _r(df["high"].iloc[i]),
@@ -801,6 +798,26 @@ def _build_pulse():
         "koncorde": {k: [_r(x, 1) for x in konc_df[k].tolist()]
                      for k in ("verde", "marron", "azul", "media")},
     }
+    # CONCENTRACION como quinto panel del stack. Las bandas son los cuartiles
+    # de la ventana de 5 años: arriba de q3 y abajo de q1 el ratio esta fuera
+    # de su mitad central. Mismo rol que el 30/70 del RSI — pero el panel no
+    # afirma direccion (el 30/70 del RSI si), asi que las dos bandas van del
+    # MISMO color: dicen "fuera de lo habitual", no "comprar" ni "vender".
+    if conc and conc.get("serie_chart"):
+        w5 = next((p for p in conc["percentiles"] if p["ventana"] == "5A"),
+                  conc["percentiles"][0] if conc.get("percentiles") else None)
+        if w5:
+            chart["conc"] = {
+                "pair": conc["pair"], "vals": conc["serie_chart"],
+                "q1": w5["q1"], "med": w5["med"], "q3": w5["q3"],
+                "pct": w5["pct"], "ventana": w5["ventana"], "ruedas": w5["ruedas"],
+                # LAS TRES ventanas viajan al header del panel: un percentil
+                # solo miente (hoy el mismo ratio da p9 contra 1 año y p76
+                # contra 5). Las bandas dibujadas son las de 5A — la de la
+                # ventana mas larga — y el header dice las otras dos.
+                "pcts": [{"ventana": q["ventana"], "pct": q["pct"],
+                          "ruedas": q["ruedas"]} for q in conc["percentiles"]],
+            }
     sr_lines = ([{"level": _r(c["level"]), "touches": c["touches"], "kind": c["kind"]}
                  for c in sups + ress])
 
@@ -828,7 +845,10 @@ def _build_pulse():
         "fibonacci": fib,
         # Concentracion cap-weighted vs equal-weight: contexto de REGIMEN.
         # None si no se pudo bajar el par — se dice, no se omite en silencio.
-        "concentration": _concentration_cached(df, _epoch),
+        # la serie cruda viaja SOLO dentro de `chart.conc` (son 1.255 floats:
+        # mandarla dos veces en el mismo payload es puro peso)
+        "concentration": ({k: v for k, v in conc.items() if k != "serie_chart"}
+                          if conc else None),
         # Velas japonesas recientes (timing corto, cierres confirmados)
         "candles": patterns.detect_candles(
             df["open"].tolist(), df["high"].tolist(),

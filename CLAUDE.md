@@ -1219,29 +1219,44 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   - **ALINEA POR FECHA, no por posición** (`pd.merge` on `date`): son dos descargas independientes
     y un feriado o una fila faltante en UNA sola desplazaría toda la serie, comparando el SPY de
     hoy contra el RSP de ayer sin avisar. Hay test con huecos.
-  - **SE DIBUJA, no se escribe (2026-11, feedback: "no se entiende la situación, tiene que haber
-    un gráfico... o una línea de alguna manera, para tener un sense")**. La primera versión eran
-    chips con el número (`1A p12 · 3A p60 · 5A p76`) y no se entendía: un percentil suelto no dice
-    entre qué dos valores cae ese porcentaje ni por dónde se venía viniendo. Ahora es el mismo
-    idioma visual del gráfico que lo originó — **caja con el rango y un punto adentro** — más la
-    línea del camino:
-    - **EJE COMÚN para las tres ventanas.** Se probó primero con una escala por ventana y era peor
-      que los chips: el MISMO ratio caía en tres lugares distintos del dibujo. Compartiendo eje las
-      cajas **se anidan** (la de 1A es una franja angosta adentro de la de 5A) y el punto de hoy
-      queda en la misma vertical en las tres. Eso es lo único que se lee de un vistazo, y es justo
-      la situación: hoy está **abajo** en la franja del último año y **arriba** en la de cinco. El
-      dominio incluye a `hoy` explícitamente (`Math.min(hoy, ...)`) o el punto se dibujaría fuera.
-      Hay test de que el dominio y la x de hoy se calculen UNA vez, antes de armar las barras.
-    - Cada barra lleva el rango como track, la **mitad central (q1-q3)** como caja, la mediana como
-      raya y hoy como punto; el eje se rotula una sola vez abajo. El payload trae
-      `min/q1/med/q3/max` **por ventana** (antes solo un min/median/max global, que no sirve de
-      eje) y una `serie` downsampleada a 90 puntos para el camino — su último valor ES el de hoy
-      (hay test), así que la línea termina en el punto y no en una muestra promediada.
-    - La línea es de **TIEMPO**, no del ratio: va rotulada "camino"/"hoy" aparte de las cajas para
-      que no se lea como una cuarta ventana. Está porque la concentración subió de forma casi
-      monótona desde 2015 — medido —, así que el nivel solo no cuenta la historia.
-    - Sigue sin pintarse verde/rojo en ningún lado (hay test): ámbar solo en los extremos
-      (p≥80 / p≤20) y como "mirar", nunca como "vender".
+  - **ES UN PANEL DEL STACK, no un dibujo al costado (2026-11)**. Dos iteraciones falladas antes
+    de llegar acá, y las dos vale la pena no repetirlas:
+    1. **Chips con el número** (`1A p12 · 3A p60 · 5A p76`) + un párrafo. Feedback: *"no se
+       entiende la situación, tiene que haber un gráfico o algo, fijate como te lo compartí, o
+       una línea de alguna manera, para tener un sense"*. Un percentil suelto no dice entre qué
+       dos valores cae ese porcentaje ni por dónde se venía viniendo.
+    2. **Caja con el rango y un punto adentro** (tres ventanas sobre un eje común, más una
+       sparkline). Feedback: *"no entiendo bien cómo se lee eso, y me ensucia un poco la parte"*.
+       Era correcto y seguía siendo un widget ad-hoc: un idioma visual nuevo, en una fila de
+       texto, que hay que aprender a leer.
+    3. **Lo que quedó**: *"¿no se puede armar algo parecido a esto?"* — con el stack
+       MACD/RSI/Koncorde a la vista. Y era el pedido original (*"como tenemos el MACD, el RSI y
+       el Koncorde"*). La concentración es ahora el **quinto panel** de `scRenderStack`: línea
+       ámbar del ratio sobre el MISMO eje de tiempo, crosshair compartido, valor de la barra bajo
+       el cursor en el header. **Nada que aprender a leer**: se lee como el RSI.
+    - **Bandas = cuartiles de la ventana de 5 años** (q1/q3 con etiqueta en el eje, mediana
+      punteada), el análogo del 30/70 del RSI. Pero las **dos bandas van del MISMO color**: el
+      30/70 del RSI afirma dirección y esto no — dicen "fuera de la mitad central", no un lado.
+      Hay test de que no aparezca ningún token verde/rojo y de que los dos colores sean iguales.
+    - **El panel lo pide SOLO el pulso** (`scStackHTML('mp', …, {conc:true})`): el ratio es del
+      MERCADO, no del símbolo, así que debajo del gráfico de una acción sería el mismo dibujo
+      repetido 100 veces sin decir nada de ella. Hay test de que el flag aparezca una sola vez.
+    - **LA SERIE SE RECORTA CON LA VENTANA, como todas las demás** (`scWindowDaily`). `_scLine`
+      zipea por **índice** contra las fechas visibles: sin recortar, 1.255 puntos contra un eje de
+      252 barras dibujan **2021 sobre fechas de 2026** — un gráfico plausible y completamente
+      falso, la peor clase de error según el criterio de este proyecto. Los cuartiles **no** se
+      recortan (son los de 5 años, que es contra lo que se mide el percentil). Hay test.
+    - **Los tres percentiles van en el header y rotulados "hoy"**, porque NO siguen al crosshair:
+      el ratio de arriba es el de la barra bajo el cursor y ellos son los de la última rueda. Sin
+      esa palabra parecen el percentil de la barra que se está mirando. La `zona` (cuarto alto /
+      rango habitual / cuarto bajo) sí es de la barra señalada.
+    - **En intradía el panel lo dice** (`/api/bars` no manda `conc` porque el ratio es una serie
+      diaria), mismo trato que el Koncorde cuando no llega a sus 255 barras: una nota, no un
+      panel vacío.
+    - El payload alinea la serie **por fecha contra el frame del análisis** (`df_spy` es el mismo
+      del que sale `ohlc`), así que llega índice-paralela a las velas; las fechas sin par quedan
+      en `None` = whitespace para LW. Viaja **solo** dentro de `chart.conc` (son 1.255 floats:
+      mandarla dos veces en el mismo payload es peso puro).
   - **Cada percentil viaja con SU ventana.** Medido el 2026-11-09: ratio 3.41 ⇒ percentil **11 a
     1 año, 60 a 3 años, 76 a 5 años**, con el ratio cayendo 4.8% en 12 meses. El mismo número da
     11 o 76 según contra qué se lo mida: **un percentil sin su ventana al lado no informa, miente**.

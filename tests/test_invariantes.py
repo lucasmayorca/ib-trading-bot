@@ -1932,6 +1932,13 @@ def _serie_par(n=400, seed=3):
             pd.DataFrame({"date": fechas, "close": b}))
 
 
+def _panel_conc():
+    """El bloque del panel CONCENTRACION dentro de `scBuild`."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("} else if(p.n==='conc'){")
+    return h[i:h.index("} else { // koncorde", i)]
+
+
 def test_la_concentracion_alinea_por_fecha_no_por_posicion():
     """Son dos descargas independientes: un feriado o una fila faltante en UNA
     sola desplazaria toda la serie y compararia el SPY de hoy contra el RSP de
@@ -1968,12 +1975,10 @@ def test_cada_percentil_viaja_con_su_ventana():
         assert p["ventana"] in ("1A", "3A", "5A")
         assert isinstance(p["ruedas"], int) and p["ruedas"] >= 60
         assert 0 <= p["pct"] <= 100
-    # y el front las muestra todas, no solo una
-    h = vw.DASHBOARD_HTML
-    i = h.index("function _mpConcHTML")
-    cuerpo = h[i:h.index("\nfunction ", i + 10)]
-    assert "p.ventana" in cuerpo and "p.ruedas" in cuerpo
-    assert "percentiles" in cuerpo
+    # y el header del panel las muestra TODAS, no solo una
+    cuerpo = _panel_conc()
+    assert "cd.pcts" in cuerpo, "el panel tiene que listar las tres ventanas"
+    assert "q.ventana" in cuerpo and "q.pct" in cuerpo
 
 
 def test_cada_ventana_trae_su_rango_para_poder_dibujarla():
@@ -1995,30 +2000,58 @@ def test_cada_ventana_trae_su_rango_para_poder_dibujarla():
         assert p["min"] <= p["q1"] <= p["med"] <= p["q3"] <= p["max"], p
         # hoy SIEMPRE cae dentro de su propia ventana (es parte de ella)
         assert p["min"] <= r["ratio"] <= p["max"], (p["ventana"], r["ratio"])
-    # y el camino: la linea termina HOY, nunca en una muestra promediada
-    assert r["serie"] and len(r["serie"]) >= 10
-    assert abs(r["serie"][-1] - r["ratio"]) < 0.002, (r["serie"][-1], r["ratio"])
+    # la serie del panel va INDICE-PARALELA al eje del chart (df_spy es el
+    # mismo frame del que sale `ohlc`) y su ultimo valor ES el de hoy
+    assert r["serie_chart"] and len(r["serie_chart"]) == len(a)
+    assert abs(r["serie_chart"][-1] - r["ratio"]) < 0.002
 
 
-def test_las_tres_cajas_comparten_el_eje():
-    """Con una escala por ventana el MISMO ratio cae en tres lugares distintos
-    del dibujo (se probo asi primero y no se entendia nada). Compartiendo eje
-    las cajas se ANIDAN y el punto de hoy queda en la misma vertical en las
-    tres, que es lo unico que se lee de un vistazo."""
+def test_la_concentracion_es_un_panel_del_stack_no_un_dibujo_al_costado():
+    """Feedback que lo origino: "no entiendo bien como se lee eso, y me ensucia
+    un poco la parte... no se puede armar algo parecido a esto?" (con el stack
+    MACD/RSI/Koncorde a la vista). El recuadro con cajas se retiro: la
+    concentracion es un PANEL mas del stack sincronizado, que se lee igual que
+    el RSI — misma escala de tiempo, mismo crosshair, valor en el header."""
     h = vw.DASHBOARD_HTML
-    i = h.index("function _mpConcHTML")
+    # el recuadro ya no existe en ninguna de sus formas
+    for muerto in ("_mpConcHTML", "_mpConcSpark", "mp-cbar", "mp-sparkw", "mp-cax"):
+        assert muerto not in h, f"quedo vivo el recuadro: {muerto}"
+    # el panel se declara en scBuild y se dibuja con la serie del chart
+    cuerpo = _panel_conc()
+    assert "data.conc" in h and "sc_conc_" in h
+    assert "_scLine(times,cd.vals)" in cuerpo, (
+        "la serie tiene que ir por el mismo helper que RSI/medias, o no queda "
+        "alineada al eje de tiempo")
+    assert "n:'conc'" in h, "el panel tiene que ser un spec de scBuild"
+    # y SOLO lo pide el pulso: el ratio es del mercado, no del simbolo
+    assert h.count("{conc:true}") == 1
+    assert "scStackHTML('mp',SC_LEGEND_MP,{conc:true})" in h
+
+
+def test_la_serie_del_panel_se_recorta_con_la_ventana():
+    """`_scLine` zipea por INDICE contra las fechas visibles. Si la serie no se
+    recorta como el resto, 1.255 puntos contra un eje de 252 barras dibujan
+    2021 sobre fechas de 2026: un grafico plausible y completamente falso — la
+    clase de error que este proyecto trata como la peor (un numero equivocado
+    que se ve bien). Los cuartiles NO se recortan: son los de la ventana de 5
+    años, que es contra lo que se mide el percentil."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("function scWindowDaily")
     cuerpo = h[i:h.index("\nfunction ", i + 10)]
-    # OJO: el primer `.map(` del cuerpo es el `pts.map(p=>p.min)` del dominio.
-    # El corte va en el map que ARMA las barras.
-    j = cuerpo.index("let bars=pts.map(")
-    cabeza, barras = cuerpo[:j], cuerpo[j:]
-    # el dominio y la x de hoy se calculan UNA vez, antes de las barras
-    for tok in ("dlo", "dhi", "xh=X(hoy)"):
-        assert tok in cabeza.replace(" ", ""), tok
-    # y cada barra usa ESA x, no una propia
-    assert "cx=\"\'+xh" in barras.replace(" ", "") or "xh.toFixed" in barras
-    assert "Math.min(hoy" in cabeza and "Math.max(hoy" in cabeza, (
-        "el dominio tiene que incluir a hoy o el punto se dibuja fuera de la caja")
+    assert "conc:chart.conc" in cuerpo, "el panel quedo fuera del recorte"
+    assert "sl(chart.conc.vals,bars)" in cuerpo
+    # y los cuartiles se preservan tal cual (Object.assign sobre el original)
+    assert "Object.assign({},chart.conc" in cuerpo
+
+
+def test_el_panel_no_se_dibuja_en_intradia():
+    """El ratio es una serie DIARIA. En intradia `/api/bars` no manda `conc`,
+    asi que el panel tiene que decirlo en vez de aparecer vacio — mismo trato
+    que el Koncorde cuando no llega a sus 255 barras."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("specs.forEach(s=>{if(s.el&&!s.ok)")
+    nota = h[i:i + 500]
+    assert "s.n==='conc'" in nota and "DIARIA" in nota
 
 
 def test_sin_el_par_la_concentracion_se_omite_no_se_inventa():
@@ -2064,8 +2097,13 @@ def test_la_concentracion_es_contexto_no_señal():
 def test_la_concentracion_no_se_pinta_como_direccional():
     """Pintar percentil alto en rojo afirma que la concentracion es bajista —
     no esta medido. Ambar = "mirar", no "vender"."""
-    h = vw.DASHBOARD_HTML
-    i = h.index("function _mpConcHTML")
-    cuerpo = h[i:h.index("\nfunction ", i + 10)]
-    assert "var(--sell)" not in cuerpo and "var(--buy)" not in cuerpo, (
-        "la concentracion no puede pintarse verde/rojo sin edge medido")
+    cuerpo = _panel_conc()
+    for prohibido in ("var(--sell)", "var(--buy)", "#0b7a4b", "#c22436"):
+        assert prohibido not in cuerpo, (
+            f"la concentracion no puede pintarse verde/rojo sin edge medido "
+            f"({prohibido})")
+    # las DOS bandas tienen que ser del mismo color: marcan "fuera de la mitad
+    # central", no un lado
+    import re
+    bandas = re.findall(r"color:'(rgba\([^']+\))'", cuerpo)
+    assert len(bandas) == 2 and bandas[0] == bandas[1], bandas
