@@ -30,6 +30,7 @@ import portfolio
 import options_lab
 import enrichment
 import patterns
+import valuation
 import market_pulse
 import position_thesis
 import option_position
@@ -405,7 +406,7 @@ def _drop_partial_bar(df, now_et=None):
     return df
 
 
-def analyze_symbol(df):
+def analyze_symbol(df, symbol=None):
     df = _drop_partial_bar(df)
     if df is None or len(df) < 50:
         return None
@@ -499,6 +500,11 @@ def analyze_symbol(df):
         }
         # Figuras tecnicas + contexto Fibonacci (motor compartido patterns.py)
         patterns.attach_to_analysis(sig)
+        # Serie historica de P/E (valuation.py). Lee el cache en memoria: si el
+        # EPS del simbolo todavia no se bajo, no adjunta nada y el panel no
+        # aparece — el scan NUNCA espera una descarga de fundamentals.
+        if symbol:
+            valuation.attach_pe(sig, symbol)
         return sig
     except Exception as e:
         print(f"  Error analizando: {e}")
@@ -538,7 +544,7 @@ def run_analysis():
         print(f"  Analizando {symbol}... ({i + 1}/{total})")
         df = fetch_historical(ib_app, symbol, req_id,
                               duration=config.BACKTEST_DURATION)
-        result = analyze_symbol(df)
+        result = analyze_symbol(df, symbol)
         # Incremental update: each stock available as soon as analyzed
         with update_lock:
             analysis_cache[symbol] = result
@@ -595,7 +601,7 @@ def run_etf_analysis():
         df = fetch_historical(ib_app, symbol, req_id,
                               duration=config.BACKTEST_DURATION,
                               breaker=_IB_HIST_FAILS_ETF)
-        result = analyze_symbol(df)
+        result = analyze_symbol(df, symbol)
         with etf_update_lock:
             etf_analysis_cache[symbol] = result
             etf_last_update_time = datetime.now().strftime("%H:%M:%S")
@@ -4742,7 +4748,7 @@ function renderPortAnalysisList(positions){
 
     // Dos columnas: gráficos (izq, 3/4) + paneles (der, 1/4)
     html+='<div class="rec-2col">';
-    html+='<div class="rec-2col-left">'+scStackHTML('port_'+sym,SC_LEGEND_FULL)+'</div>';
+    html+='<div class="rec-2col-left">'+scStackHTML('port_'+sym,SC_LEGEND_FULL,{pe:_hasPE(rec)})+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml">Cantidad</span><span class="rec-mv">'+(p.cantidad||0).toFixed(0)+'</span></div>';
@@ -4913,7 +4919,7 @@ function renderPendingOrdersList(pending){
     html+='</div>';
 
     html+='<div class="rec-2col">';
-    html+='<div class="rec-2col-left">'+scStackHTML('pend_'+sym,SC_LEGEND_FULL)+'</div>';
+    html+='<div class="rec-2col-left">'+scStackHTML('pend_'+sym,SC_LEGEND_FULL,{pe:_hasPE(rec)})+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-levels"><div class="rec-lt">Niveles</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Orden '+(po.action||'')+'</span><span class="rec-lv" style="color:#b45309">'+priceTxt+'</span></div>';
@@ -5527,6 +5533,7 @@ function scWindowDaily(chart,period){
     // plausible y completamente falso. Los cuartiles NO se recortan: son los de
     // la ventana de 5 años (lo que mide el percentil) y no los de lo visible.
     conc:chart.conc?Object.assign({},chart.conc,{vals:sl(chart.conc.vals,bars)}):null,
+    pe:chart.pe?Object.assign({},chart.pe,{vals:sl(chart.pe.vals,bars)}):null,
     timeVis:false,
   };
 }
@@ -5608,8 +5615,10 @@ function scBuild(key,data,decorate,heights){
   specs.push({n:'konc',el:document.getElementById('sc_konc_'+key),ok:hasK});
   let hasC=data.conc&&data.conc.vals&&data.conc.vals.some(v=>v!=null);
   specs.push({n:'conc',el:document.getElementById('sc_conc_'+key),ok:hasC});
+  let hasPE=data.pe&&data.pe.vals&&data.pe.vals.some(v=>v!=null);
+  specs.push({n:'pe',el:document.getElementById('sc_pe_'+key),ok:hasPE});
   // Notas para paneles sin datos (intradía: Koncorde necesita ~255 barras)
-  specs.forEach(s=>{if(s.el&&!s.ok){s.el.innerHTML=(s.n==='konc')?'<div class="sc-nodata">Koncorde requiere ~255 barras — no disponible en intradía.</div>':((s.n==='conc')?'<div class="sc-nodata">El ratio es una serie DIARIA — no se dibuja en intradía.</div>':'');}});
+  specs.forEach(s=>{if(s.el&&!s.ok){s.el.innerHTML=(s.n==='konc')?'<div class="sc-nodata">Koncorde requiere ~255 barras — no disponible en intradía.</div>':((s.n==='conc')?'<div class="sc-nodata">El ratio es una serie DIARIA — no se dibuja en intradía.</div>':((s.n==='pe')?'<div class="sc-nodata">El P/E es una serie DIARIA (y un ETF no reporta EPS) — no se dibuja acá.</div>':''));}});
   let panes=specs.filter(s=>s.el&&s.ok);
   let lastIdx=panes.length-1;
 
@@ -5770,41 +5779,55 @@ function scBuild(key,data,decorate,heights){
       l.createPriceLine({price:30,color:'#0b7a4b77',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'30'});
       primary=l;valAt=i=>data.rsi[i];
       fmt=i=>{let j=(i!=null)?i:times.length-1;let v=data.rsi[j];let col=(v==null)?'#888':(v>=70?'#c22436':(v<=30?'#0b7a4b':'#7c3aed'));return _scRi('RSI',v,col);};
-    } else if(p.n==='conc'){
-      // CONCENTRACION: cuanto paga el indice ponderado por capitalizacion sobre
-      // el mismo indice con pesos iguales. Se lee como el RSI — linea + bandas —
-      // pero las DOS bandas van del MISMO color a proposito: marcan "fuera de la
-      // mitad central de 5 años", no un lado. Que la concentracion alta sea
-      // bajista NO esta medido; lo que SI se midio es que no predice nada a
-      // semanas (tools/medir_conc.py), asi que el panel es contexto de regimen.
-      let cd=data.conc;
+    } else if(p.n==='conc'||p.n==='pe'){
+      // UN SOLO panel para los dos indicadores de VALUACION/REGIMEN:
+      //   conc = SPY/RSP (pulso): cuanto paga el indice ponderado por
+      //          capitalizacion sobre el mismo indice con pesos iguales.
+      //   pe   = P/E de la accion (escaner/recomendaciones/cartera).
+      // Comparten forma de payload A PROPOSITO, asi que comparten dibujo: un
+      // arreglo aca vale para los dos y no hay una segunda copia que se
+      // desincronice. Se leen como el RSI — linea + bandas — pero las DOS
+      // bandas van del MISMO color: marcan "fuera de la mitad central de su
+      // propia historia", NO un lado. Que un P/E alto o una concentracion alta
+      // sean bajistas no esta medido (para la concentracion esta medido que
+      // NO predice nada a semanas, tools/medir_conc.py): son contexto.
+      let cd=(p.n==='pe')?data.pe:data.conc;
+      // El P/E va en LOG: su distribucion es muy asimetrica (NVDA va de 20 a
+      // 546 en la misma ventana) y en lineal el pico aplasta todo el resto.
+      // Ademas es la lectura correcta: de 50 a 100 es el mismo salto que de
+      // 100 a 200. La concentracion se queda lineal (va de 2.6 a 3.7).
+      if(p.n==='pe'){try{chart.priceScale('right').applyOptions({mode:LightweightCharts.PriceScaleMode.Logarithmic});}catch(e){}}
       let l=chart.addLineSeries({color:'#b45309',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
       let _v=cd.vals.filter(v=>v!=null);
       let lo=Math.min.apply(null,_v),hi=Math.max.apply(null,_v),pad=(hi-lo)||1;
       // Las bandas se extienden MAS ALLA del rango de datos: el autoescalado de
       // LW agrega margen y una banda que termina en el maximo deja una franja
-      // blanca arriba que parece un corte del sombreado.
+      // blanca arriba que parece un corte del sombreado. En log el borde de
+      // abajo no puede ser <=0.
+      let bandLo=(p.n==='pe')?Math.max(0.01,lo/2):(lo-pad);
       try{l.attachPrimitive(_scZoneBands([
-        {from:cd.q3,to:hi+pad,color:'rgba(180,83,9,0.10)'},
-        {from:lo-pad,to:cd.q1,color:'rgba(180,83,9,0.10)'}]));}catch(e){}
+        {from:cd.q3,to:(p.n==='pe')?hi*2:(hi+pad),color:'rgba(180,83,9,0.10)'},
+        {from:bandLo,to:cd.q1,color:'rgba(180,83,9,0.10)'}]));}catch(e){}
       l.setData(_scLine(times,cd.vals));
       l.createPriceLine({price:cd.q3,color:'#b4530977',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'q3'});
       l.createPriceLine({price:cd.med,color:'#00000033',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dotted,axisLabelVisible:true,title:'med'});
       l.createPriceLine({price:cd.q1,color:'#b4530977',lineWidth:1,lineStyle:LightweightCharts.LineStyle.Dashed,axisLabelVisible:true,title:'q1'});
       primary=l;valAt=i=>cd.vals[i];
       fmt=i=>{let j=(i!=null)?i:times.length-1;let v=cd.vals[j];
-        let zona=(v==null)?'':(v>=cd.q3?'cuarto alto':(v<=cd.q1?'cuarto bajo':'rango habitual'));
-        // Las TRES ventanas en el header: un percentil solo miente (hoy el
-        // mismo ratio da p9 contra 1 año y p76 contra 5). Las bandas del panel
-        // son las de 5A; el header dice donde cae contra cada una.
-        // Van rotulados "hoy" porque NO siguen al crosshair: el valor de arriba
-        // es el de la barra bajo el cursor y estos son los de la ultima rueda.
-        // Sin la palabra, parecen el percentil de la barra que se esta mirando.
-        let pz='<span class="sc-ri"><b style="color:#6d7480">hoy</b></span>'+
-          (cd.pcts||[{ventana:cd.ventana,pct:cd.pct,ruedas:cd.ruedas}])
-          .map(q=>'<span class="sc-ri" title="Percentil de HOY contra las ultimas '+
-            q.ruedas+' ruedas ('+q.ventana+')"><b style="color:#6d7480">'+q.ventana+
-            '</b> p'+q.pct+'</span>').join('');
+        let zona=(v==null)?'':(v>=cd.q3?'por las nubes':(v<=cd.q1?'barato para su historia':'rango habitual'));
+        // Los percentiles van rotulados "hoy" porque NO siguen al crosshair: el
+        // valor de arriba es el de la barra bajo el cursor y estos son los de la
+        // ultima rueda. Sin la palabra, parecen el percentil de la barra que se
+        // esta mirando. En la concentracion son TRES ventanas: un percentil
+        // solo miente (el mismo ratio da p9 contra 1 año y p76 contra 5).
+        let pz=(cd.pcts&&cd.pcts.length)
+          ?('<span class="sc-ri"><b style="color:#6d7480">hoy</b></span>'+
+            cd.pcts.map(q=>'<span class="sc-ri" title="Percentil de HOY contra las ultimas '+
+              q.ruedas+' ruedas ('+q.ventana+')"><b style="color:#6d7480">'+q.ventana+
+              '</b> p'+q.pct+'</span>').join(''))
+          // Sin P/E hoy: la empresa esta en perdidas. Decirlo es la unica
+          // respuesta honesta — el ultimo P/E valido puede ser de hace meses.
+          :(cd.sin_pe_hoy?'<span class="sc-ri"><b style="color:#6d7480">hoy</b> sin P/E (perdidas)</span>':'');
         return _scRi(cd.pair,v,'#b45309')+pz
           +(zona?('<span class="sc-ri"><b style="color:#6d7480">zona</b> '+zona+'</span>'):'');};
     } else { // koncorde
@@ -5893,6 +5916,12 @@ function scPaneHTML(title,elId,roId,tall){
 // `opts.conc` agrega el panel de CONCENTRACION. Lo pide SOLO el pulso: el
 // ratio SPY/RSP es del MERCADO, no del simbolo, asi que debajo del grafico de
 // una accion seria el mismo dibujo repetido 100 veces sin decir nada de ella.
+// El panel de P/E solo se dibuja si el simbolo TIENE serie: un ETF no reporta
+// EPS, una empresa en perdidas no tiene P/E, y el cache del EPS puede estar
+// todavia frio. En cualquiera de los tres casos el panel no se arma, en vez de
+// estrenar un recuadro vacio.
+function _hasPE(r){try{return !!(r&&r.chart&&r.chart.pe&&r.chart.pe.vals);}catch(e){return false;}}
+
 function scStackHTML(key,legendHTML,opts){
   opts=opts||{};
   return '<div class="sc-stack" id="sc_stack_'+key+'">'
@@ -5902,6 +5931,7 @@ function scStackHTML(key,legendHTML,opts){
     +scPaneHTML('RSI (14)','sc_rsi_'+key,'sc_ro_rsi_'+key,false)
     +scPaneHTML('Koncorde','sc_konc_'+key,'sc_ro_konc_'+key,false)
     +(opts.conc?scPaneHTML('Concentración (SPY/RSP)','sc_conc_'+key,'sc_ro_conc_'+key,false):'')
+    +(opts.pe?scPaneHTML('P/E histórico','sc_pe_'+key,'sc_ro_pe_'+key,false):'')
     +'</div>';
 }
 
@@ -6516,7 +6546,7 @@ function renderTop3(top3,asOfRef){
 
     // Dos columnas: gráficos (izq, 3/4) + paneles (der, 1/4)
     html+='<div class="rec-2col">';
-    html+='<div class="rec-2col-left">'+scStackHTML('rec_'+i,SC_LEGEND_REC)+'</div>';
+    html+='<div class="rec-2col-left">'+scStackHTML('rec_'+i,SC_LEGEND_REC,{pe:_hasPE(r)})+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml" title="Fuerza de la señal (0-5.1): 1 punto por indicador que confirma (MACD, RSI, Koncorde) + bonus por condiciones extremas. Es la lectura de hoy, sin componente historico.">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
@@ -6818,7 +6848,7 @@ function _renderStockList(data){
         '<button class="period-btn'+(curPeriod==='1W'?' active':'')+'" data-p="1W" onclick="setPeriod('+idx+',\''+sym+'\',\'1W\')">1W</button>'+
         '<button class="period-btn'+(curPeriod==='1D'?' active':'')+'" data-p="1D" onclick="setPeriod('+idx+',\''+sym+'\',\'1D\')">1D</button>'+
         '</div></div>'+
-        scStackHTML('scan_'+idx)+
+        scStackHTML('scan_'+idx,null,{pe:_hasPE(r)})+
         '<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><button onclick="event.stopPropagation();openInOptionsLab(\''+sym+'\')" style="background:rgba(36,86,230,.15);color:#4262d9;border:1px solid rgba(36,86,230,.3);padding:5px 14px;border-radius:5px;font-weight:700;font-size:11px;cursor:pointer;letter-spacing:.3px">&#x2697; OPTIONS LAB</button></div>'+
         '</div></details>';
       idx++;
@@ -10537,7 +10567,7 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
             df = fetch_historical(ib_app, sym, next_ondemand_req_id(),
                                    duration=config.BACKTEST_DURATION,
                                    breaker=_IB_HIST_FAILS_UI)
-            data = analyze_symbol(df)
+            data = analyze_symbol(df, sym)
         except Exception as e:
             print(f"  [Portfolio deep] Error analizando {sym}: {e}")
             return None
@@ -12117,6 +12147,13 @@ def main():
         lambda: list(stock_list) + list(etf_list),
         persist_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                   "enrichment_cache.json"),
+    )
+    # EPS para el panel de P/E. Solo ACCIONES: un ETF no reporta EPS, y pedirlo
+    # seria gastar 113 requests por nada.
+    valuation.start_background(
+        lambda: list(stock_list),
+        persist_path=os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  valuation.CACHE_FILE),
     )
 
     port = int(os.environ.get("PORT", 5050))

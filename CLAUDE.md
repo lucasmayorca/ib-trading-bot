@@ -1322,6 +1322,68 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   (`_mpCollapsed=true`): barra de título + chips precio/Δ%/veredicto; clic expande y monta
   el gráfico. CSS `.mp-*`.
 
+## P/E histórico por acción (`valuation.py`, 2026-11)
+Pedido: *"el price-earnings ratio en las acciones también, además de los ETFs, para poder tomar
+decisiones. Lo podés poner igual que como lo pusiste en el SPY, con un gráfico adicional que
+marque cuándo está por las nubes y cuándo no a lo largo del tiempo."*
+
+**Por qué esto SÍ se puede y el P/E del índice NO** (ver el bloque CONCENTRACION en Pulso del
+Mercado, que documenta los tres hechos medidos): una **acción reporta EPS**, así que su P/E
+**tiene serie propia** — y sin serie no hay percentil, y sin percentil "27x" no dice si está caro.
+Un ETF de índice no publica EPS en yfinance y su `trailingPE` es un escalar.
+
+- **Reconstrucción**: `TTM EPS` = anual (4-5 ejercicios de `income_stmt`) **refinado en el tramo
+  reciente** por la suma de los 4 trimestres de `quarterly_income_stmt`. El P/E es
+  `cierre / TTM EPS` sobre el mismo array de cierres que ya viaja en el chart.
+- **Validación**: medido contra el `trailingPE` del propio yfinance sobre 20 acciones, **17
+  cierran con 0.0–1.1% de error**. Los 3 que no (MRNA, INTC, F) tienen **EPS negativo** y por lo
+  tanto no tienen P/E — yfinance tampoco reporta uno. Es la vara de que la reconstrucción es
+  correcta, y es el test que cazaría un cambio de base en la fuente.
+- **El refinamiento trimestral NO es opcional.** Con una empresa que crece rápido el anual queda
+  viejo: en **NVDA**, cuyo ejercicio cerró en enero, sólo con el anual el P/E daba **33.5 contra
+  un trailing real de 20.7 — 60% de error**. Un número equivocado con cara de dato.
+- **El EPS de yfinance YA viene ajustado por split** (verificado: NVDA FY2024 = 1.19, posterior al
+  10:1 de junio 2024; WMT FY2024 = 1.913, posterior al 3:1), o sea que está en la misma base que
+  los cierres ajustados del chart. Si dejara de estarlo, el P/E saltaría 10× en la fecha del split
+  sin motivo visible — el test de paridad contra `trailingPE` es lo que lo delataría.
+- **LAG DE REPORTE**: un EPS no se conoce el día que cierra el ejercicio. Cada punto rige desde el
+  cierre del período **+60 días** (anual) o **+45** (trimestral) — la misma disciplina
+  point-in-time que el percentil de concentración. Sin eso la serie muestra un P/E que nadie podía
+  calcular ese día.
+- **EPS ≤ 0 ⇒ el P/E NO EXISTE**: hueco (whitespace), ni 0 ni un número grande.
+  **Y el P/E de HOY es el de la ÚLTIMA barra, no el último valor válido** — bug cazado con INTC,
+  que mostraba *"59.32, p74"* con EPS negativo hoy porque tomaba el último no-nulo, que podía ser
+  de hace meses. La historia se sigue dibujando (es real) pero el header dice
+  **"sin P/E (pérdidas)"** y no se publica percentil.
+- **Alcance**: la historia llega hasta donde llega el anual, **~3-4 años**, no 5. En la vista de 5A
+  el tramo viejo queda vacío a propósito.
+- **ESCALA LOG**, sólo en este panel: la distribución de un P/E es muy asimétrica (NVDA va de
+  **20 a 546** en la misma ventana) y en lineal el pico aplasta todo. Además es la lectura
+  correcta: de 50 a 100 es el mismo salto que de 100 a 200. La concentración se queda lineal
+  (va de 2.6 a 3.7).
+- **MISMO panel que la concentración.** `pe_panel` devuelve **la misma forma** que `chart.conc`, y
+  `scBuild` los dibuja con **un solo bloque** (`p.n==='conc'||p.n==='pe'`): línea + bandas de
+  cuartiles de su propia historia, las dos del mismo color (marcan "fuera de la mitad central", no
+  un lado). Un arreglo ahí vale para los dos y no hay una segunda copia que se desincronice.
+- **El panel sólo se arma si el símbolo TIENE serie** (`_hasPE(r)` en los 4 stacks de acciones:
+  escáner, Top Recomendaciones, Mi Cartera y órdenes pendientes). Un ETF no reporta EPS, una
+  empresa en pérdidas no tiene P/E y el caché puede estar frío: en los tres casos no se estrena un
+  recuadro vacío. Los stacks de ETF no lo piden. **Se recorta con la ventana** como todo lo demás
+  (`scWindowDaily`) — `_scLine` zipea por índice.
+- **El scan NUNCA espera una descarga de fundamentals**: `attach_pe` lee un caché en memoria y, si
+  el EPS del símbolo todavía no se bajó, devuelve el análisis intacto. Un thread de fondo
+  (`start_background`, rate-limit 0.6s, **TTL 7 días** porque el EPS sólo cambia con el balance)
+  lo va llenando y persiste en `valuation_cache.json` (local; el cloud lo rehace en cada arranque,
+  igual que los datos de Wall Street). En el cloud sólo se piden **acciones**
+  (`_valuation_symbols`): pedir EPS de 113 ETFs es gastar requests por nada.
+- **NO entra en el score ni en el veredicto**, por la misma política que la concentración y las
+  figuras: nada mueve el ranking sin edge medido, y para una variable de valuación habría que
+  medirlo con el protocolo de `tools/medir_conc.py` (ojo: el P/E es por símbolo, así que **no**
+  cae en "la trampa del n" de las variables macro — se puede medir con el t de siempre).
+- ⚠ **No requiere reinstalar el bridge**: todo es server-side sobre el chart que ya viaja
+  (`attach_pe` se llama en `analyze_symbol` local y en los 3 puntos del cloud donde ya se adjuntan
+  las figuras). Tests: `tests/test_invariantes.py` §20.
+
 ## Dashboard Tabs
 1. **Escáner** — real-time stock scanner with signals
 2. **Mi Cartera** — portfolio positions with analysis

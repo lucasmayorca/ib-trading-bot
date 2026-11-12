@@ -180,9 +180,12 @@ def _restore_stores():
         # aca cubre el arranque con bridge offline hasta el proximo batch.
         try:
             from patterns import attach_to_analysis
+            import valuation
             for key in ("analysis", "etf_analysis"):
                 for sym, sig in (data.get(key) or {}).items():
                     attach_to_analysis(sig)
+                    if key == "analysis":
+                        valuation.attach_pe(sig, sym)
         except Exception as e:
             print(f"[RESTORE] pattern attach failed: {e}", flush=True)
         store.update(data)
@@ -485,7 +488,9 @@ def handle_analysis_data(data):
     symbol = data.get("symbol")
     if symbol:
         from patterns import attach_to_analysis
-        store["analysis"][symbol] = attach_to_analysis(data.get("result", {}))
+        import valuation
+        store["analysis"][symbol] = valuation.attach_pe(
+            attach_to_analysis(data.get("result", {})), symbol)
         store["last_update"] = datetime.now().strftime("%H:%M:%S")
 
 
@@ -504,8 +509,10 @@ def handle_analysis_batch(data):
     # Figuras tecnicas + fib: se computan server-side sobre el chart que manda
     # el bridge (patron enrichment.py: el bridge NO se toca, cero reinstalls)
     from patterns import attach_to_analysis
+    import valuation
     for symbol, result in results.items():
-        store["analysis"][symbol] = attach_to_analysis(result)
+        store["analysis"][symbol] = valuation.attach_pe(
+            attach_to_analysis(result), symbol)
     _record_failures(store, data.get("failed") or [], "ANALYSIS_BATCH")
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
     schedule_persist(user_id)
@@ -2787,9 +2794,25 @@ def _enrichment_symbols():
     return syms
 
 
+def _valuation_symbols():
+    """Solo ACCIONES: un ETF no reporta EPS, pedirselo gasta ~113 requests por
+    nada (y es justamente por eso que el P/E del indice no se pudo hacer)."""
+    syms = []
+    with user_data_lock:
+        stores = list(user_data.values())
+    for store in stores:
+        syms += list(store.get("stocks", []) or [])
+    return syms
+
+
 try:
     # Sin persist_path: el filesystem de Railway es efimero, se rellena solo.
     enrichment.start_background(_enrichment_symbols)
+    # EPS para el panel de P/E. Sin disco (Railway efimero), asi que el cache
+    # se rehace en cada arranque — el panel aparece cuando el warmer alcanza
+    # cada simbolo, igual que los datos de Wall Street.
+    import valuation
+    valuation.start_background(_valuation_symbols)
     print("[SERVER] Enrichment threads started")
 except Exception as e:
     print(f"[SERVER] WARNING: enrichment no arranco: {e}")

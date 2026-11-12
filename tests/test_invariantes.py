@@ -1933,9 +1933,11 @@ def _serie_par(n=400, seed=3):
 
 
 def _panel_conc():
-    """El bloque del panel CONCENTRACION dentro de `scBuild`."""
+    """El bloque del panel de valuacion dentro de `scBuild`. Desde que el P/E
+    se sumo, CONCENTRACION y P/E comparten ese bloque: misma forma de payload,
+    mismo dibujo, una sola copia."""
     h = vw.DASHBOARD_HTML
-    i = h.index("} else if(p.n==='conc'){")
+    i = h.index("} else if(p.n==='conc'||p.n==='pe'){")
     return h[i:h.index("} else { // koncorde", i)]
 
 
@@ -2107,3 +2109,143 @@ def test_la_concentracion_no_se_pinta_como_direccional():
     import re
     bandas = re.findall(r"color:'(rgba\([^']+\))'", cuerpo)
     assert len(bandas) == 2 and bandas[0] == bandas[1], bandas
+
+
+# ── 20. P/E historico por accion (valuation.py) ──────────────────────
+# Pedido: "el price-earnings ratio en las acciones tambien, ademas de los ETFs,
+# para poder tomar decisiones... igual que como lo pusiste en el SPY, con un
+# grafico adicional que marque cuando esta por las nubes y cuando no".
+# Esto SI se puede y el P/E del indice NO, por una sola razon: una accion
+# reporta EPS, asi que su P/E tiene SERIE — y sin serie no hay percentil.
+
+def _pts(*pares):
+    return [(f, v) for f, v in pares]
+
+
+def test_el_pe_sale_de_dividir_precio_por_el_eps_vigente():
+    """Y el EPS vigente es el ULTIMO reportado a esa fecha, no el de hoy."""
+    import valuation as V
+    dates = ["2026-01-05", "2026-03-05", "2026-06-05"]
+    closes = [100.0, 120.0, 120.0]
+    pts = _pts(("2026-01-01", 10.0), ("2026-04-01", 5.0))
+    assert V.pe_series(dates, closes, pts) == [10.0, 12.0, 24.0]
+
+
+def test_antes_del_primer_reporte_no_hay_pe():
+    """Inventar un P/E con un EPS que todavia no existia es lookahead."""
+    import valuation as V
+    out = V.pe_series(["2025-01-02", "2026-01-02"], [100.0, 100.0],
+                      _pts(("2025-06-01", 5.0)))
+    assert out[0] is None and out[1] == 20.0
+
+
+def test_eps_negativo_no_tiene_pe_y_no_se_dibuja_un_numero():
+    """Una empresa en perdidas NO tiene P/E. Ni 0, ni un numero grande: hueco."""
+    import valuation as V
+    out = V.pe_series(["2026-01-02", "2026-06-02"], [50.0, 50.0],
+                      _pts(("2025-01-01", 5.0), ("2026-03-01", -2.0)))
+    assert out == [10.0, None]
+
+
+def test_el_pe_de_hoy_es_el_de_la_ultima_barra_no_el_ultimo_valido():
+    """Cazado con INTC: mostraba "59.32, p74" con EPS negativo HOY, porque
+    tomaba el ultimo valor no-nulo — que podia ser de hace meses. La historia
+    se sigue dibujando (es real) pero sin valor ni percentil de hoy."""
+    import valuation as V
+    dates = [f"2024-{m:02d}-01" for m in range(1, 13)] + \
+            [f"2025-{m:02d}-01" for m in range(1, 13)] + \
+            [f"2026-{m:02d}-01" for m in range(1, 13)]
+    closes = [100.0] * len(dates)
+    # EPS positivo hasta 2026, negativo despues
+    pts = _pts(("2023-06-01", 5.0), ("2026-02-01", -1.0))
+    pan = V.pe_panel(dates, closes, pts)
+    if pan is not None:                      # muestra corta: puede no haber panel
+        assert pan["vals"][-1] is None
+        assert pan["pct"] is None and pan["sin_pe_hoy"] is True
+        assert not pan["pcts"], "sin P/E hoy no se publica un percentil de hoy"
+
+
+def test_el_panel_de_pe_tiene_la_MISMA_forma_que_el_de_concentracion():
+    """Comparten dibujo en `scBuild`: si las formas se separan, el panel pasa a
+    tener dos implementaciones y una se desincroniza."""
+    import valuation as V
+    dates = [f"2024-{m:02d}-{d:02d}" for m in range(1, 13) for d in (1, 15)] * 8
+    dates = sorted(dates)[:300]
+    pan = V.pe_panel(dates, [100.0 + i * 0.1 for i in range(len(dates))],
+                     _pts(("2023-01-01", 5.0)))
+    assert pan is not None
+    for k in ("pair", "vals", "q1", "med", "q3", "pct", "ventana", "ruedas", "pcts"):
+        assert k in pan, k
+    assert pan["q1"] <= pan["med"] <= pan["q3"]
+
+
+def test_sin_datos_el_panel_no_se_inventa():
+    import valuation as V
+    assert V.pe_series([], [], _pts(("2024-01-01", 5.0))) is None
+    assert V.pe_series(["2024-01-02"], [10.0], []) is None
+    # muestra demasiado corta para que un cuartil signifique algo
+    assert V.pe_panel(["2024-01-02"], [10.0], _pts(("2023-01-01", 5.0))) is None
+
+
+def test_attach_pe_no_rompe_sin_cache_ni_sin_chart():
+    """El scan NUNCA espera una descarga de fundamentals: si el EPS todavia no
+    esta, `attach_pe` devuelve el analisis intacto y el panel no aparece."""
+    import valuation as V
+    a = {"chart": {"ohlc": [{"time": "2024-01-02", "close": 10.0}]}}
+    assert V.attach_pe(a, "__NO_EXISTE__") is a
+    assert "pe" not in a["chart"]
+    assert V.attach_pe({}, "AAPL") == {}
+    assert V.attach_pe(None, "AAPL") is None
+
+
+def test_el_panel_de_pe_se_recorta_con_la_ventana():
+    """Mismo invariante que la concentracion: `_scLine` zipea por INDICE, asi
+    que una serie sin recortar dibuja fechas viejas sobre el eje de hoy."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("function scWindowDaily")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "pe:chart.pe" in cuerpo and "sl(chart.pe.vals,bars)" in cuerpo
+
+
+def test_el_pe_va_en_escala_log():
+    """Su distribucion es muy asimetrica (NVDA va de 20 a 546 en la misma
+    ventana): en lineal el pico aplasta todo. Y en log la lectura es la
+    correcta — de 50 a 100 es el mismo salto que de 100 a 200."""
+    cuerpo = _panel_conc()
+    assert "PriceScaleMode.Logarithmic" in cuerpo
+    assert "p.n==='pe'" in cuerpo, "el log tiene que aplicarse SOLO al P/E"
+
+
+def test_el_panel_solo_se_arma_si_el_simbolo_tiene_serie():
+    """Un ETF no reporta EPS y una empresa en perdidas no tiene P/E: en esos
+    casos no se estrena un recuadro vacio."""
+    h = vw.DASHBOARD_HTML
+    assert "function _hasPE(r)" in h
+    assert h.count("{pe:_hasPE(") == 4, "los 4 stacks de acciones"
+    # los de ETF no lo piden
+    assert "scStackHTML('etf_'+idx,null,{pe:" not in h
+
+
+def test_analyze_symbol_sigue_devolviendo_analisis_con_y_sin_simbolo():
+    """Regresion de un bug propio al sumar el P/E: `analyze_symbol(df)` no
+    recibia el simbolo, asi que la linea nueva tiraba NameError DENTRO del
+    try/except de la funcion — que loguea y devuelve None. O sea: habria dejado
+    TODOS los analisis en None, con el dashboard en blanco y un solo renglon de
+    log. El simbolo es opcional a proposito (sin el, el panel no se adjunta),
+    para que ningun caller pueda romperse por esto."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(5)
+    n = 400
+    close = 100 + np.cumsum(rng.normal(0.05, 1.0, n))
+    df = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=n, freq="B").strftime("%Y-%m-%d"),
+        "open": close + rng.normal(0, .3, n),
+        "high": close + abs(rng.normal(0, .8, n)),
+        "low": close - abs(rng.normal(0, .8, n)),
+        "close": close,
+        "volume": rng.integers(1e6, 5e6, n).astype(float),
+    })
+    for arg in ((), ("__SIN_CACHE__",)):
+        out = vw.analyze_symbol(df.copy(), *arg)
+        assert isinstance(out, dict) and out.get("signal_label"), (arg, out)

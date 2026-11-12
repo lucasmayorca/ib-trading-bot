@@ -19,3 +19,4 @@ enrichment_cache.json
 # datos de la re-medicion de edge (regenerables con tools/bajar_universo.py)
 tools/*.pkl
 tools/*.json
+valuation_cache.json
