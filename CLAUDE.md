@@ -1477,11 +1477,34 @@ invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
   `scBuild` los dibuja con **un solo bloque** (`p.n==='conc'||p.n==='pe'`): línea + bandas de
   cuartiles de su propia historia, las dos del mismo color (marcan "fuera de la mitad central", no
   un lado). Un arreglo ahí vale para los dos y no hay una segunda copia que se desincronice.
-- **El panel sólo se arma si el símbolo TIENE serie** (`_hasPE(r)` en los 4 stacks de acciones:
-  escáner, Top Recomendaciones, Mi Cartera y órdenes pendientes). Un ETF no reporta EPS, una
-  empresa en pérdidas no tiene P/E y el caché puede estar frío: en los tres casos no se estrena un
-  recuadro vacío. Los stacks de ETF no lo piden. **Se recorta con la ventana** como todo lo demás
-  (`scWindowDaily`) — `_scLine` zipea por índice.
+- **El panel sólo se arma si el símbolo TIENE serie** (`_hasPE(sym, rec)` en los 4 stacks de
+  acciones: escáner, Top Recomendaciones, Mi Cartera y órdenes pendientes). Un ETF no reporta EPS,
+  una empresa en pérdidas no tiene P/E y el caché puede estar frío: en los tres casos no se estrena
+  un recuadro vacío. Los stacks de ETF no lo piden. **Se recorta con la ventana** como todo lo
+  demás (`scWindowDaily`) — `_scLine` zipea por índice.
+- **PEDIR EL PANEL Y DIBUJARLO SALEN DE LA MISMA FUNCIÓN** (`_chartFor(sym, rec)`, 2026-11).
+  Cazado mirando la pantalla: el panel aparecía **sólo en el Escáner**. `_hasPE` preguntaba por
+  `rec.chart` mientras el stack dibujaba desde `_data.results[sym].chart` — y los payloads de
+  `compute_top3` y de la ficha de cartera **no llevan `chart`** (mandan `chart_ohlc`,
+  `chart_macd`, … ya sliceados), así que daba SIEMPRE `false` en Top Recomendaciones, Mi Cartera y
+  Órdenes pendientes, **con el dato ahí al lado**. Es el mismo defecto que `universe_items`
+  documenta del lado del server: dos lectores del mismo estado que no coinciden sobre la fuente de
+  verdad. `_chartFor` es ahora esa fuente única (escáner → ETF → `rec.chart` → el chart
+  pre-sliceado) y las 5 reconstrucciones a mano del chart se borraron. El test que existía no lo
+  cazó porque comprobaba que la función existiera y que se la llamara 4 veces, no **de dónde
+  leía**.
+- **Y el panel viaja en esos payloads** (`chart_pe`), recortado con `valuation.slice_panel` al
+  mismo `start` que el `chart_ohlc`: `vals` es índice-paralelo al ohlc, y mandarlo entero contra un
+  ohlc recortado dibuja fechas viejas sobre fechas nuevas. Las bandas y los percentiles **no** se
+  recortan: describen la historia completa, que es contra lo que se mide "caro" (misma regla que
+  los cuartiles de la concentración).
+- **El adjunto se REINTENTA al servir** (`valuation.ensure_pe` en `universe_items`). `attach_pe`
+  corre al INGERIR, que es un instante: si ahí el EPS no estaba bajado, ese análisis se queda sin
+  panel hasta el próximo lote del bridge — una hora por el gate horario, o **nunca** si el bridge
+  está caído. En el cloud ese caso es la REGLA, no la excepción: sin disco, **cada deploy arranca
+  con el caché de EPS vacío** mientras el store se restaura de Postgres tal como se guardó, sin
+  `pe`. Es idempotente y no toca la red (`eps_points` lee caché), así que cuesta un lookup por
+  símbolo y se paga una sola vez.
 - **El scan NUNCA espera una descarga de fundamentals**: `attach_pe` lee un caché en memoria y, si
   el EPS del símbolo todavía no se bajó, devuelve el análisis intacto. Un thread de fondo
   (`start_background`, rate-limit 0.6s, **TTL 7 días** porque el EPS sólo cambia con el balance)
@@ -1532,7 +1555,7 @@ invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
     temporal y la distribución marginal, y destruye sólo el vínculo símbolo-valuación.
 - ⚠ **No requiere reinstalar el bridge**: todo es server-side sobre el chart que ya viaja
   (`attach_pe` se llama en `analyze_symbol` local y en los 3 puntos del cloud donde ya se adjuntan
-  las figuras). Tests: `tests/test_invariantes.py` §20.
+  las figuras). Tests: `tests/test_invariantes.py` §20 y §23.
 
 ## Dashboard Tabs
 1. **Escáner** — real-time stock scanner with signals

@@ -2218,9 +2218,15 @@ def test_el_pe_va_en_escala_log():
 
 def test_el_panel_solo_se_arma_si_el_simbolo_tiene_serie():
     """Un ETF no reporta EPS y una empresa en perdidas no tiene P/E: en esos
-    casos no se estrena un recuadro vacio."""
+    casos no se estrena un recuadro vacio.
+
+    Este test existia y NO cazo que el panel no apareciera en 3 de las 4
+    superficies: comprobaba que la funcion existiera y que se la llamara 4
+    veces, no que leyera la misma fuente que el stack que dibuja. Ese segundo
+    invariante vive ahora en §23 — el que falta es siempre el que importa.
+    """
     h = vw.DASHBOARD_HTML
-    assert "function _hasPE(r)" in h
+    assert "function _hasPE(" in h
     assert h.count("{pe:_hasPE(") == 4, "los 4 stacks de acciones"
     # los de ETF no lo piden
     assert "scStackHTML('etf_'+idx,null,{pe:" not in h
@@ -2448,3 +2454,117 @@ def test_el_IC_llega_al_payload_del_analisis():
                                "target": 10.0, "text": "x"}])
     assert c and "edge_ci" in c[0]
     json.dumps(c[0])        # serializable tal cual viaja en /api/data
+
+
+# ── 23. El panel de P/E llega a las 4 superficies ────────────────────
+# BUG (2026-11, reportado mirando la pantalla): el panel solo aparecia en el
+# Escaner. `_hasPE` preguntaba por `r.chart` mientras el stack dibujaba desde
+# `_data.results[sym].chart`; los payloads de `compute_top3` y de la ficha de
+# cartera NO llevan `chart` (mandan `chart_ohlc`/`chart_macd`/... ya
+# sliceados), asi que daba SIEMPRE false en Top Recomendaciones, Mi Cartera y
+# Ordenes pendientes — con el dato ahi al lado. Mismo defecto que
+# `universe_items` documenta del lado del server: dos lectores del mismo
+# estado que no coinciden sobre la fuente de verdad.
+
+def test_pedir_el_panel_y_dibujarlo_salen_de_la_misma_fuente():
+    h = vw.DASHBOARD_HTML
+    assert "function _chartFor(" in h
+    # `_hasPE` no puede volver a leer `rec.chart` por su cuenta
+    linea = [l for l in h.split("\n") if l.startswith("function _hasPE(")]
+    assert len(linea) == 1, linea
+    assert "_chartFor(" in linea[0], linea[0]
+    # y nadie puede reconstruir el chart a mano otra vez
+    assert "if(!ch&&rec.chart_ohlc)" not in h
+    # los 5 stacks que dibujan toman el chart del helper
+    assert h.count("let ch=_chartFor(") == 4
+
+
+def test_los_cuatro_stacks_de_accion_piden_el_panel_con_su_simbolo():
+    """Con la firma vieja (`_hasPE(rec)`) el panel no se estrenaba. Cada sitio
+    tiene que pasar el simbolo del SUBYACENTE — en Mi Cartera `sym` es la
+    clave OCC del contrato, que no es un simbolo de chart."""
+    h = vw.DASHBOARD_HTML
+    esperados = [
+        "scStackHTML('scan_'+idx,null,{pe:_hasPE(sym,r)})",
+        "scStackHTML('rec_'+i,SC_LEGEND_REC,{pe:_hasPE(r.symbol,r)})",
+        "scStackHTML('port_'+sym,SC_LEGEND_FULL,{pe:_hasPE(p.underlying||p.symbol,rec)})",
+        "scStackHTML('pend_'+sym,SC_LEGEND_FULL,{pe:_hasPE(sym,rec)})",
+    ]
+    for e in esperados:
+        assert e in h, e
+    # los stacks de ETF NO lo piden: un ETF no reporta EPS
+    assert "scStackHTML('etf_'+idx)" in h
+    assert "scStackHTML('etfrec_'+i,SC_LEGEND_REC)" in h
+
+
+def test_el_panel_sliceado_queda_indice_paralelo_al_ohlc():
+    """`vals` es indice-paralelo al ohlc. Los payloads de rec y de cartera
+    mandan el chart recortado a n_bars: mandar el panel entero dibujaria
+    fechas viejas sobre fechas nuevas — un grafico plausible y falso."""
+    import valuation as V
+    pan = {"pair": "P/E", "vals": list(range(100)), "q1": 1.0, "med": 2.0,
+           "q3": 3.0, "pct": 50, "ventana": "5A", "ruedas": 100,
+           "pcts": [{"ventana": "5A", "pct": 50, "ruedas": 100}]}
+    cut = V.slice_panel(pan, 100 - 90)
+    assert len(cut["vals"]) == 90
+    assert cut["vals"][0] == 10 and cut["vals"][-1] == 99
+    # las bandas y los percentiles describen la historia COMPLETA, no la
+    # ventana: es contra eso que se mide "caro". Misma regla que la
+    # concentracion con sus cuartiles de 5 años.
+    for k in ("q1", "med", "q3", "pct", "ruedas", "pcts"):
+        assert cut[k] == pan[k], k
+    assert pan["vals"] == list(range(100)), "no puede mutar el panel original"
+    assert V.slice_panel(pan, 0) is pan
+    assert V.slice_panel(None, 10) is None
+    assert V.slice_panel(pan, 500) is None
+
+
+def test_el_adjunto_se_reintenta_al_servir():
+    """`attach_pe` corre al INGERIR, que es un instante: con el cache de EPS
+    frio ese analisis se queda sin panel hasta el proximo lote del bridge (una
+    hora por el gate horario, o nunca si el bridge esta caido). En el cloud es
+    la REGLA: sin disco, cada deploy arranca con el cache vacio mientras el
+    store se restaura de Postgres sin `pe`."""
+    import valuation as V
+    ohlc = [{"time": f"2026-01-{i + 1:02d}", "close": 100.0} for i in range(28)]
+    an = {"chart": {"ohlc": ohlc}}
+    # cache frio: no adjunta nada y no rompe
+    assert V.ensure_pe(an, "__NOEXISTE__") is an
+    assert "pe" not in an["chart"]
+    # con un panel ya puesto no vuelve a calcular
+    an["chart"]["pe"] = {"vals": [1.0]}
+    marca = an["chart"]["pe"]
+    assert V.ensure_pe(an, "__NOEXISTE__")["chart"]["pe"] is marca
+    assert V.ensure_pe(None, "X") is None
+
+
+def test_universe_items_repara_el_analisis_que_llego_sin_panel():
+    """Es el chokepoint de los DOS lectores del cache (tabla y compute_top3),
+    local y cloud: con el panel reparado aca aparece en el refresco siguiente,
+    sin esperar un lote nuevo del bridge."""
+    import valuation as V
+    ohlc = [{"time": f"2026-02-{i + 1:02d}", "close": 100.0 + i}
+            for i in range(28)]
+    an = {"as_of": ohlc[-1]["time"], "chart": {"ohlc": ohlc}}
+    llamadas = []
+    orig = V.ensure_pe
+    V.ensure_pe = lambda a, s: (llamadas.append(s), orig(a, s))[1]
+    try:
+        items = list(vw.universe_items({"ZZZ": an}, ["ZZZ"]))
+    finally:
+        V.ensure_pe = orig
+    assert llamadas == ["ZZZ"], llamadas
+    assert items[0][1] is an, "no puede cambiar el analisis que devuelve"
+
+
+def test_rec_y_cartera_llevan_el_panel_en_su_payload():
+    """Cuando el simbolo no esta en el cache del escaner el stack cae al chart
+    pre-sliceado del payload. Si el panel no viaja ahi, el fallback dibuja un
+    stack sin P/E y `_hasPE` tiene que dar false — nunca un panel vacio."""
+    raiz = os.path.join(os.path.dirname(__file__), "..")
+    src = open(os.path.join(raiz, "vista_web.py")).read()
+    assert src.count('"chart_pe": valuation.slice_panel(') == 2, "top3 + cartera"
+    cloud = open(os.path.join(raiz, "cloud", "server.py")).read()
+    assert cloud.count('"chart_pe": valuation.slice_panel(') == 1
+    # y el fallback del JS lo pasa al stack
+    assert "pe:rec.chart_pe||null" in vw.DASHBOARD_HTML

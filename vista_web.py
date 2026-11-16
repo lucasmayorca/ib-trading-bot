@@ -983,7 +983,14 @@ def universe_items(cache, universe=None):
         elif _is_stale_analysis(data, cutoff):
             yield sym, None, _analysis_as_of(data)
         else:
-            yield sym, data, ""
+            # Ultima oportunidad de adjuntar el panel de P/E: `attach_pe` corre
+            # al INGERIR, y si en ese instante el EPS no estaba bajado el
+            # analisis se queda sin panel hasta el proximo lote del bridge (una
+            # hora, por el gate; nunca, si el bridge esta caido). Aca, que es el
+            # chokepoint de los DOS lectores del cache en local y en cloud, el
+            # panel aparece en cuanto el warmer alcanza al simbolo. Idempotente
+            # y sin red: con `pe` ya puesto no hace nada.
+            yield sym, valuation.ensure_pe(data, sym), ""
 
 
 def audit_universe(cache, universe, label=""):
@@ -2782,6 +2789,9 @@ def compute_top3(cache, min_target_pct=None, universe=None):
             "chart_macd": chart_macd,
             "chart_rsi": chart_rsi,
             "chart_koncorde": chart_koncorde,
+            # Sliceado como todo lo demas: `vals` es indice-paralelo al ohlc.
+            "chart_pe": valuation.slice_panel(
+                (data.get("chart") or {}).get("pe"), start),
             "fundamentals": fund,
         }
         top3.append(rec)
@@ -4592,10 +4602,7 @@ function renderPortAnalCharts(sym,rec,pos,period){
   let bar=document.getElementById('portanal_pb_'+key);
   if(bar)bar.querySelectorAll('.rec-period-btn').forEach(b=>b.classList.toggle('active',b.dataset.p===period));
 
-  // Preferir cache del escáner (5Y completo), sino datos pre-sliceados del rec
-  let fullData=(_data&&_data.results)?_data.results[usym]:null;
-  let ch=fullData?fullData.chart:null;
-  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
+  let ch=_chartFor(usym,rec);
 
   scRenderStack({key:'port_'+key,symbol:usym,chart:ch,period:period,
     decorate:_portAnalDecorate(rec,pos,ch),heights:{candle:380,ind:124},
@@ -4753,7 +4760,7 @@ function renderPortAnalysisList(positions){
 
     // Dos columnas: gráficos (izq, 3/4) + paneles (der, 1/4)
     html+='<div class="rec-2col">';
-    html+='<div class="rec-2col-left">'+scStackHTML('port_'+sym,SC_LEGEND_FULL,{pe:_hasPE(rec)})+'</div>';
+    html+='<div class="rec-2col-left">'+scStackHTML('port_'+sym,SC_LEGEND_FULL,{pe:_hasPE(p.underlying||p.symbol,rec)})+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml">Cantidad</span><span class="rec-mv">'+(p.cantidad||0).toFixed(0)+'</span></div>';
@@ -4844,9 +4851,7 @@ function renderPortPendCharts(sym,rec,p,period){
   _portPendPeriods[sym]=period;
   let bar=document.getElementById('portpend_pb_'+sym);
   if(bar)bar.querySelectorAll('.rec-period-btn').forEach(b=>b.classList.toggle('active',b.dataset.p===period));
-  let fullData=(_data&&_data.results)?_data.results[sym]:null;
-  let ch=fullData?fullData.chart:null;
-  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
+  let ch=_chartFor(sym,rec);
   scRenderStack({key:'pend_'+sym,symbol:sym,chart:ch,period:period,
     decorate:_portAnalDecorate(rec,p,ch),heights:{candle:380,ind:124},
     getPeriod:()=>_portPendPeriods[sym]});
@@ -4924,7 +4929,7 @@ function renderPendingOrdersList(pending){
     html+='</div>';
 
     html+='<div class="rec-2col">';
-    html+='<div class="rec-2col-left">'+scStackHTML('pend_'+sym,SC_LEGEND_FULL,{pe:_hasPE(rec)})+'</div>';
+    html+='<div class="rec-2col-left">'+scStackHTML('pend_'+sym,SC_LEGEND_FULL,{pe:_hasPE(sym,rec)})+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-levels"><div class="rec-lt">Niveles</div>';
     html+='<div class="rec-lr"><span class="rec-ll">Orden '+(po.action||'')+'</span><span class="rec-lv" style="color:#b45309">'+priceTxt+'</span></div>';
@@ -5925,7 +5930,33 @@ function scPaneHTML(title,elId,roId,tall){
 // EPS, una empresa en perdidas no tiene P/E, y el cache del EPS puede estar
 // todavia frio. En cualquiera de los tres casos el panel no se arma, en vez de
 // estrenar un recuadro vacio.
-function _hasPE(r){try{return !!(r&&r.chart&&r.chart.pe&&r.chart.pe.vals);}catch(e){return false;}}
+// El chart de una tarjeta, de UNA sola fuente. Las tarjetas de recomendacion
+// y las fichas de cartera prefieren el chart del escaner (5Y completo) y solo
+// caen a su propio chart pre-sliceado si el simbolo no esta ahi.
+//
+// BUG QUE ORIGINO ESTO (2026-11): `_hasPE` preguntaba por `r.chart` mientras
+// el stack dibujaba desde `_data.results[sym].chart`. Los payloads de
+// `compute_top3` y de la ficha de cartera NO llevan `chart` (mandan
+// `chart_ohlc`, `chart_macd`, ... pre-sliceados), asi que `_hasPE` daba
+// SIEMPRE false y el panel de P/E no se estrenaba nunca en Top
+// Recomendaciones, Mi Cartera ni Ordenes pendientes — con el dato ahi al
+// lado. Solo andaba en el escaner, donde la fila ES el analisis. Es el mismo
+// defecto que `universe_items` ya documenta del lado del server: dos lectores
+// del mismo estado que no coinciden sobre la fuente de verdad. Preguntar y
+// dibujar salen ahora de la misma funcion y no pueden divergir.
+function _chartFor(sym,rec){
+  try{
+    let f=(_data&&_data.results)?_data.results[sym]:null;
+    if(!f&&_etfData&&_etfData.results)f=_etfData.results[sym];
+    if(f&&f.chart)return f.chart;
+    if(rec&&rec.chart)return rec.chart;
+    if(rec&&rec.chart_ohlc)return {ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},
+      macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde,
+      pe:rec.chart_pe||null};
+  }catch(e){}
+  return null;
+}
+function _hasPE(sym,rec){try{let c=_chartFor(sym,rec);return !!(c&&c.pe&&c.pe.vals&&c.pe.vals.length);}catch(e){return false;}}
 
 function scStackHTML(key,legendHTML,opts){
   opts=opts||{};
@@ -6418,10 +6449,7 @@ function renderRecDetailCharts(idx,rec,period){
   let bar=document.getElementById('rec_pb_'+idx);
   if(bar){bar.querySelectorAll('.rec-period-btn').forEach(b=>{b.classList.toggle('active',b.dataset.p===period);});}
 
-  // Preferir cache del escáner (5Y completo); sino datos pre-sliceados del rec
-  let fullData=(_data&&_data.results)?_data.results[sym]:null;
-  let ch=fullData?fullData.chart:null;
-  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
+  let ch=_chartFor(sym,rec);
 
   scRenderStack({key:'rec_'+idx,symbol:sym,chart:ch,period:period,
     decorate:_recDecorate(rec,ch),heights:{candle:380,ind:124},
@@ -6558,7 +6586,7 @@ function renderTop3(top3,asOfRef){
 
     // Dos columnas: gráficos (izq, 3/4) + paneles (der, 1/4)
     html+='<div class="rec-2col">';
-    html+='<div class="rec-2col-left">'+scStackHTML('rec_'+i,SC_LEGEND_REC,{pe:_hasPE(r)})+'</div>';
+    html+='<div class="rec-2col-left">'+scStackHTML('rec_'+i,SC_LEGEND_REC,{pe:_hasPE(r.symbol,r)})+'</div>';
     html+='<div class="rec-2col-right">';
     html+='<div class="rec-metrics">';
     html+='<div class="rec-m"><span class="rec-ml" title="Fuerza de la señal (0-5.1): 1 punto por indicador que confirma (MACD, RSI, Koncorde) + bonus por condiciones extremas. Es la lectura de hoy, sin componente historico.">Fuerza</span><span class="rec-mv" style="color:'+(r.strength>=3?'var(--buy)':'var(--hold)')+'">'+r.strength.toFixed(1)+'/5.1</span></div>';
@@ -6860,7 +6888,7 @@ function _renderStockList(data){
         '<button class="period-btn'+(curPeriod==='1W'?' active':'')+'" data-p="1W" onclick="setPeriod('+idx+',\''+sym+'\',\'1W\')">1W</button>'+
         '<button class="period-btn'+(curPeriod==='1D'?' active':'')+'" data-p="1D" onclick="setPeriod('+idx+',\''+sym+'\',\'1D\')">1D</button>'+
         '</div></div>'+
-        scStackHTML('scan_'+idx,null,{pe:_hasPE(r)})+
+        scStackHTML('scan_'+idx,null,{pe:_hasPE(sym,r)})+
         '<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)"><button onclick="event.stopPropagation();openInOptionsLab(\''+sym+'\')" style="background:rgba(36,86,230,.15);color:#4262d9;border:1px solid rgba(36,86,230,.3);padding:5px 14px;border-radius:5px;font-weight:700;font-size:11px;cursor:pointer;letter-spacing:.3px">&#x2697; OPTIONS LAB</button></div>'+
         '</div></details>';
       idx++;
@@ -7364,9 +7392,7 @@ function renderEtfRecDetailCharts(idx,rec,period){
   let bar=document.getElementById('etf_rec_pb_'+idx);
   if(bar){bar.querySelectorAll('.rec-period-btn').forEach(b=>{b.classList.toggle('active',b.dataset.p===period);});}
 
-  let fullData=(_etfData&&_etfData.results)?_etfData.results[sym]:null;
-  let ch=fullData?fullData.chart:null;
-  if(!ch&&rec.chart_ohlc)ch={ohlc:rec.chart_ohlc,mas:rec.chart_mas||{},macd:rec.chart_macd,rsi:rec.chart_rsi,koncorde:rec.chart_koncorde};
+  let ch=_chartFor(sym,rec);
 
   scRenderStack({key:'etfrec_'+idx,symbol:sym,chart:ch,period:period,
     decorate:_recDecorate(rec,ch),heights:{candle:380,ind:124},
@@ -10745,6 +10771,8 @@ def _build_position_deep_analysis(sym, position, n_bars=90):
         "chart_macd": chart_macd,
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
+        "chart_pe": valuation.slice_panel(
+            (data.get("chart") or {}).get("pe"), start),
         # Fecha del cierre sobre el que corrio ESTE analisis: sin esto la ficha
         # no puede avisar que esta mirando una foto vieja (ver "foto congelada").
         "as_of": _analysis_as_of(data),

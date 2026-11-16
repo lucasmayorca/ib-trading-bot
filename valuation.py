@@ -458,6 +458,52 @@ def attach_pe(analysis, symbol):
     return analysis
 
 
+def ensure_pe(analysis, symbol):
+    """Idempotente: adjunta el panel si FALTA y el EPS ya esta en cache.
+
+    `attach_pe` corre al INGERIR el analisis, que es un instante. Si en ese
+    instante el EPS todavia no se habia bajado, ese analisis se queda sin
+    panel hasta que el bridge vuelva a emitirlo — y con el gate horario eso
+    tarda una hora, o no pasa nunca si el bridge esta caido. En el cloud el
+    caso es la REGLA, no la excepcion: no hay disco, asi que cada deploy
+    arranca con el cache de EPS vacio mientras el store de analisis se
+    restaura de Postgres tal como se guardo, sin `pe`.
+
+    Por eso tambien se intenta al SERVIR: en cuanto el warmer alcanza al
+    simbolo el panel aparece en el refresco siguiente, sin esperar un
+    analisis nuevo. Es barato — `eps_points` es una lectura de cache, no una
+    descarga — y una sola vez por analisis: despues el `pe` ya esta.
+    """
+    try:
+        if ((analysis or {}).get("chart") or {}).get("pe"):
+            return analysis
+        return attach_pe(analysis, symbol)
+    except Exception:
+        return analysis
+
+
+def slice_panel(panel, start):
+    """El panel recortado a las ultimas barras, para los payloads que mandan
+    el chart ya sliceado (`chart_ohlc` de las recomendaciones y de la ficha de
+    cartera). `vals` es INDICE-PARALELO al ohlc: mandarlo entero contra un
+    ohlc recortado dibuja fechas viejas sobre fechas nuevas — un grafico
+    plausible y completamente falso, que es la peor clase de error de este
+    proyecto (el mismo que `scWindowDaily` ya tapa del lado del JS).
+
+    Las bandas y los percentiles NO se recortan: describen la historia
+    completa, que es contra lo que se mide "caro". Misma regla que los
+    cuartiles de la concentracion.
+    """
+    if not panel or not start:
+        return panel
+    vals = panel.get("vals") or []
+    if start >= len(vals):
+        return None
+    out = dict(panel)
+    out["vals"] = vals[start:]
+    return out
+
+
 # ───────────────────────── persistencia + warmer ─────────────────────────
 
 def load(path):

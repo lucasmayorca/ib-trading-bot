@@ -32,6 +32,7 @@ import calibration
 import enrichment
 import market_pulse
 import signals as _signals   # solo para signals.TURN_LAG (ventana del giro)
+import valuation
 import option_position
 import option_strategy
 
@@ -947,6 +948,9 @@ def _build_cloud_position_analysis(sym, position, data, live_trades=None, n_bars
         "chart_macd": chart_macd,
         "chart_rsi": chart_rsi,
         "chart_koncorde": chart_koncorde,
+        # Sliceado como todo lo demas: `vals` es indice-paralelo al ohlc.
+        "chart_pe": valuation.slice_panel(
+            (data.get("chart") or {}).get("pe"), start),
         "as_of": _analysis_as_of(data),
         "entry_fills": entry_fills,
         "entry_thesis": entry_thesis,
