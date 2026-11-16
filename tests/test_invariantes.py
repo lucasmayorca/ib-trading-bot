@@ -2592,6 +2592,8 @@ def test_el_warmer_reintenta_rapido_si_el_universo_esta_vacio():
             if len(self.esperas) >= 2:
                 self.listo.set()
                 self.parar.wait(5)      # parkea el thread sin traceback
+            # (con el universo vacio no hay pausas de rate-limit: todas las
+            #  esperas que llegan aca son las de ENTRE pasadas)
 
         def time(self):
             return 0.0
@@ -2685,20 +2687,23 @@ def test_el_cache_de_EPS_sobrevive_al_deploy():
     assert 'db.save_app_cache("valuation_eps"' in srv
 
 
-def test_el_warmer_avisa_cuando_hay_algo_nuevo_que_guardar():
+def test_el_warmer_guarda_DE_A_POCO_no_solo_al_final():
+    """Guardar solo al terminar la pasada no sirve: la pasada son ~5 minutos y
+    en el cloud el contenedor se reinicia justo ahi (un deploy), asi que el
+    guardado final casi nunca ocurria. Medido en produccion: despues de dos
+    deploys seguidos el restore trajo 0 simbolos y el panel arranco frio
+    igual, que es el sintoma que se queria eliminar."""
     import threading
     import valuation as V
     vistos, bajados = [], []
 
     class _Reloj:
         def __init__(self):
-            self.n = 0
             self.listo = threading.Event()
             self.parar = threading.Event()
 
         def sleep(self, v):
-            self.n += 1
-            if self.n >= 2:
+            if v >= V.SLEEP_VACIO_S:     # espera ENTRE pasadas, no el rate-limit
                 self.listo.set()
                 self.parar.wait(5)
 
@@ -2706,15 +2711,57 @@ def test_el_warmer_avisa_cuando_hay_algo_nuevo_que_guardar():
             return 0.0
 
     reloj = _Reloj()
+    # mas simbolos que PERSIST_CADA: tiene que guardar ANTES de terminar
+    universo = [f"__T{i}__" for i in range(V.PERSIST_CADA * 2 + 3)]
+    cortes = []
     real_time, real_fetch = V.time, V.fetch_into_cache
     V.time = reloj
     V.fetch_into_cache = lambda sym: bajados.append(sym)
     try:
-        V.start_background(lambda: ["__TST__"], persist_path=None,
-                           on_save=lambda d: vistos.append(d))
+        V.start_background(lambda: list(universo), persist_path=None,
+                           on_save=lambda d: (vistos.append(d),
+                                              cortes.append(len(bajados)))[0])
         assert reloj.listo.wait(5), "el warmer no completo una pasada"
-        assert bajados == ["__TST__"], bajados
-        assert len(vistos) == 1 and isinstance(vistos[0], dict), vistos
+        assert bajados == universo, bajados[:5]
+        # dos guardados intermedios + el final, y los intermedios ocurren
+        # mientras todavia faltaban simbolos por bajar
+        assert cortes == [V.PERSIST_CADA, V.PERSIST_CADA * 2, len(universo)], cortes
+        assert all(isinstance(v, dict) for v in vistos)
     finally:
         reloj.parar.set()
+        V.time, V.fetch_into_cache = real_time, real_fetch
+
+
+def test_no_guarda_dos_veces_el_ultimo_tramo():
+    """Con un universo multiplo exacto de PERSIST_CADA el guardado final ya
+    ocurrio dentro del loop: repetirlo es un upsert de mas por pasada."""
+    import threading
+    import valuation as V
+    cortes, bajados = [], []
+
+    class _R:
+        def __init__(self):
+            self.listo = threading.Event()
+            self.parar = threading.Event()
+
+        def sleep(self, v):
+            if v >= V.SLEEP_VACIO_S:
+                self.listo.set()
+                self.parar.wait(5)
+
+        def time(self):
+            return 0.0
+
+    r = _R()
+    real_time, real_fetch = V.time, V.fetch_into_cache
+    V.time = r
+    V.fetch_into_cache = lambda sym: bajados.append(sym)
+    try:
+        V.start_background(lambda: [f"__E{i}__" for i in range(V.PERSIST_CADA)],
+                           persist_path=None,
+                           on_save=lambda d: cortes.append(len(bajados)))
+        assert r.listo.wait(5)
+        assert cortes == [V.PERSIST_CADA], cortes
+    finally:
+        r.parar.set()
         V.time, V.fetch_into_cache = real_time, real_fetch

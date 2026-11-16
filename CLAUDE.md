@@ -1505,6 +1505,12 @@ invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
   sea **~5 minutos** para el universo — en ese rato el panel no está, y un panel que no aparece es
   indistinguible de uno roto, que fue exactamente como se reportó. Cada entrada guardada lleva su
   `ts`, así que el TTL de 7 días sigue valiendo y lo vencido se re-baja solo.
+  **Y se guarda DE A POCO, cada `PERSIST_CADA`=10 símbolos**: guardar sólo al terminar la pasada
+  no servía, porque la pasada son esos ~5 minutos y el contenedor se reinicia justo ahí (un
+  deploy), así que el guardado final casi nunca ocurría. Medido: después de dos deploys seguidos
+  el restore trajo **0 símbolos** y el panel arrancó frío igual — el síntoma que se quería
+  eliminar, intacto. Es la misma forma del bug que esta sección ya documenta: la defensa existía
+  y no llegaba a correr nunca.
   **OJO con medir esto**: las primeras lecturas después de un deploy dan ~20 s/símbolo y **no son
   el ritmo real** — son el arranque (la descarga del mapa de CIK de SEC) y, si se está pusheando
   seguido, reinicios de contenedor en el medio. Hay que tomar dos muestras separadas con el MISMO

@@ -561,6 +561,14 @@ def import_cache(data):
 SLEEP_OK_S = 600.0
 SLEEP_VACIO_S = 15.0
 
+# Cada cuantos simbolos se guarda lo que se lleva bajado. NO alcanza con
+# guardar al terminar la pasada: la pasada entera son ~5 minutos y en el cloud
+# el contenedor se reinicia justo ahi (un deploy), asi que el guardado final
+# casi nunca llegaba a ocurrir y Postgres quedaba vacio — medido: tras dos
+# deploys seguidos el restore trajo 0 simbolos y el panel arranco frio igual.
+# Guardar de a poco hace que un reinicio pierda como mucho estos pocos.
+PERSIST_CADA = 10
+
 
 def start_background(symbols_getter, persist_path=None, rate_s=0.6, on_save=None):
     """Thread que baja el EPS que falta, con rate-limit. El scan nunca espera:
@@ -583,10 +591,7 @@ def start_background(symbols_getter, persist_path=None, rate_s=0.6, on_save=None
                         h = _mem.get(s)
                         if not h or now - h["ts"] >= TTL_S:
                             pend.append(s)
-                for s in pend:
-                    fetch_into_cache(s)
-                    time.sleep(rate_s)
-                if pend:
+                def _flush():
                     save()
                     if on_save:
                         try:
@@ -594,6 +599,15 @@ def start_background(symbols_getter, persist_path=None, rate_s=0.6, on_save=None
                         except Exception as e:
                             print(f"[VAL] on_save: {type(e).__name__} {e}",
                                   flush=True)
+
+                for i, s in enumerate(pend, 1):
+                    fetch_into_cache(s)
+                    if i % PERSIST_CADA == 0:
+                        _flush()
+                    time.sleep(rate_s)
+                if pend:
+                    if len(pend) % PERSIST_CADA:
+                        _flush()
                     print(f"[VAL] EPS actualizado: {len(pend)} simbolos", flush=True)
             except Exception as e:
                 print(f"[VAL] loop: {type(e).__name__} {e}", flush=True)
