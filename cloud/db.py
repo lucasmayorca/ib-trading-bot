@@ -183,7 +183,10 @@ def get_app_cache(key):
         cur = conn.cursor()
         cur.execute("SELECT data FROM app_cache WHERE key = %s", (key,))
         row = cur.fetchone()
-        return row[0] if row else None
+        # El cursor es RealDictCursor: la fila es un DICT, asi que `row[0]`
+        # no es "la primera columna" sino `KeyError: 0`. Todo el resto del
+        # archivo indexa por nombre; esta era la unica que no.
+        return row["data"] if row else None
 
 
 def save_feedback(user_id, email, rating, category, message):

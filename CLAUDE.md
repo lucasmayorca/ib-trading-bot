@@ -1511,6 +1511,13 @@ invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
   el restore trajo **0 símbolos** y el panel arrancó frío igual — el síntoma que se quería
   eliminar, intacto. Es la misma forma del bug que esta sección ya documenta: la defensa existía
   y no llegaba a correr nunca.
+  **Y el restore fallaba por el LADO DE LA LECTURA**: `get_conn` usa
+  `cursor_factory=RealDictCursor`, así que cada fila es un **dict** y `row[0]` no es "la primera
+  columna" sino `KeyError: 0`. `get_app_cache` era la única lectura del archivo que indexaba por
+  número. El `try/except` del restore lo tragaba en un log que nadie mira, y desde afuera se veía
+  `restaurados: 0` — **idéntico a "no había nada guardado"**, así que se persiguió dos veces el
+  lado de la escritura antes de mirar el de la lectura. Hay test que recorre `cloud/db.py` con
+  `ast` y prohíbe cualquier índice entero sobre una fila.
   **OJO con medir esto**: las primeras lecturas después de un deploy dan ~20 s/símbolo y **no son
   el ritmo real** — son el arranque (la descarga del mapa de CIK de SEC) y, si se está pusheando
   seguido, reinicios de contenedor en el medio. Hay que tomar dos muestras separadas con el MISMO

@@ -2770,3 +2770,26 @@ def test_no_guarda_dos_veces_el_ultimo_tramo():
     finally:
         r.parar.set()
         V.time, V.fetch_into_cache = real_time, real_fetch
+
+
+def test_ninguna_lectura_de_la_db_indexa_la_fila_por_numero():
+    """`get_conn` usa `cursor_factory=RealDictCursor`: cada fila es un DICT,
+    asi que `row[0]` no es "la primera columna" sino `KeyError: 0`.
+
+    Costo real: `get_app_cache` indexaba por numero, el restore del cache de
+    EPS lanzaba, el `try/except` lo tragaba en un log que nadie ve, y desde
+    afuera se veia `restaurados: 0` — identico a "no habia nada guardado".
+    Perseguimos el lado de la ESCRITURA dos veces antes de mirar el de la
+    lectura. Todas las demas lecturas del archivo indexan por nombre."""
+    import ast
+    raiz = os.path.join(os.path.dirname(__file__), "..")
+    src = open(os.path.join(raiz, "cloud", "db.py")).read()
+    assert "RealDictCursor" in src, "si cambia el cursor, este test deja de aplicar"
+
+    malas = []
+    for n in ast.walk(ast.parse(src)):
+        # row[0] / cur.fetchone()[0] / fila[1] ... cualquier indice entero
+        if isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) \
+                and isinstance(n.slice.value, int):
+            malas.append(ast.get_source_segment(src, n))
+    assert not malas, f"filas indexadas por numero con RealDictCursor: {malas}"
