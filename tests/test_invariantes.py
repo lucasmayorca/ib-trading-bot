@@ -2619,3 +2619,28 @@ def test_el_estado_del_cache_de_EPS_se_puede_ver_desde_afuera():
     raiz = os.path.join(os.path.dirname(__file__), "..")
     cloud = open(os.path.join(raiz, "cloud", "server.py")).read()
     assert '"valuation": valuation.cache_state()' in cloud
+
+
+def test_la_inyeccion_del_cloud_sigue_encontrando_sus_anclas():
+    """`_inject_cloud_setup_tab` empalma el tab "Conectar TWS" y el de feedback
+    dentro del MISMO `DASHBOARD_HTML` del local, por `.replace()` sobre anclas
+    literales. CLAUDE.md ya lo marca como gotcha: un ancla obsoleta es un
+    no-op SILENCIOSO (ya pasó una vez — el commit del Pulso movió una línea de
+    `switchTab` y el tab dejó de inicializarse). Cada edición del template
+    puede romperlo y el local no se entera.
+
+    Corre la inyección de verdad, extrayendo las funciones del archivo sin
+    importar `cloud/server.py` (que necesita Postgres)."""
+    import ast
+    raiz = os.path.join(os.path.dirname(__file__), "..")
+    src = open(os.path.join(raiz, "cloud", "server.py")).read()
+    mod = ast.parse(src)
+    quiero = {"_replace_once", "_inject_cloud_setup_tab"}
+    trozos = [ast.get_source_segment(src, n) for n in mod.body
+              if isinstance(n, ast.FunctionDef) and n.name in quiero]
+    assert trozos, "no se encontro _inject_cloud_setup_tab"
+    ns = {}
+    exec("\n\n".join(trozos), ns)
+    out = ns["_inject_cloud_setup_tab"](vw.DASHBOARD_HTML)   # lanza si un ancla falta
+    assert len(out) > len(vw.DASHBOARD_HTML), "la inyeccion no agrego nada"
+    assert "Conectar TWS" in out
