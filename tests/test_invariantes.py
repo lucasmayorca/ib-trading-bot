@@ -2568,3 +2568,54 @@ def test_rec_y_cartera_llevan_el_panel_en_su_payload():
     assert cloud.count('"chart_pe": valuation.slice_panel(') == 1
     # y el fallback del JS lo pasa al stack
     assert "pe:rec.chart_pe||null" in vw.DASHBOARD_HTML
+
+
+def test_el_warmer_reintenta_rapido_si_el_universo_esta_vacio():
+    """En el cloud el thread arranca al IMPORTAR el modulo, antes de que
+    `_restore_stores` llene `user_data`: la primera pasada ve el universo
+    vacio. Con una sola espera de 10 minutos el panel de P/E no se estrenaba
+    hasta pasado ese rato despues de cada deploy — y un panel que no aparece
+    es indistinguible de uno roto. `enrichment.py` ya tenia este reintento
+    corto; este modulo no lo habia copiado."""
+    import threading
+    import valuation as V
+    assert V.SLEEP_VACIO_S <= 60 < V.SLEEP_OK_S
+
+    class _Reloj:
+        def __init__(self):
+            self.esperas = []
+            self.listo = threading.Event()
+            self.parar = threading.Event()
+
+        def sleep(self, v):
+            self.esperas.append(v)
+            if len(self.esperas) >= 2:
+                self.listo.set()
+                self.parar.wait(5)      # parkea el thread sin traceback
+
+        def time(self):
+            return 0.0
+
+    reloj, real = _Reloj(), V.time
+    V.time = reloj
+    try:
+        V.start_background(lambda: [], persist_path=None)
+        assert reloj.listo.wait(5), "el warmer no completo dos pasadas"
+        assert reloj.esperas == [V.SLEEP_VACIO_S] * len(reloj.esperas), reloj.esperas
+    finally:
+        reloj.parar.set()
+        V.time = real
+
+
+def test_el_estado_del_cache_de_EPS_se_puede_ver_desde_afuera():
+    """`/health` no pide login, asi que contesta "el panel no aparece: ¿esta
+    frio el cache o esta roto?" sin credenciales. Ya costo tiempo dos veces no
+    poder distinguirlo."""
+    import valuation as V
+    st = V.cache_state()
+    assert set(st) == {"simbolos", "con_eps"}
+    assert isinstance(st["simbolos"], int) and isinstance(st["con_eps"], int)
+    assert st["con_eps"] <= st["simbolos"]
+    raiz = os.path.join(os.path.dirname(__file__), "..")
+    cloud = open(os.path.join(raiz, "cloud", "server.py")).read()
+    assert '"valuation": valuation.cache_state()' in cloud

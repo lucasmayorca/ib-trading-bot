@@ -1498,6 +1498,14 @@ invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
   ohlc recortado dibuja fechas viejas sobre fechas nuevas. Las bandas y los percentiles **no** se
   recortan: describen la historia completa, que es contra lo que se mide "caro" (misma regla que
   los cuartiles de la concentración).
+- **El warmer reintenta a los 15 s mientras el universo esté vacío** (`SLEEP_VACIO_S`). En el
+  cloud el thread arranca al **importar** el módulo, antes de que `_restore_stores` llene
+  `user_data`: la primera pasada ve la lista vacía, y con una sola espera de 10 minutos el panel
+  no se estrenaba hasta pasado ese rato **después de cada deploy** — y un panel que no aparece es
+  indistinguible de uno roto. `enrichment.py` ya tenía este reintento corto ("universo todavía
+  vacío (boot)"); este módulo no lo había copiado. `/health` publica `valuation:
+  {simbolos, con_eps}` **sin login**, para poder contestar desde afuera "¿está frío el caché o
+  está roto?" — la pregunta que ya costó tiempo dos veces.
 - **El adjunto se REINTENTA al servir** (`valuation.ensure_pe` en `universe_items`). `attach_pe`
   corre al INGERIR, que es un instante: si ahí el EPS no estaba bajado, ese análisis se queda sin
   panel hasta el próximo lote del bridge — una hora por el gate horario, o **nunca** si el bridge

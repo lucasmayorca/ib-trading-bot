@@ -1247,6 +1247,11 @@ def health():
         "server_mode": socketio.server.async_mode if hasattr(socketio, 'server') else "unknown",
         "commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")[:7],
         "features": {"patterns": True, "candles": True},
+        # Sin disco, el cache de EPS se rehace en cada deploy y el panel de
+        # P/E no se estrena hasta que el warmer alcanza al simbolo. Publicarlo
+        # aca (sin login) permite distinguir "esta frio" de "esta roto" desde
+        # afuera, que es la pregunta que ya costo tiempo dos veces.
+        "valuation": valuation.cache_state(),
     })
 
 

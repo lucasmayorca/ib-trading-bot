@@ -533,6 +533,17 @@ def save():
         print(f"[VAL] no se pudo persistir: {e}", flush=True)
 
 
+# Espera entre pasadas. La corta es para el ARRANQUE: en el cloud el thread
+# arranca al importar el modulo, antes de que `_restore_stores` llene
+# `user_data`, asi que la primera pasada se encuentra el universo VACIO. Con
+# una sola espera de 10 minutos eso dejaba el panel de P/E sin estrenar
+# durante ese rato entero despues de cada deploy — y un panel que no aparece
+# es indistinguible de uno roto. `enrichment.py` ya tenia este mismo reintento
+# corto ("universo todavia vacio (boot)"); este modulo no lo habia copiado.
+SLEEP_OK_S = 600.0
+SLEEP_VACIO_S = 15.0
+
+
 def start_background(symbols_getter, persist_path=None, rate_s=0.6):
     """Thread que baja el EPS que falta, con rate-limit. El scan nunca espera:
     hasta que el simbolo este en cache, `attach_pe` no adjunta nada y el panel
@@ -542,8 +553,11 @@ def start_background(symbols_getter, persist_path=None, rate_s=0.6):
 
     def _loop():
         while True:
+            espera = SLEEP_OK_S
             try:
                 syms = list(symbols_getter() or [])
+                if not syms:
+                    espera = SLEEP_VACIO_S
                 now = time.time()
                 pend = []
                 with _lock:
@@ -559,6 +573,16 @@ def start_background(symbols_getter, persist_path=None, rate_s=0.6):
                     print(f"[VAL] EPS actualizado: {len(pend)} simbolos", flush=True)
             except Exception as e:
                 print(f"[VAL] loop: {type(e).__name__} {e}", flush=True)
-            time.sleep(600)
+            time.sleep(espera)
 
     threading.Thread(target=_loop, daemon=True).start()
+
+
+def cache_state():
+    """Cuantos simbolos tienen EPS bajado. Lo publica `/health` (sin login)
+    para poder contestar desde afuera "el panel no aparece: ¿esta frio el
+    cache o esta roto?" — una pregunta que ya costo tiempo dos veces."""
+    with _lock:
+        total = len(_mem)
+        con = sum(1 for v in _mem.values() if v.get("pts"))
+    return {"simbolos": total, "con_eps": con}
