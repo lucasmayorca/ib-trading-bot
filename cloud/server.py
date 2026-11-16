@@ -2814,14 +2814,34 @@ def _valuation_symbols():
     return syms
 
 
+def _valuation_restore():
+    """El EPS se guarda en Postgres, NO en disco: el filesystem de Railway es
+    efimero y sin esto el cache se rehace entero en cada deploy. Medido en
+    produccion: el warmer tarda del orden de media hora en recorrer el
+    universo (cada simbolo son varias requests a SEC y a yfinance), y durante
+    ese rato el panel de P/E simplemente no esta — desde la pantalla es
+    indistinguible de estar roto, que fue exactamente como se reporto.
+    Cada entrada guardada trae su `ts`, asi que el TTL de 7 dias sigue
+    valiendo y lo vencido se vuelve a bajar solo."""
+    try:
+        valuation.import_cache(db.get_app_cache("valuation_eps") or {})
+    except Exception as e:
+        print(f"[SERVER] valuation restore: {type(e).__name__} {e}", flush=True)
+
+
+def _valuation_persist(data):
+    try:
+        db.save_app_cache("valuation_eps", json.dumps(data))
+    except Exception as e:
+        print(f"[SERVER] valuation persist: {type(e).__name__} {e}", flush=True)
+
+
 try:
     # Sin persist_path: el filesystem de Railway es efimero, se rellena solo.
     enrichment.start_background(_enrichment_symbols)
-    # EPS para el panel de P/E. Sin disco (Railway efimero), asi que el cache
-    # se rehace en cada arranque — el panel aparece cuando el warmer alcanza
-    # cada simbolo, igual que los datos de Wall Street.
-    import valuation
-    valuation.start_background(_valuation_symbols)
+    # EPS para el panel de P/E: se restaura de Postgres y se persiste ahi.
+    _valuation_restore()
+    valuation.start_background(_valuation_symbols, on_save=_valuation_persist)
     print("[SERVER] Enrichment threads started")
 except Exception as e:
     print(f"[SERVER] WARNING: enrichment no arranco: {e}")

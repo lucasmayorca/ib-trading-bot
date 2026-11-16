@@ -1498,6 +1498,13 @@ invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
   ohlc recortado dibuja fechas viejas sobre fechas nuevas. Las bandas y los percentiles **no** se
   recortan: describen la historia completa, que es contra lo que se mide "caro" (misma regla que
   los cuartiles de la concentración).
+- **EL CACHÉ DE EPS SE PERSISTE EN POSTGRES, no en disco** (`app_cache`, clave `valuation_eps`;
+  `valuation.export_cache`/`import_cache` + `on_save` del warmer). Railway no tiene disco, así que
+  sin esto se rehacía entero **en cada deploy** — y rehacerlo no es rápido: medido en producción,
+  el warmer avanza a **~20 s por símbolo** (cada uno son varias requests a SEC y a yfinance; local
+  tarda 2-8 s), o sea **~media hora** para el universo. En ese rato el panel no está, y un panel
+  que no aparece es indistinguible de uno roto — fue exactamente así como se reportó. Cada entrada
+  guardada lleva su `ts`, así que el TTL de 7 días sigue valiendo y lo vencido se re-baja solo.
 - **El warmer reintenta a los 15 s mientras el universo esté vacío** (`SLEEP_VACIO_S`). En el
   cloud el thread arranca al **importar** el módulo, antes de que `_restore_stores` llene
   `user_data`: la primera pasada ve la lista vacía, y con una sola espera de 10 minutos el panel

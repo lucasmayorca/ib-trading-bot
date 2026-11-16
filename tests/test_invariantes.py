@@ -2644,3 +2644,77 @@ def test_la_inyeccion_del_cloud_sigue_encontrando_sus_anclas():
     out = ns["_inject_cloud_setup_tab"](vw.DASHBOARD_HTML)   # lanza si un ancla falta
     assert len(out) > len(vw.DASHBOARD_HTML), "la inyeccion no agrego nada"
     assert "Conectar TWS" in out
+
+
+def test_el_cache_de_EPS_viaja_entero_y_conserva_su_ts():
+    """El `ts` tiene que viajar: es lo que hace que el TTL de 7 dias siga
+    valiendo despues de restaurar. Sin el, o se re-baja todo (y no sirvio de
+    nada) o no se re-baja nunca."""
+    import valuation as V
+    guardado = dict(V._mem)
+    try:
+        V._mem.clear()
+        V._mem["ZZZ"] = {"ts": 12345.0, "src": "sec", "pts": [["2020-01-01", 2.5]]}
+        blob = V.export_cache()
+        assert blob["ZZZ"]["ts"] == 12345.0
+        V._mem.clear()
+        assert V.import_cache(blob) == 1
+        assert V._mem["ZZZ"]["ts"] == 12345.0
+        # basura: se ignora, no rompe ni entra
+        assert V.import_cache({"A": "texto", "B": {"sin": "ts"}}) == 0
+        assert V.import_cache(None) == 0
+    finally:
+        V._mem.clear()
+        V._mem.update(guardado)
+
+
+def test_el_cache_de_EPS_sobrevive_al_deploy():
+    """Railway no tiene disco, asi que sin persistir en Postgres el cache se
+    rehace entero en cada deploy. Medido en produccion: el warmer avanza a
+    ~20 s por simbolo (cada uno son varias requests a SEC y a yfinance), o sea
+    ~media hora para el universo — y en ese rato el panel de P/E no esta, que
+    desde la pantalla es indistinguible de estar roto."""
+    raiz = os.path.join(os.path.dirname(__file__), "..")
+    dbsrc = open(os.path.join(raiz, "cloud", "db.py")).read()
+    assert "CREATE TABLE IF NOT EXISTS app_cache" in dbsrc
+    assert "def save_app_cache" in dbsrc and "def get_app_cache" in dbsrc
+    srv = open(os.path.join(raiz, "cloud", "server.py")).read()
+    assert "_valuation_restore()" in srv
+    assert "on_save=_valuation_persist" in srv
+    assert 'db.get_app_cache("valuation_eps")' in srv
+    assert 'db.save_app_cache("valuation_eps"' in srv
+
+
+def test_el_warmer_avisa_cuando_hay_algo_nuevo_que_guardar():
+    import threading
+    import valuation as V
+    vistos, bajados = [], []
+
+    class _Reloj:
+        def __init__(self):
+            self.n = 0
+            self.listo = threading.Event()
+            self.parar = threading.Event()
+
+        def sleep(self, v):
+            self.n += 1
+            if self.n >= 2:
+                self.listo.set()
+                self.parar.wait(5)
+
+        def time(self):
+            return 0.0
+
+    reloj = _Reloj()
+    real_time, real_fetch = V.time, V.fetch_into_cache
+    V.time = reloj
+    V.fetch_into_cache = lambda sym: bajados.append(sym)
+    try:
+        V.start_background(lambda: ["__TST__"], persist_path=None,
+                           on_save=lambda d: vistos.append(d))
+        assert reloj.listo.wait(5), "el warmer no completo una pasada"
+        assert bajados == ["__TST__"], bajados
+        assert len(vistos) == 1 and isinstance(vistos[0], dict), vistos
+    finally:
+        reloj.parar.set()
+        V.time, V.fetch_into_cache = real_time, real_fetch

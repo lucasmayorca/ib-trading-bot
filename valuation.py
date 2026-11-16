@@ -533,6 +533,24 @@ def save():
         print(f"[VAL] no se pudo persistir: {e}", flush=True)
 
 
+def export_cache():
+    """Copia del cache, para persistirlo donde no hay disco (el cloud)."""
+    with _lock:
+        return dict(_mem)
+
+
+def import_cache(data):
+    """Repuebla el cache desde un blob guardado. Cada entrada trae su `ts`,
+    asi que el TTL sigue valiendo y lo vencido se vuelve a bajar solo."""
+    if not isinstance(data, dict):
+        return 0
+    bueno = {k: v for k, v in data.items() if isinstance(v, dict) and "ts" in v}
+    with _lock:
+        _mem.update(bueno)
+    print(f"[VAL] cache restaurado: {len(bueno)} simbolos", flush=True)
+    return len(bueno)
+
+
 # Espera entre pasadas. La corta es para el ARRANQUE: en el cloud el thread
 # arranca al importar el modulo, antes de que `_restore_stores` llene
 # `user_data`, asi que la primera pasada se encuentra el universo VACIO. Con
@@ -544,7 +562,7 @@ SLEEP_OK_S = 600.0
 SLEEP_VACIO_S = 15.0
 
 
-def start_background(symbols_getter, persist_path=None, rate_s=0.6):
+def start_background(symbols_getter, persist_path=None, rate_s=0.6, on_save=None):
     """Thread que baja el EPS que falta, con rate-limit. El scan nunca espera:
     hasta que el simbolo este en cache, `attach_pe` no adjunta nada y el panel
     simplemente no aparece."""
@@ -570,6 +588,12 @@ def start_background(symbols_getter, persist_path=None, rate_s=0.6):
                     time.sleep(rate_s)
                 if pend:
                     save()
+                    if on_save:
+                        try:
+                            on_save(export_cache())
+                        except Exception as e:
+                            print(f"[VAL] on_save: {type(e).__name__} {e}",
+                                  flush=True)
                     print(f"[VAL] EPS actualizado: {len(pend)} simbolos", flush=True)
             except Exception as e:
                 print(f"[VAL] loop: {type(e).__name__} {e}", flush=True)

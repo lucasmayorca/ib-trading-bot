@@ -60,6 +60,18 @@ def init_db():
             )
         """)
 
+        # Cache GLOBAL (no por usuario). Hoy: el EPS que alimenta el panel de
+        # P/E. Sin esto el filesystem efimero de Railway lo borra en cada
+        # deploy y el panel tarda ~media hora en volver, que desde la pantalla
+        # es indistinguible de estar roto.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_cache (
+                key        TEXT PRIMARY KEY,
+                data       JSONB NOT NULL,
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+
         # User feedback / platform rating. Collected from the "Tu Opinion" tab
         # so we can gather improvement ideas and satisfaction from real users.
         cur.execute("""
@@ -149,6 +161,29 @@ def save_user_store(user_id, data_json):
             """,
             (user_id, data_json),
         )
+
+
+def save_app_cache(key, data_json):
+    """Upsert de un blob global. `data_json` es un string JSON ya limpio."""
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO app_cache (key, data, updated_at)
+            VALUES (%s, %s::jsonb, NOW())
+            ON CONFLICT (key)
+            DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
+            """,
+            (key, data_json),
+        )
+
+
+def get_app_cache(key):
+    with db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT data FROM app_cache WHERE key = %s", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
 def save_feedback(user_id, email, rating, category, message):
