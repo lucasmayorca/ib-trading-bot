@@ -2249,3 +2249,105 @@ def test_analyze_symbol_sigue_devolviendo_analisis_con_y_sin_simbolo():
     for arg in ((), ("__SIN_CACHE__",)):
         out = vw.analyze_symbol(df.copy(), *arg)
         assert isinstance(out, dict) and out.get("signal_label"), (arg, out)
+
+
+# ── 21. EPS desde SEC EDGAR: tres trampas que no son opcionales ──────
+# Pedido: "revisa como podes obtener los pasados, tal como hiciste con los ETF
+# y el SPY". La respuesta no estaba en yfinance sino en la fuente: EDGAR
+# publica cada EPS reportado con su fecha de presentacion, ~18 años.
+
+def test_dedup_por_PRIMERA_publicacion_no_por_la_ultima():
+    """El mismo trimestre aparece muchas veces (el 10-K repite los del año, una
+    reexpresion lo vuelve a publicar): AAPL trae 341 registros para 73
+    trimestres. Hay que quedarse con el `filed` MAS VIEJO — es cuando el numero
+    se SUPO. Con el mas nuevo, la serie usaria cifras reexpresadas años
+    despues: lookahead puro."""
+    import valuation as V
+    rows = [
+        {"start": "2024-01-01", "end": "2024-03-31", "val": 1.0, "filed": "2024-05-01"},
+        {"start": "2024-01-01", "end": "2024-03-31", "val": 1.1, "filed": "2025-02-01"},
+        {"start": "2024-04-01", "end": "2024-06-30", "val": 2.0, "filed": "2024-08-01"},
+    ]
+    got = V._primera_publicacion(rows, 80, 100)
+    assert len(got) == 2
+    assert got[("2024-01-01", "2024-03-31")]["val"] == 1.0, "gano la reexpresion"
+    assert got[("2024-01-01", "2024-03-31")]["filed"] == "2024-05-01"
+
+
+def test_solo_entran_periodos_de_la_duracion_pedida():
+    """Un anual (365d) colandose entre los trimestres inflaria el TTM."""
+    import valuation as V
+    rows = [
+        {"start": "2024-01-01", "end": "2024-03-31", "val": 1.0, "filed": "2024-05-01"},
+        {"start": "2024-01-01", "end": "2024-12-31", "val": 4.0, "filed": "2025-02-01"},
+    ]
+    assert len(V._primera_publicacion(rows, 80, 100)) == 1
+    assert len(V._primera_publicacion(rows, 350, 380)) == 1
+
+
+def test_el_factor_de_split_solo_cuenta_los_POSTERIORES():
+    """EDGAR publica el EPS en acciones DE LA EPOCA y los cierres del chart
+    vienen ajustados. El Q3-2008 de AAPL figura en 1.19 y hoy equivale a
+    0.0425: 28x, por el 7:1 de 2014 y el 4:1 de 2020. Un split ANTERIOR al
+    periodo no corrige nada — ya estaba en el numero reportado."""
+    import pandas as pd
+    import valuation as V
+    sp = pd.Series([7.0, 4.0],
+                   index=pd.to_datetime(["2014-06-09", "2020-08-31"]))
+    assert V._factor_split(sp, "2008-06-28") == 28.0
+    assert V._factor_split(sp, "2016-01-01") == 4.0
+    assert V._factor_split(sp, "2025-01-01") == 1.0
+    assert V._factor_split(None, "2008-06-28") == 1.0
+
+
+def test_el_ttm_rige_desde_que_se_publico_el_ultimo_trimestre():
+    """La fecha efectiva es el `filed` REAL del cuarto trimestre, no el cierre
+    del periodo: por SEC el lag deja de ser un supuesto."""
+    import valuation as V
+    q = [("2024-03-31", 1.0, "2024-05-01"), ("2024-06-30", 1.0, "2024-08-01"),
+         ("2024-09-30", 1.0, "2024-11-01"), ("2024-12-31", 1.0, "2025-02-15")]
+    orig = V._sec_quarters
+    try:
+        V._sec_quarters = lambda s: q
+        V.SEC_MIN_TRIM, guardado = 4, V.SEC_MIN_TRIM
+        pts = V._eps_from_sec("X", None)
+    finally:
+        V._sec_quarters = orig
+        V.SEC_MIN_TRIM = guardado
+    assert pts == [("2025-02-15", 4.0)], pts
+
+
+def test_la_guarda_rechaza_una_serie_que_no_cierra_contra_la_fuente():
+    """Caso REAL: por SEC, BRK B da un TTM de 11.849 contra un trailingEps de
+    35.73 — es el EPS de la clase A, que vale ~1500x la B. Sin la guarda el
+    panel habria dibujado un P/E de 0.05 en silencio: exactamente "un numero
+    equivocado que se ve bien". Sin referencia (yfinance no informa
+    trailingEps con EPS negativo) no se puede validar NI invalidar: se acepta,
+    y el panel ya trata el EPS negativo como hueco."""
+    import valuation as V
+    assert V._valida([("2026-01-01", 35.9)], 35.73) is True
+    assert V._valida([("2026-01-01", 11849.0)], 35.73) is False
+    assert V._valida([("2026-01-01", 8.0)], None) is True      # sin referencia
+    assert V._valida([], 10.0) is False                        # sin serie
+
+
+def test_el_pe_muestra_su_percentil_contra_DOS_ventanas():
+    """Con 16 años de historia, un percentil contra todo mide en parte "en que
+    año estamos": las valuaciones subieron, asi que casi todo cae en el cuarto
+    alto contra 2010-2015. Es el mismo defecto que la concentracion ya
+    documenta para su ventana de 5A, y la respuesta es la misma: mostrar mas de
+    una. Con historia corta no hay dos ventanas distintas y se muestra una
+    sola, no dos iguales."""
+    import valuation as V
+    n = 2600                                    # ~10 años
+    dates = [f"{2016 + i // 252}-{(i % 252) // 21 + 1:02d}-{(i % 21) + 1:02d}"
+             for i in range(n)]
+    closes = [50.0 + i * 0.05 for i in range(n)]   # precio subiendo => P/E subiendo
+    pan = V.pe_panel(dates, closes, [("2015-01-01", 5.0)])
+    assert pan is not None
+    vent = [q["ventana"] for q in pan["pcts"]]
+    assert vent == ["5A", pan["ventana"]], vent
+    assert pan["pcts"][0]["ruedas"] == 1260
+    # con la serie corta, una sola
+    corto = V.pe_panel(dates[:400], closes[:400], [("2015-01-01", 5.0)])
+    assert [q["ventana"] for q in corto["pcts"]] == [corto["ventana"]]

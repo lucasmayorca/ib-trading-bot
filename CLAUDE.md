@@ -1332,9 +1332,44 @@ Mercado, que documenta los tres hechos medidos): una **acción reporta EPS**, as
 **tiene serie propia** — y sin serie no hay percentil, y sin percentil "27x" no dice si está caro.
 Un ETF de índice no publica EPS en yfinance y su `trailingPE` es un escalar.
 
-- **Reconstrucción**: `TTM EPS` = anual (4-5 ejercicios de `income_stmt`) **refinado en el tramo
-  reciente** por la suma de los 4 trimestres de `quarterly_income_stmt`. El P/E es
-  `cierre / TTM EPS` sobre el mismo array de cierres que ya viaja en el chart.
+### De dónde sale el EPS (2026-11, pedido: *"revisá cómo podés obtener los pasados, tal como hiciste con los ETF y el SPY"*)
+La primera versión se conformó con lo que daba yfinance (4-5 ejercicios ⇒ ~3.5 años de P/E). La
+pregunta correcta no era *"qué me da yfinance"* sino *"de dónde sale el dato"* — igual que con
+SPY/RSP, donde la historia estaba en la serie de precios y no en el campo que yfinance exponía.
+
+**Fuente primaria: SEC EDGAR XBRL** (`data.sec.gov`, gratis, sin API key). Da **~16-18 años** de
+EPS trimestral y, mejor aún, la **fecha de presentación real** (`filed`) — el lag deja de ser un
+supuesto. Medido: AAPL/NVDA/JPM pasan de ~6 puntos TTM a **64-67, arrancando en 2010**, con 0.0%
+de error contra el `trailingEps` de yfinance. **Tres cosas que hay que hacerle y no son
+opcionales** (cada una tiene test en §21):
+1. **Dedup por PRIMERA publicación.** El mismo trimestre aparece muchas veces (el 10-K repite los
+   del año; una reexpresión lo vuelve a publicar): AAPL trae **341 registros para 73 trimestres**.
+   Se toma el `filed` más viejo — es cuando el número se supo. Con el más nuevo se usarían cifras
+   reexpresadas años después: lookahead puro.
+2. **Q4 DERIVADO.** Nadie presenta un 10-Q del cuarto trimestre: va dentro del 10-K como anual.
+   Sin derivarlo (`anual − los 3 trimestres`) el TTM queda corrido un trimestre — medido, **6-9%
+   bajo** (AAPL 8.44 contra un trailing real de 8.98).
+3. **AJUSTE POR SPLIT, A MANO.** EDGAR publica el EPS **en acciones de la época**; los cierres del
+   chart vienen ajustados. El Q3-2008 de AAPL figura en **1.19** y hoy equivale a **0.0425** —
+   **28×**, por el 7:1 de 2014 y el 4:1 de 2020. Es justo la trampa que yfinance tapaba (su EPS ya
+   viene ajustado) y que esta fuente deja al descubierto.
+
+**Respaldo: yfinance** (el camino viejo) para los emisores sin historia en XBRL — medido: **XOM
+publica 4 trimestres y ningún anual** bajo cualquier tag de EPS, y tampoco tiene `NetIncomeLoss`
+histórico. No se persiguen tags por empresa: si SEC trae menos de `SEC_MIN_TRIM` trimestres, se
+cae a yfinance.
+
+**GUARDA EN LOS DOS CAMINOS** (`_valida`): el TTM reconstruido se compara contra el `trailingEps`
+de yfinance y, si no cierra dentro de `VALID_TOL_PCT`, **la serie no se publica**. La validación
+que al principio se hizo a mano corre ahora en runtime, y **ya se ganó el lugar**: por SEC,
+**BRK B** da un TTM de **11.849** contra un `trailingEps` de 35.73 — es el EPS de la **clase A**,
+que vale ~1500× la B. Sin la guarda el panel habría dibujado un P/E de **0.05** en silencio. Como
+yfinance tampoco valida ahí (13% de desvío), BRK B queda sin panel: es la respuesta correcta.
+Sin referencia (yfinance no informa `trailingEps` con EPS negativo) no se puede validar ni
+invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
+
+- **Reconstrucción**: `TTM EPS` = suma de los 4 trimestres (con el Q4 derivado), ajustada por
+  split. El P/E es `cierre / TTM EPS` sobre el mismo array de cierres que ya viaja en el chart.
 - **Validación**: medido contra el `trailingPE` del propio yfinance sobre 20 acciones, **17
   cierran con 0.0–1.1% de error**. Los 3 que no (MRNA, INTC, F) tienen **EPS negativo** y por lo
   tanto no tienen P/E — yfinance tampoco reporta uno. Es la vara de que la reconstrucción es
@@ -1376,48 +1411,38 @@ Un ETF de índice no publica EPS en yfinance y su `trailingPE` es un escalar.
   lo va llenando y persiste en `valuation_cache.json` (local; el cloud lo rehace en cada arranque,
   igual que los datos de Wall Street). En el cloud sólo se piden **acciones**
   (`_valuation_symbols`): pedir EPS de 113 ETFs es gastar requests por nada.
-- **NO entra en el score ni en el veredicto**, y eso ya está MEDIDO (`tools/medir_pe.py`, 99
-  acciones, 35.013 entradas: señal 3/3 y baseline incondicional cada 5 ruedas, mismo motor de
-  ejecución intradía del backtest). El resultado no es "no hay edge" — es **"con estos datos no
-  se puede ver, y hay una razón estructural"**:
-  - **EL P/E ES CASI UNA REFORMULACIÓN DE LA PROPIA SEÑAL.** Percentil propio de P/E en el momento
-    de entrar:
-
-    | población | n | p≤30 | p≥70 | media |
-    |---|---|---|---|---|
-    | SEÑAL compra 3/3 | 205 | **64.4%** | 9.8% | **23.3** |
-    | SEÑAL venta 3/3 | 503 | 11.1% | **64.0%** | **75.2** |
-    | BASE incondicional | 14.720 | 33.9% | 38.2% | 51.9 |
-
-    La compra está **1.90×** sobre-representada en el cuartil barato y **0.26×** en el caro (la
-    venta es el espejo exacto). Tiene sentido mecánico: el setup pide **RSI<30**, o sea que el
-    precio ya cayó — y un precio que cayó es, casi por construcción, un P/E bajo para su propia
-    historia. **El panel le dice algo a una persona (cuán extremo, y contra qué historia), pero
-    aporta poco ORTOGONAL a lo que el score ya mide con el RSI.**
-  - **Consecuencia directa: el contraste no es testeable del lado COMPRADOR.** De 205 señales de
-    compra, sólo **20** caen en el tercio caro: no hay variación suficiente dentro de la población
-    de señal. Es el mismo confound estructural que CLAUDE.md ya documenta para el lado vendedor
-    contra la SMA200 ("precio < SMA200 sólo ocurre en 78 de 2.738 señales — por construcción").
-  - **Lado VENDEDOR** (n=503): barato−caro **+1.20 pp**, t ingenuo +1.65 pero
-    **p(permutación)=0.78**, y **MDE 1.85 pp** — el test sólo podía detectar efectos mayores que
-    eso. Nada.
-  - **Lo único nominalmente significativo está en el BASELINE, no en la señal**: shortear
-    incondicionalmente lo barato-para-sí-mismo rinde +0.23 pp más que lo caro (t=2.39,
-    p(perm)=0.025), y transversalmente (barato vs caro **del universo**) el largo incondicional
-    rinde +0.18 pp (p(perm)=0.065, el *value tilt* clásico). Las dos son propiedades del MERCADO,
-    no interacciones con la señal, y el bot **no shortea**.
-  - **LÍMITE DE DATOS, declarado**: `income_stmt` de yfinance da 4-5 ejercicios, así que la serie
-    de P/E arranca en 2023 y el percentil propio necesita además calentamiento ⇒ la ventana útil
-    es de **~2.5 años**, no de 10. Un nulo acá **no refuta** nada; el reporte imprime n y MDE
-    justamente para que no se lea como refutación.
-  - **INFERENCIA**: el P/E es por símbolo, así que **no** cae en "la trampa del n" de las
-    variables macro. Pero los trades del mismo día siguen compartiendo el movimiento del mercado,
-    así que además del t se permuta **el percentil ENTRE SÍMBOLOS dentro de cada fecha**: preserva
-    la estructura temporal y la distribución marginal, y destruye sólo el vínculo
-    símbolo-valuación — el null correcto para "la valuación PROPIA informa, más allá de qué día
-    es". En el lado vendedor el t de 1.65 se cae a p=0.78 con esa permutación.
-  - **Qué lo destrabaría**: más historia de EPS (no la da yfinance gratis) o acumularla desde hoy,
-    el mismo patrón que ya está anotado para el P/E del índice.
+- **Alcance**: con SEC son **~15 años** de historia de P/E (mediana del universo: 15.2 años, 88 de
+  100 acciones por SEC, 10 por yfinance, 2 sin panel). Antes eran 3.5.
+- **DOS VENTANAS en el header** (`pcts`), por la misma razón que la concentración muestra tres:
+  un percentil contra 15 años mide en parte *"en qué año estamos"* — las valuaciones subieron, así
+  que casi todo cae en el cuarto alto contra 2010-2015. La de **5A** dice si está caro para el
+  régimen de hoy. Caso real que lo justifica: **KO = 5A p95 / 10A p65** — cerca de su techo del
+  último lustro, apenas sobre su mediana de la década. Las **bandas dibujadas salen de la historia
+  completa** (es la que se dibuja); con historia corta se muestra una sola ventana, no dos iguales.
+- **NO entra en el score ni en el veredicto**, y con la historia larga eso pasó de *"no se puede
+  medir"* a **un nulo con potencia real** (`tools/medir_pe.py`, 97 acciones, **74.407 entradas**,
+  ventana **2017-11 → 2026-11**; antes 35.013 entradas y 2.5 años):
+  - **Baseline largo: n=35.775, MDE 0.18 pp ⇒ +0.07 pp (p(perm)=0.807).** Los cinco buckets son
+    planos (0.446 / 0.359 / 0.424 / 0.386 / 0.357). Esto **no** es "no lo vimos": con esa muestra,
+    si hubiera un efecto mayor a ~0.2 pp se habría visto. El percentil propio de P/E **no predice
+    el retorno incondicional**.
+  - **Señal de compra (n=394, antes 205)**: barato−caro **−0.46 pp, p(perm)=0.364** — y con el
+    signo al revés de la intuición. **Señal de venta (n=1.200)**: +0.77 pp, t=1.86 pero
+    **p(perm)=0.131**. Ninguna significativa; los buckets no son monótonos.
+  - **La interacción** (lo único que justificaría tocar el score) da **−0.53 pp comprando y +0.80
+    vendiendo**: signos opuestos, ninguno significativo. Ruido.
+  - **UNA LECCIÓN DE LA RE-MEDICIÓN**: con la muestra corta, el *value tilt* transversal daba
+    **+0.18 pp (p=0.065)** y parecía estar al borde de significar algo. Con 3× los datos quedó en
+    **−0.04 pp (p=0.546)**. Era ruido. Es el mismo final que tuvo el t=+7.89 de la concentración
+    bajo el test de rotación: **un borderline con muestra chica no es una señal incipiente**.
+  - **El P/E sigue siendo parcialmente redundante con el RSI** que el sistema ya usa: la señal de
+    compra se concentra en el lado barato (55% en p≤30) y la de venta en el caro, porque el setup
+    pide RSI<30 / RSI>70 y un precio que ya se movió arrastra al P/E. Con la historia larga el
+    contraste **sí** es testeable (59 compras en el tercio caro, antes 20) — y no muestra nada.
+  - **Inferencia**: el P/E es por símbolo, así que **no** cae en "la trampa del n" de las variables
+    macro. Pero los trades del mismo día comparten el movimiento del mercado, así que además del t
+    se permuta **el percentil ENTRE SÍMBOLOS dentro de cada fecha**: preserva la estructura
+    temporal y la distribución marginal, y destruye sólo el vínculo símbolo-valuación.
 - ⚠ **No requiere reinstalar el bridge**: todo es server-side sobre el chart que ya viaja
   (`attach_pe` se llama en `analyze_symbol` local y en los 3 puntos del cloud donde ya se adjuntan
   las figuras). Tests: `tests/test_invariantes.py` §20.
