@@ -2620,7 +2620,7 @@ def test_el_estado_del_cache_de_EPS_se_puede_ver_desde_afuera():
     assert st["con_eps"] <= st["simbolos"]
     raiz = os.path.join(os.path.dirname(__file__), "..")
     cloud = open(os.path.join(raiz, "cloud", "server.py")).read()
-    assert '"valuation": valuation.cache_state()' in cloud
+    assert '"valuation": dict(valuation.cache_state(),' in cloud
 
 
 def test_la_inyeccion_del_cloud_sigue_encontrando_sus_anclas():
