@@ -2685,6 +2685,11 @@ def test_el_cache_de_EPS_sobrevive_al_deploy():
     assert "on_save=_valuation_persist" in srv
     assert 'db.get_app_cache("valuation_eps")' in srv
     assert 'db.save_app_cache("valuation_eps"' in srv
+    # /health dice CUANTOS trajo el restore: sin ese numero la persistencia se
+    # puede dar por funcionando sin estarlo, que fue justo lo que paso con la
+    # primera version (guardaba solo al terminar la pasada y nunca llegaba).
+    assert "restaurados=_valuation_restaurados" in srv
+    assert "_valuation_restaurados = valuation.import_cache(" in srv
 
 
 def test_el_warmer_guarda_DE_A_POCO_no_solo_al_final():

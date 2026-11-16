@@ -1251,7 +1251,8 @@ def health():
         # P/E no se estrena hasta que el warmer alcanza al simbolo. Publicarlo
         # aca (sin login) permite distinguir "esta frio" de "esta roto" desde
         # afuera, que es la pregunta que ya costo tiempo dos veces.
-        "valuation": valuation.cache_state(),
+        "valuation": dict(valuation.cache_state(),
+                          restaurados=_valuation_restaurados),
     })
 
 
@@ -2814,6 +2815,14 @@ def _valuation_symbols():
     return syms
 
 
+# Cuantos simbolos trajo el restore de Postgres en ESTE arranque. Lo publica
+# `/health`: es la unica forma de ver desde afuera si la persistencia sirvio,
+# y hizo falta — la primera version guardaba solo al terminar la pasada de ~5
+# minutos, justo cuando el deploy reinicia el contenedor, asi que el guardado
+# no ocurria nunca y el arreglo parecia desplegado sin estarlo.
+_valuation_restaurados = 0
+
+
 def _valuation_restore():
     """El EPS se guarda en Postgres, NO en disco: el filesystem de Railway es
     efimero y sin esto el cache se rehace entero en cada deploy. Medido contra
@@ -2823,8 +2832,10 @@ def _valuation_restore():
     es indistinguible de estar roto, que fue exactamente como se reporto.
     Cada entrada guardada trae su `ts`, asi que el TTL de 7 dias sigue
     valiendo y lo vencido se vuelve a bajar solo."""
+    global _valuation_restaurados
     try:
-        valuation.import_cache(db.get_app_cache("valuation_eps") or {})
+        _valuation_restaurados = valuation.import_cache(
+            db.get_app_cache("valuation_eps") or {})
     except Exception as e:
         print(f"[SERVER] valuation restore: {type(e).__name__} {e}", flush=True)
 
