@@ -20,3 +20,4 @@ enrichment_cache.json
 tools/*.pkl
 tools/*.json
 valuation_cache.json
+tools/*.csv

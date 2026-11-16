@@ -1376,10 +1376,48 @@ Un ETF de índice no publica EPS en yfinance y su `trailingPE` es un escalar.
   lo va llenando y persiste en `valuation_cache.json` (local; el cloud lo rehace en cada arranque,
   igual que los datos de Wall Street). En el cloud sólo se piden **acciones**
   (`_valuation_symbols`): pedir EPS de 113 ETFs es gastar requests por nada.
-- **NO entra en el score ni en el veredicto**, por la misma política que la concentración y las
-  figuras: nada mueve el ranking sin edge medido, y para una variable de valuación habría que
-  medirlo con el protocolo de `tools/medir_conc.py` (ojo: el P/E es por símbolo, así que **no**
-  cae en "la trampa del n" de las variables macro — se puede medir con el t de siempre).
+- **NO entra en el score ni en el veredicto**, y eso ya está MEDIDO (`tools/medir_pe.py`, 99
+  acciones, 35.013 entradas: señal 3/3 y baseline incondicional cada 5 ruedas, mismo motor de
+  ejecución intradía del backtest). El resultado no es "no hay edge" — es **"con estos datos no
+  se puede ver, y hay una razón estructural"**:
+  - **EL P/E ES CASI UNA REFORMULACIÓN DE LA PROPIA SEÑAL.** Percentil propio de P/E en el momento
+    de entrar:
+
+    | población | n | p≤30 | p≥70 | media |
+    |---|---|---|---|---|
+    | SEÑAL compra 3/3 | 205 | **64.4%** | 9.8% | **23.3** |
+    | SEÑAL venta 3/3 | 503 | 11.1% | **64.0%** | **75.2** |
+    | BASE incondicional | 14.720 | 33.9% | 38.2% | 51.9 |
+
+    La compra está **1.90×** sobre-representada en el cuartil barato y **0.26×** en el caro (la
+    venta es el espejo exacto). Tiene sentido mecánico: el setup pide **RSI<30**, o sea que el
+    precio ya cayó — y un precio que cayó es, casi por construcción, un P/E bajo para su propia
+    historia. **El panel le dice algo a una persona (cuán extremo, y contra qué historia), pero
+    aporta poco ORTOGONAL a lo que el score ya mide con el RSI.**
+  - **Consecuencia directa: el contraste no es testeable del lado COMPRADOR.** De 205 señales de
+    compra, sólo **20** caen en el tercio caro: no hay variación suficiente dentro de la población
+    de señal. Es el mismo confound estructural que CLAUDE.md ya documenta para el lado vendedor
+    contra la SMA200 ("precio < SMA200 sólo ocurre en 78 de 2.738 señales — por construcción").
+  - **Lado VENDEDOR** (n=503): barato−caro **+1.20 pp**, t ingenuo +1.65 pero
+    **p(permutación)=0.78**, y **MDE 1.85 pp** — el test sólo podía detectar efectos mayores que
+    eso. Nada.
+  - **Lo único nominalmente significativo está en el BASELINE, no en la señal**: shortear
+    incondicionalmente lo barato-para-sí-mismo rinde +0.23 pp más que lo caro (t=2.39,
+    p(perm)=0.025), y transversalmente (barato vs caro **del universo**) el largo incondicional
+    rinde +0.18 pp (p(perm)=0.065, el *value tilt* clásico). Las dos son propiedades del MERCADO,
+    no interacciones con la señal, y el bot **no shortea**.
+  - **LÍMITE DE DATOS, declarado**: `income_stmt` de yfinance da 4-5 ejercicios, así que la serie
+    de P/E arranca en 2023 y el percentil propio necesita además calentamiento ⇒ la ventana útil
+    es de **~2.5 años**, no de 10. Un nulo acá **no refuta** nada; el reporte imprime n y MDE
+    justamente para que no se lea como refutación.
+  - **INFERENCIA**: el P/E es por símbolo, así que **no** cae en "la trampa del n" de las
+    variables macro. Pero los trades del mismo día siguen compartiendo el movimiento del mercado,
+    así que además del t se permuta **el percentil ENTRE SÍMBOLOS dentro de cada fecha**: preserva
+    la estructura temporal y la distribución marginal, y destruye sólo el vínculo
+    símbolo-valuación — el null correcto para "la valuación PROPIA informa, más allá de qué día
+    es". En el lado vendedor el t de 1.65 se cae a p=0.78 con esa permutación.
+  - **Qué lo destrabaría**: más historia de EPS (no la da yfinance gratis) o acumularla desde hoy,
+    el mismo patrón que ya está anotado para el P/E del índice.
 - ⚠ **No requiere reinstalar el bridge**: todo es server-side sobre el chart que ya viaja
   (`attach_pe` se llama en `analyze_symbol` local y en los 3 puntos del cloud donde ya se adjuntan
   las figuras). Tests: `tests/test_invariantes.py` §20.
