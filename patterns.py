@@ -1410,6 +1410,11 @@ def validate_history(highs, lows, closes, step=3, horizon=40, warmup=120):
         d_t = abs(p["target"] - px) / px
         d_i = abs(p["invalidation"] - px) / px
         events.append({"type": p["name"], "direction": p["direction"],
+                       # barra en la que se detecto: permite agrupar los eventos
+                       # por FECHA para una inferencia que respete que una
+                       # figura resuelta en marzo 2020 en 50 simbolos a la vez
+                       # no son 50 observaciones independientes
+                       "i": i,
                        "hit": hit is not None,
                        "resolved": end is not None,
                        "same_bar": both,   # colisiones target/invalidacion

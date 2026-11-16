@@ -770,6 +770,48 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
 
   **LEER `res`, NO `n`**: hit-rate y baseline se promedian solo sobre eventos RESUELTOS (los que
   tocaron target o invalidación dentro de las 40 ruedas), y esa muestra es bastante menor que `n`.
+
+  ### ⚠ POTENCIA: el IC de esta tabla está SUBESTIMADO (2026-11, `tools/medir_figuras.py`)
+  El `sig` de arriba sale de `|edge| ≥ 1.96 · EE_binomial`, que **supone eventos independientes**.
+  No lo son: muchos son del mismo símbolo, y sobre todo **muchos caen en la misma fecha en
+  símbolos distintos** — una figura que se resuelve en el desplome de marzo 2020 en 50 papeles no
+  son 50 observaciones, es una. Re-medido con **bootstrap de clusters** (remuestreando símbolos
+  enteros y trimestres enteros, y quedándose con el más conservador):
+
+  | Figura | res | edge | EE binomial | EE clusters | IC95 clusters | MDE |
+  |---|---|---|---|---|---|---|
+  | Bandera alcista | 198 | +15.3 | 3.6 | **8.5** | **[−1.4, +32.0]** | 23.8 |
+  | Triple suelo | 174 | +13.7 | 3.2 | 4.2 | [+5.4, +21.9] | 11.8 |
+  | Doble suelo | 635 | +10.1 | 1.7 | **4.0** | [+2.2, +18.0] | 11.3 |
+  | Cuña ascendente rota | 1668 | −2.5 | 0.8 | 1.4 | [−5.3, +0.2] | 3.9 |
+  | Hombro-cabeza-hombro | 195 | −12.1 | 3.4 | 5.3 | [−22.5, −1.8] | 14.8 |
+  | Bandera bajista | 88 | −12.7 | 4.2 | 4.9 | [−22.3, −3.1] | 13.7 |
+
+  - **La unidad de cluster está elegida, no supuesta**: el EE **se estabiliza a partir del mes**
+    (Bandera alcista: binomial 3.6 → mes 7.1 → trimestre 8.4 → semestre 8.8 → año 8.6). Que deje
+    de crecer es la señal de que la dependencia quedó capturada; el trimestre no es conservador,
+    es donde el EE hace meseta. **El grueso de la dependencia es TEMPORAL, no por símbolo**
+    (EE por símbolo ≈ EE binomial; el salto lo da el tiempo).
+  - **LO QUE ESTO CAMBIA, Y HAY QUE DECIDIRLO**: **Bandera alcista —la figura con el edge más
+    alto, hoy `validada` y pesando en el score— tiene un IC que INCLUYE EL CERO** ([−1.4, +32.0]).
+    O sea que mueve el ranking sobre un número que no se distingue de "no sirve". **Triple suelo**
+    es la única que queda claramente por encima de +5. **Doble suelo** excluye el cero (+2.2) pero
+    cruza el umbral de +5.
+  - **Las dos descartadas se sostienen en dirección, no en el umbral exacto**: HCH y Bandera
+    bajista tienen IC que excluyen el cero (son malas de verdad), pero el `≤ −12` específico queda
+    en el borde.
+  - **El grupo `contexto` no es homogéneo**: `Cuña ascendente rota` (MDE **3.9**) y
+    `Cuña descendente rota` (5.4) son nulos BIEN POTENCIADOS — ahí sí se puede decir "no tiene
+    edge". Pero `Triple techo` y `HCH invertido` tienen **MDE 17.4**: con esa muestra nunca se
+    habría podido detectar un edge de +5, así que su `contexto` es un **default, no un hallazgo**.
+  - **Los puntos estimados se movieron solos con un refresco de datos** (Bandera alcista 17.0 →
+    15.3, HCH −17.6 → −12.1, Bandera bajista −14.6 → −12.7, mismo universo y mismo código). Esa
+    inestabilidad es coherente con los IC anchos de arriba: si el número se mueve 2-5 pp al bajar
+    los precios de nuevo, un umbral fijo de +5 sobre el punto estimado es frágil.
+  - **Propuesta pendiente de decisión (NO aplicada)**: exigir que el **IC95 excluya el cero** para
+    que una figura sea `validada`, en vez de comparar el punto estimado contra +5. Deja `Triple
+    suelo` y `Doble suelo`, y **baja `Bandera alcista` a contexto**. Es un cambio en qué figuras
+    mueven el score con dinero real, así que se decide aparte.
   **Ya no es "un único régimen"**: los 10 años cubren la corrección de 2018, el desplome de 2020 y el
   bear market de 2022. Control sobre los últimos 5 años (3.676 eventos): las 5 figuras significativas
   lo son en **ambas** ventanas y con magnitudes estables (Bandera alcista +17.0/+22.1, Triple suelo
