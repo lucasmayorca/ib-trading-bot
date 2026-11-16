@@ -2670,10 +2670,10 @@ def test_el_cache_de_EPS_viaja_entero_y_conserva_su_ts():
 
 def test_el_cache_de_EPS_sobrevive_al_deploy():
     """Railway no tiene disco, asi que sin persistir en Postgres el cache se
-    rehace entero en cada deploy. Medido en produccion: el warmer avanza a
-    ~20 s por simbolo (cada uno son varias requests a SEC y a yfinance), o sea
-    ~media hora para el universo — y en ese rato el panel de P/E no esta, que
-    desde la pantalla es indistinguible de estar roto."""
+    rehace entero en cada deploy. Medido contra /health en produccion: el
+    warmer avanza a ~3 s por simbolo (varias requests a SEC y a yfinance por
+    cada uno), o sea ~5 minutos para el universo — y en ese rato el panel de
+    P/E no esta, que desde la pantalla es indistinguible de estar roto."""
     raiz = os.path.join(os.path.dirname(__file__), "..")
     dbsrc = open(os.path.join(raiz, "cloud", "db.py")).read()
     assert "CREATE TABLE IF NOT EXISTS app_cache" in dbsrc

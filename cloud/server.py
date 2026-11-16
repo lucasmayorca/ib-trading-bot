@@ -2816,11 +2816,11 @@ def _valuation_symbols():
 
 def _valuation_restore():
     """El EPS se guarda en Postgres, NO en disco: el filesystem de Railway es
-    efimero y sin esto el cache se rehace entero en cada deploy. Medido en
-    produccion: el warmer tarda del orden de media hora en recorrer el
-    universo (cada simbolo son varias requests a SEC y a yfinance), y durante
-    ese rato el panel de P/E simplemente no esta — desde la pantalla es
-    indistinguible de estar roto, que fue exactamente como se reporto.
+    efimero y sin esto el cache se rehace entero en cada deploy. Medido contra
+    /health en produccion: ~3 s por simbolo (varias requests a SEC y a
+    yfinance por cada uno), o sea ~5 minutos para recorrer el universo, y
+    durante ese rato el panel de P/E simplemente no esta — desde la pantalla
+    es indistinguible de estar roto, que fue exactamente como se reporto.
     Cada entrada guardada trae su `ts`, asi que el TTL de 7 dias sigue
     valiendo y lo vencido se vuelve a bajar solo."""
     try:
