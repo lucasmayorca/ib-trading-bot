@@ -2351,3 +2351,100 @@ def test_el_pe_muestra_su_percentil_contra_DOS_ventanas():
     # con la serie corta, una sola
     corto = V.pe_panel(dates[:400], closes[:400], [("2015-01-01", 5.0)])
     assert [q["ventana"] for q in corto["pcts"]] == [corto["ventana"]]
+
+
+# ── 22. El gate de `validada` es el IC, no el punto estimado ─────────
+# Decision del usuario (2026-11) despues de medir la potencia: una figura pesa
+# en el score solo si su IC95 de CLUSTERS excluye el cero. Antes se comparaba el
+# punto estimado contra +5, y eso dejaba a Bandera alcista —la de mayor edge—
+# moviendo el ranking con un IC de [-1.4,+32.0].
+
+def _tier(nm):
+    import patterns as P
+    c = P._apply_edge_policy([{"name": nm, "priority": 50, "target": 100.0}])
+    return (c[0]["tier"], c[0].get("target")) if c else ("DESCARTADA", None)
+
+
+def test_bandera_alcista_dejo_de_pesar_en_el_score():
+    """Tenia el edge mas alto de la tabla (+15.3) y un IC que INCLUYE EL CERO.
+    Un punto estimado alto con un IC que toca cero no es evidencia: es una
+    muestra chica con dependencia temporal. Baja a contexto y pierde el
+    objetivo medido."""
+    import patterns as P
+    e, ic = P._edge_info("Bandera alcista")
+    assert e > P._EDGE_MIN_TARGET, "sigue teniendo el punto estimado alto"
+    assert ic[0] <= 0 < ic[1], "su IC tiene que seguir tocando el cero"
+    assert _tier("Bandera alcista") == ("contexto", None)
+
+
+def test_solo_pesan_las_figuras_con_IC_que_excluye_el_cero():
+    import patterns as P
+    for nm, (edge, ic) in P._EDGE_CI.items():
+        if edge <= P._EDGE_MIN_SHOW:
+            continue                              # descartadas, otro camino
+        tier, target = _tier(nm)
+        if ic[0] > 0:
+            assert tier == "validada", (nm, ic)
+            assert target is not None, f"{nm} validada tiene que conservar objetivo"
+        else:
+            assert tier == "contexto", (nm, ic)
+            assert target is None, f"{nm} de contexto no puede publicar objetivo"
+
+
+def test_el_punto_estimado_solo_ya_no_alcanza():
+    """Guarda contra volver atras: una figura inventada con edge +20 pero IC que
+    toca el cero NO puede quedar validada."""
+    import patterns as P
+    P._EDGE_CI["__TEST__"] = (+20.0, (-1.0, +41.0))
+    try:
+        assert _tier("__TEST__") == ("contexto", None)
+        P._EDGE_CI["__TEST__"] = (+2.0, (+0.4, +3.6))   # chico PERO demostrado
+        assert _tier("__TEST__")[0] == "validada"
+    finally:
+        P._EDGE_CI.pop("__TEST__", None)
+
+
+def test_las_descartadas_no_cambiaron():
+    """El gate nuevo es solo para `validada`. HCH y Bandera bajista siguen
+    descartadas por su punto estimado <= -12, y ademas sus IC excluyen el cero
+    (son malas de verdad, no ruido)."""
+    import patterns as P
+    for nm in ("Hombro-cabeza-hombro", "Bandera bajista"):
+        e, ic = P._edge_info(nm)
+        assert e <= P._EDGE_MIN_SHOW and ic[1] < 0, (nm, e, ic)
+        assert _tier(nm)[0] == "DESCARTADA"
+
+
+def test_el_IC_viaja_con_la_figura():
+    """Si el score se apoya en el edge, la tarjeta tiene que poder mostrar su
+    incertidumbre — igual que el desglose del score muestra sus insumos."""
+    import patterns as P
+    c = P._apply_edge_policy([{"name": "Triple suelo", "priority": 50, "target": 9.0}])
+    assert c[0]["edge_ci"] == (+5.4, +21.9)
+    c2 = P._apply_edge_policy([{"name": "Doble techo", "priority": 50, "target": 9.0}])
+    assert c2[0]["edge_ci"][0] < 0 < c2[0]["edge_ci"][1]
+
+
+def test_el_tooltip_no_dice_que_una_figura_de_contexto_sea_mala():
+    """Desde que el gate es el IC, en `contexto` cae tambien Bandera alcista,
+    con edge medido +15.3. El texto viejo decia "su objetivo medido no se
+    alcanza mas que el azar" — sobre eso es FALSO. Lo correcto es "no
+    demostrado", y con el IC al lado."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("function figChips")
+    cuerpo = h[i:h.index("\nfunction ", i + 10)]
+    assert "no se alcanza mas que el azar" not in cuerpo, (
+        "vuelve a afirmar que una figura de contexto es mala")
+    assert "NO esta demostrado" in cuerpo
+    assert "edge_ci" in cuerpo, "el IC tiene que mostrarse al lado del edge"
+    assert "EXCLUYE el cero" in cuerpo, "la validada tiene que decir por que lo es"
+
+
+def test_el_IC_llega_al_payload_del_analisis():
+    """Si la tarjeta lo muestra, el server lo tiene que mandar."""
+    import json
+    import patterns as P
+    c = P._apply_edge_policy([{"name": "Bandera alcista", "priority": 50,
+                               "target": 10.0, "text": "x"}])
+    assert c and "edge_ci" in c[0]
+    json.dumps(c[0])        # serializable tal cual viaja en /api/data

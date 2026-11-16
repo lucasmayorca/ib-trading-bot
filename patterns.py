@@ -87,33 +87,65 @@ import numpy as np
 # Con esta muestra las 3 figuras "validada" SI tienen edge significativo, y las 2
 # descartadas tambien: la politica quedo respaldada por evidencia, cosa que con la
 # muestra chica de 60 simbolos no pasaba.
-_EDGE = {
-    "Bandera alcista": 17.0,            # n=293  res=195  hit 49.2% vs base 32.3%  sig=SI  IC[+9.9,+24.0]
-    "Triple suelo": 14.4,               # n=402  res=162  hit 77.2% vs base 62.7%  sig=SI  IC[+8.0,+20.9]
-    "Doble suelo": 9.8,                 # n=1167 res=653  hit 74.4% vs base 64.6%  sig=SI  IC[+6.4,+13.1]
-    "Triangulo ascendente rota": 2.6,   # n=309  res=265  hit 16.2% vs base 13.6%  sig=no
-    "HCH invertido": 1.4,               # n=448  res=205  hit 50.7% vs base 49.3%  sig=no
-    "Triple techo": 1.0,                # n=229  res=97   hit 66.0% vs base 65.0%  sig=no
-    "Cuña descendente rota": 0.3,       # n=495  res=436  hit 13.3% vs base 13.0%  sig=no
-    "Triangulo simetrico rota": -1.2,   # n=97   res=73   hit  5.5% vs base  6.7%  sig=no
-    "Cuña ascendente rota": -2.1,       # n=1987 res=1813 hit 12.9% vs base 14.9%  sig=SI  IC[-3.6,-0.5]
-    "Doble techo": -3.0,                # n=854  res=458  hit 61.6% vs base 64.6%  sig=no
-    "Triangulo descendente rota": -4.5, # n=139  res=107  hit  8.4% vs base 12.9%  sig=no
-    "Bandera bajista": -14.6,           # n=143  res=100  hit 18.0% vs base 32.6%  sig=SI  IC[-22.1,-7.1]
-    "Hombro-cabeza-hombro": -17.6,      # n=372  res=178  hit 30.3% vs base 48.0%  sig=SI  IC[-24.4,-10.9]
+# Edge MEDIDO por figura, con su IC95 de CLUSTERS (tools/medir_figuras.py,
+# 2026-11): bootstrap remuestreando simbolos enteros y trimestres enteros, el
+# mas conservador de los dos. El EE binomial que se usaba antes supone eventos
+# independientes y los subestima ~2.4x — muchos eventos caen en la MISMA fecha
+# en simbolos distintos, y una figura resuelta en el desplome de marzo 2020 en
+# 50 papeles no son 50 observaciones. La unidad de cluster esta ELEGIDA: el EE
+# se estabiliza a partir del mes (Bandera alcista: binomial 3.6 -> mes 7.1 ->
+# trimestre 8.4 -> semestre 8.8 -> año 8.6).
+#
+#                                 edge    IC95 de clusters   res
+_EDGE_CI = {
+    "Bandera alcista":            (+15.3, (-1.4, +32.0)),   # 198 — IC INCLUYE EL CERO
+    "Triple suelo":               (+13.7, (+5.4, +21.9)),   # 174
+    "Doble suelo":                (+10.1, (+2.2, +18.0)),   # 635
+    "Triple techo":               (+2.8, (-9.3, +15.0)),    # 103 — MDE 17.4: no era detectable
+    "Triangulo ascendente rota":  (+0.5, (-4.9, +5.8)),     # 275
+    "Cuña descendente rota":      (+0.0, (-3.8, +3.8)),     # 444 — nulo BIEN potenciado
+    "Triangulo simetrico rota":   (-1.1, (-12.1, +9.9)),    # 78
+    "Doble techo":                (-2.4, (-12.9, +8.0)),    # 460
+    "Cuña ascendente rota":       (-2.5, (-5.3, +0.2)),     # 1668 — nulo BIEN potenciado
+    "HCH invertido":              (-3.0, (-15.1, +9.2)),    # 196 — MDE 17.4
+    "Triangulo descendente rota": (-3.1, (-8.2, +2.0)),     # 119
+    "Hombro-cabeza-hombro":       (-12.1, (-22.5, -1.8)),   # 195
+    "Bandera bajista":            (-12.7, (-22.3, -3.1)),   # 88
 }
-_EDGE_MIN_TARGET = 5.0    # edge minimo para publicar el objetivo medido
+_EDGE = {k: v[0] for k, v in _EDGE_CI.items()}
+
+# GATE DE `validada`: el IC95 de clusters tiene que EXCLUIR EL CERO (2026-11).
+# Antes se comparaba el PUNTO ESTIMADO contra +5, y eso dejaba a Bandera alcista
+# —la figura de mayor edge— pesando en el score con un IC de [-1.4, +32.0]: o
+# sea, moviendo el ranking sobre un numero que no se distingue de "no sirve".
+# Ademas los puntos estimados se mueven solos con un refresco de datos (Bandera
+# alcista 17.0 -> 15.3, HCH -17.6 -> -12.1, mismo codigo y mismo universo), asi
+# que un umbral fijo sobre el punto estimado es fragil; el IC absorbe eso.
+_EDGE_MIN_TARGET = 5.0    # ya NO gatea: queda como referencia de magnitud
 # Solo se descarta lo fuertemente negativo CON muestra decente: el limite de 40
 # ruedas del test penaliza mas a las figuras de objetivo lejano, asi que un
 # edge levemente negativo no alcanza para borrar una figura (queda contexto).
 _EDGE_MIN_SHOW = -12.0
 
 
+def _edge_info(nm):
+    """(edge, ic) de la figura, heredando de su variante "rota" si esta en
+    formacion. (None, None) si no esta medida."""
+    hit = _EDGE_CI.get(nm)
+    if hit is None and (nm.startswith("Triangulo") or nm.startswith("Cuña")):
+        hit = _EDGE_CI.get(nm + " rota")
+    return hit if hit else (None, None)
+
+
 def _apply_edge_policy(cands):
     """Filtra/degrada figuras segun su edge MEDIDO (ver _EDGE).
 
-    - edge >= +5  -> "validada": conserva objetivo medido y pesa en score
-    - -12 < edge < +5 -> "contexto": se muestra, SIN objetivo medido ni peso
+    - IC95 de clusters que EXCLUYE EL CERO (por arriba) -> "validada":
+      conserva objetivo medido y pesa en score
+    - edge medido pero IC que toca el cero -> "contexto": se muestra, SIN
+      objetivo medido ni peso. "No demostrado" no es lo mismo que "malo":
+      varias de estas tienen MDE de 17 pp, o sea que un edge de +5 nunca
+      habria sido detectable con esa muestra.
     - edge <= -12 -> se descarta (ruido demostrado); ver _EDGE_MIN_SHOW: el
       umbral es -12 y NO -5 a proposito
     Las figuras sin medicion (rupturas de nivel, divergencias, cruces, canal)
@@ -125,21 +157,23 @@ def _apply_edge_policy(cands):
         if not c:
             continue
         nm = c.get("name", "")
-        edge = _EDGE.get(nm)
-        if edge is None and (nm.startswith("Triangulo") or nm.startswith("Cuña")):
-            # en formacion: hereda la medicion de SU MISMA variante rota
-            edge = _EDGE.get(nm + " rota")
+        # en formacion hereda la medicion de SU MISMA variante rota
+        edge, ic = _edge_info(nm)
         if edge is not None and edge <= _EDGE_MIN_SHOW:
             continue                              # ruido demostrado
         c = dict(c)
         if edge is None:
             c["tier"] = "contexto"                # sin objetivo, sin medicion
-        elif edge >= _EDGE_MIN_TARGET:
+        elif ic is not None and ic[0] > 0:
+            # edge POSITIVO Y DEMOSTRADO: el IC95 de clusters excluye el cero
             c["tier"] = "validada"
             c["edge"] = edge
+            c["edge_ci"] = ic
         else:
             c["tier"] = "contexto"
             c["edge"] = edge
+            if ic is not None:
+                c["edge_ci"] = ic
             c["target"] = None                    # objetivo no confiable
             c["priority"] = max(20, c.get("priority", 50) - 25)
         out.append(c)

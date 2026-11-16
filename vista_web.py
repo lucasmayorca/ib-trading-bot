@@ -1469,9 +1469,11 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
     # figura chartista alineada con el label refuerza el setup; una confirmada
     # en contra lo debilita. Los pesos se recalibran con /api/calibration
     # (hit-rate historico por tipo de figura), no se agrandan a ojo.
-    # Solo pesan las figuras con EDGE MEDIDO (patterns._EDGE, tier "validada"):
-    # las de tier "contexto" aportan niveles pero no mueven el ranking, porque
-    # su objetivo no se alcanza mas que el azar (evidencia de validate_universe).
+    # Solo pesan las figuras con edge DEMOSTRADO (tier "validada": su IC95 de
+    # clusters excluye el cero, ver patterns._EDGE_CI). Las de tier "contexto"
+    # aportan niveles pero no mueven el ranking — y OJO: eso no dice que sean
+    # malas. Desde 2026-11 ahi cae tambien Bandera alcista, con edge medido
+    # +15.3 y un IC de [-1.4,+32.0]: no es "no sirve", es "no demostrado".
     pat = data.get("pattern") or {}
     pat_dir = pat.get("direction")
     if pat_dir in ("alcista", "bajista") and pat.get("tier") == "validada":
@@ -1488,14 +1490,17 @@ def _score_stock(sym, data, min_target_pct=None, parts=None):
                   f"{pat.get('name') or 'figura'} {pat_dir}"
                   + (f" ({pat['status']})" if pat.get("status") else "") + " — "
                   + ("a favor de la tesis" if aligned else "CONTRA la tesis")
-                  + ", edge medido sobre 217 simbolos x 10A",
+                  + ", edge demostrado (IC95 excluye el cero) sobre 218 simbolos x 10A",
                   key="figura",
                   what="Suma o resta segun la figura chartista detectada. Solo "
-                       "pesan las figuras con edge MEDIDO (217 simbolos x 10 "
-                       "años, hit-rate contra su propio baseline aleatorio): "
-                       "las de tier contexto aportan niveles pero no mueven el "
-                       "ranking. Alineada y confirmada +5, alineada en "
-                       "formacion +2.5, confirmada en contra -3.",
+                       "pesan las figuras con edge DEMOSTRADO: hit-rate contra "
+                       "su propio baseline aleatorio sobre 218 simbolos x 10 "
+                       "años, con IC95 de clusters que excluye el cero. Las de "
+                       "tier contexto aportan niveles pero no mueven el "
+                       "ranking, lo que no quiere decir que sean malas: varias "
+                       "llegan ahi por falta de muestra, no de edge. Alineada "
+                       "y confirmada +5, alineada en formacion +2.5, "
+                       "confirmada en contra -3.",
                   inputs=[_in("Figura", pat.get("name")),
                           _in("Direccion", pat_dir),
                           _in("Estado", pat.get("status")),
@@ -5979,7 +5984,14 @@ function figChips(r){
     let p=r.pattern;
     let _ctx=(p.tier==='contexto');
     let _contra=(p.direction==='alcista'||p.direction==='bajista')&&((p.direction==='bajista')!==_labelIsBearish(r.signal_label||r.signal||''));
-    let _tt=String(p.text||'')+(_contra?' · CONTRA la tesis actual: su objetivo medido apunta al lado opuesto y resta en el score.':'')+(_ctx?' · Figura de CONTEXTO: sus niveles sirven de referencia pero su objetivo medido no se alcanza mas que el azar (edge '+(p.edge!=null?p.edge:'s/d')+' medido sobre 217 simbolos x 10 años, 6.935 eventos), asi que no pesa en el score ni en el veredicto.':' · Figura VALIDADA: edge '+(p.edge!=null?'+'+p.edge:'')+' puntos sobre el baseline aleatorio (217 simbolos x 10 años, 6.935 eventos).');
+    // CONTEXTO ya NO quiere decir "no sirve": desde que el gate es el IC y no el
+    // punto estimado, aca cae tambien Bandera alcista, con un edge medido de
+    // +15.3 y un IC que toca el cero. Afirmar que su objetivo es puro azar
+    // seria falso — lo correcto es "no DEMOSTRADO". El IC viaja en la figura
+    // justamente para poder decirlo con el numero al lado.
+    let _ci=p.edge_ci, _ciTxt=(_ci&&_ci.length===2)?(' (IC95 '+_n(_ci[0],1)+' a '+_n(_ci[1],1)+')'):'';
+    let _eTxt=(p.edge!=null?((p.edge>0?'+':'')+p.edge):'s/d');
+    let _tt=String(p.text||'')+(_contra?' · CONTRA la tesis actual: su objetivo medido apunta al lado opuesto y resta en el score.':'')+(_ctx?(' · Figura de CONTEXTO: no pesa en el score ni en el veredicto porque su edge NO esta demostrado — edge medido '+_eTxt+_ciTxt+' sobre 218 simbolos x 10 años. Un IC que toca el cero no dice que la figura sea mala: dice que con esta muestra no se distingue de cero. Sus niveles de ruptura y anulacion siguen sirviendo de referencia.'):(' · Figura VALIDADA: edge '+_eTxt+' puntos sobre el baseline aleatorio'+_ciTxt+', con IC95 de clusters que EXCLUYE el cero (218 simbolos x 10 años).'));
     h+='<span class="rec-thesis-fig" title="'+_tt.replace(/"/g,'&quot;')+'">'+p.name+' ('+p.status+(_ctx?', contexto':'')+')'+(_contra?' ⚠':'')+'</span>';
   }
   if(r&&r.fib&&r.fib.at){

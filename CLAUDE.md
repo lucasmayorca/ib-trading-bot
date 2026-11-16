@@ -808,10 +808,10 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
     15.3, HCH −17.6 → −12.1, Bandera bajista −14.6 → −12.7, mismo universo y mismo código). Esa
     inestabilidad es coherente con los IC anchos de arriba: si el número se mueve 2-5 pp al bajar
     los precios de nuevo, un umbral fijo de +5 sobre el punto estimado es frágil.
-  - **Propuesta pendiente de decisión (NO aplicada)**: exigir que el **IC95 excluya el cero** para
-    que una figura sea `validada`, en vez de comparar el punto estimado contra +5. Deja `Triple
-    suelo` y `Doble suelo`, y **baja `Bandera alcista` a contexto**. Es un cambio en qué figuras
-    mueven el score con dinero real, así que se decide aparte.
+  - **APLICADO (2026-11, decisión del usuario)**: el gate de `validada` pasó a ser **el IC95 de
+    clusters excluyendo el cero**, en vez del punto estimado contra +5. Ver "Política
+    `_apply_edge_policy`" abajo: `Bandera alcista` bajó a contexto y los símbolos con figura
+    validada pasaron de 48 a 25.
   **Ya no es "un único régimen"**: los 10 años cubren la corrección de 2018, el desplome de 2020 y el
   bear market de 2022. Control sobre los últimos 5 años (3.676 eventos): las 5 figuras significativas
   lo son en **ambas** ventanas y con magnitudes estables (Bandera alcista +17.0/+22.1, Triple suelo
@@ -824,14 +824,34 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   a `validada` con IC [+6.4, +13.1]. En vivo: de 217 símbolos, 48 tienen figura `validada` con
   objetivo medido y 109 `contexto`.
   Para re-medir: `scratchpad/medir_universo.py` (paralelizado, ~6 min) sobre el pickle del universo.
-  **Política `_apply_edge_policy` (patterns.py)**: `edge ≥ +5` ⇒ tier **"validada"** (conserva
-  objetivo medido y pesa en score/veredicto); `−12 < edge < +5` ⇒ tier **"contexto"** (se muestra por
-  sus niveles de ruptura/anulación, pero `target=None` y prioridad −25, y **no** mueve score ni
-  veredicto); `edge ≤ −12` ⇒ **no se emite** (con la medición del universo completo: HCH y Bandera
-  bajista). Los triángulos/
-  cuñas *en formación* heredan la medición de su propia variante "rota". El umbral de descarte es
-  −12 y no −5 a propósito: el límite de 40 ruedas del test castiga más a las figuras de objetivo
-  lejano, así que un edge levemente negativo degrada a contexto pero no borra la figura.
+  **Política `_apply_edge_policy` (patterns.py) — el gate es el IC, NO el punto estimado
+  (2026-11)**: una figura es tier **"validada"** (conserva objetivo medido y pesa en
+  score/veredicto) sólo si su **IC95 de clusters EXCLUYE EL CERO** por arriba. Todo lo demás con
+  edge medido queda **"contexto"** (se muestra por sus niveles de ruptura/anulación, pero
+  `target=None` y prioridad −25, y **no** mueve score ni veredicto); `edge ≤ −12` ⇒ **no se
+  emite** (HCH y Bandera bajista, cuyos IC además excluyen el cero: son malas de verdad).
+  - **Qué cambió y por qué**: antes se comparaba el **punto estimado** contra `+5`, y eso dejaba a
+    **Bandera alcista** —la figura con el edge más alto de la tabla, +15.3— moviendo el ranking con
+    un IC de **[−1.4, +32.0]**, o sea sobre un número que no se distingue de "no sirve". Además los
+    puntos estimados **se mueven solos con un refresco de datos** (Bandera alcista 17.0 → 15.3, HCH
+    −17.6 → −12.1, mismo código y mismo universo), así que un umbral fijo sobre el punto estimado
+    es frágil; el IC absorbe esa inestabilidad.
+  - **Efecto real, medido en vivo**: las `validada` pasan de **{Bandera alcista, Triple suelo,
+    Doble suelo}** a **{Triple suelo, Doble suelo}**, y sobre el universo los símbolos con figura
+    validada (con objetivo medido y peso en el score) bajan de **48 a 25**. Es un cambio grande a
+    propósito: 23 símbolos dejan de tener un objetivo que la evidencia no sostenía.
+  - **`_EDGE_MIN_TARGET` (+5) ya NO gatea**: queda como referencia de magnitud. El dato vivo es
+    `_EDGE_CI`, que trae `(edge, (lo, hi))` por figura, y el IC viaja en la figura (`edge_ci`) para
+    que la tarjeta pueda mostrar su incertidumbre — mismo criterio que el desglose del score, que
+    muestra sus insumos.
+  - **"Contexto" NO quiere decir "mala"**: varias llegan ahí por falta de potencia, no por falta de
+    edge. `Cuña ascendente rota` (MDE 3.9) y `Cuña descendente rota` (5.4) son nulos **bien
+    potenciados**; `Triple techo` y `HCH invertido` tienen **MDE 17.4**, con lo cual un edge de +5
+    nunca habría sido detectable con esa muestra.
+  - Los triángulos/cuñas *en formación* heredan la medición (y el IC) de su propia variante "rota"
+    vía `_edge_info`. El umbral de descarte sigue en −12 y no −5 a propósito: el límite de 40
+    ruedas del test castiga más a las figuras de objetivo lejano, así que un edge levemente
+    negativo degrada a contexto pero no borra la figura. Tests: §22.
   **Gates en vista_web.py**: `_score_stock` y el factor 9e del veredicto exigen
   `pattern["tier"] == "validada"`; el chip de la tesis explica en su tooltip si la figura es
   validada (con su edge) o solo contexto. `_compute_price_levels` se autorregula: las de contexto
