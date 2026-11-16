@@ -142,6 +142,36 @@ def one(item):
     return rows
 
 
+def _mde_perm(nulos, poder=0.80):
+    """MDE a partir de la distribucion NULA de la permutacion/rotacion.
+
+    La MDE de dos muestras (2.80·s·sqrt(1/n1+1/n2)) supone observaciones
+    INDEPENDIENTES. Acá no lo son: los trades del mismo día comparten el
+    movimiento del mercado, y para una variable macro el n efectivo es la
+    cantidad de REGIMENES. Calcularla con el n de trades daría una MDE
+    optimista — el mismo error que el t ingenuo, en la otra dirección: haría
+    pasar por "nulo con potencia" algo que en realidad no se pudo ver.
+
+    Esta sale del null que YA decide el p-valor, así que hereda exactamente su
+    estructura de dependencia: el valor crítico a dos colas mas el margen que
+    hace falta para superarlo el `poder` de las veces.
+    """
+    import numpy as _np
+    from scipy.stats import norm as _norm
+    v = _np.asarray([x for x in nulos if x is not None], dtype=float)
+    if len(v) < 50:
+        return float("nan")
+    # CENTRAR el null antes de medir su dispersion. Si la permutacion tiene
+    # poca libertad (p.ej. pocas fechas con mas de un simbolo), el estadistico
+    # permutado queda PEGADO al observado en vez de centrado en cero, y una MDE
+    # que asume centro cero sale absurdamente chica — justo el error que se
+    # quiere evitar. El p-valor sigue siendo el de siempre (|null| vs |obs|):
+    # esto solo corrige la lectura de POTENCIA.
+    c0 = float(v.mean())
+    crit = float(_np.quantile(_np.abs(v - c0), 0.95))
+    return crit + float(_norm.ppf(poder)) * float(v.std(ddof=1))
+
+
 def _hi_lo(pnl, p, lo_t=20, hi_t=80):
     hi, lo = pnl[p >= hi_t], pnl[p <= lo_t]
     if len(hi) < 30 or len(lo) < 30:
@@ -187,14 +217,23 @@ def reportar(T, C):
                 continue
             hv, lv = pnl[p >= 80], pnl[p <= 20]
             se = math.sqrt(hv.var(ddof=1) / len(hv) + lv.var(ddof=1) / len(lv))
-            cnt = 0
+            cnt, nulos = 0, []
             for _ in range(NROT):
                 k = int(rng.integers(252, len(arr) - 252))
                 d2, _a, _b = _hi_lo(pnl, np.roll(arr, k)[pos])
+                nulos.append(d2)
                 if d2 is not None and abs(d2) >= abs(d):
                     cnt += 1
+            mde = _mde_perm(nulos)
+            mde_ing = 2.80 * pnl.std(ddof=1) * math.sqrt(1 / nh + 1 / nl)
             print(f"   alto(n={nh}) vs bajo(n={nl}): {d:+.3f} pp   "
                   f"t INGENUO {d / se:+.2f}   p(rotacion) {(cnt + 1) / (NROT + 1):.3f}")
+            # Las dos MDE juntas a proposito: la distancia entre ellas ES el
+            # precio de la dependencia. Leer la ingenua seria creer que un nulo
+            # tiene potencia que no tiene.
+            print(f"      MDE 80%: {mde:.3f} pp (rotacion)  vs {mde_ing:.3f} pp "
+                  f"(ingenua, {mde / mde_ing:.1f}x mas chica)"
+                  if mde == mde else f"      MDE: n/d")
 
         print()
         for side, nm in (("L", "COMPRA"), ("S", "VENTA")):
@@ -215,14 +254,16 @@ def reportar(T, C):
             if obs is None:
                 print(f"   interaccion {nm}: muestra insuficiente")
                 continue
-            cnt = 0
+            cnt, nulos = 0, []
             for _ in range(NROT):
                 k = int(rng.integers(252, len(arr) - 252))
                 v = dd(np.roll(arr, k))
+                nulos.append(v)
                 if v is not None and abs(v) >= abs(obs):
                     cnt += 1
             print(f"   INTERACCION {nm} (edge sobre baseline, alto − bajo): "
-                  f"{obs:+.3f} pp   p(rotacion) {(cnt + 1) / (NROT + 1):.3f}")
+                  f"{obs:+.3f} pp   p(rotacion) {(cnt + 1) / (NROT + 1):.3f}"
+                  f"   MDE 80% {_mde_perm(nulos):.3f} pp")
 
 
 if __name__ == "__main__":

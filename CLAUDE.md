@@ -1269,15 +1269,30 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
     194.868 entradas: señal 3/3 y baseline incondicional cada 5 ruedas, mismo motor de ejecución
     intradía del backtest). Ver "La trampa del n" abajo — el método es lo más importante de esta
     medición.
-    - **Sobre las entradas de SEÑAL, que son las que el score rankea, no hay nada.** Compra:
-      alto (p≥80) vs bajo (p≤20) da **+0.45 pp, p(rotación)=0.50**; venta **−0.27 pp, p=0.66**. Y
-      los buckets no son monótonos (compra: p[20,40) +1.01%, p[60,80) **+0.07%**, p[80,101)
-      +0.83%): eso es ruido con forma de gradiente, no un gradiente.
-    - **La INTERACCIÓN con la señal —la única que justificaría tocar el score— es cero.** La
-      diferencia-en-diferencias (edge sobre baseline en régimen alto menos en régimen bajo) da
-      **+0.08 pp comprando (p=0.91)** y **+0.06 pp vendiendo (p=0.93)**. Mismo criterio que
-      `_major_ma_proximity`: ahí el efecto estaba en la señal y NO en el baseline, y por eso vale
-      6 puntos; acá no está en ninguno de los dos.
+    - **Sobre las entradas de SEÑAL, que son las que el score rankea, no se detectó nada.**
+      Compra: alto (p≥80) vs bajo (p≤20) da **+0.45 pp, p(rotación)=0.50, MDE 1.92 pp**; venta
+      **−0.27 pp, p=0.66, MDE 1.70 pp**. Y los buckets no son monótonos (compra: p[20,40) +1.01%,
+      p[60,80) **+0.07%**, p[80,101) +0.83%): ruido con forma de gradiente, no un gradiente.
+    - **La INTERACCIÓN con la señal —la única que justificaría tocar el score— da ~0, pero el
+      test NO ESTABA POTENCIADO para verla.** La diferencia-en-diferencias (edge sobre baseline
+      en régimen alto menos en régimen bajo) da **+0.08 pp comprando (p=0.91)** y **+0.06 pp
+      vendiendo (p=0.93)** — con una **MDE de 1.77 y 1.41 pp**. O sea: el punto estimado es
+      prácticamente cero, pero **efectos de hasta ~1.5 pp no se pueden descartar**.
+      **Para dimensionarlo**: `_major_ma_proximity` cobra 6 puntos del score sobre un efecto
+      medido de **+0.43 pp** — cuatro veces más chico que lo que este test podía detectar. Así
+      que esta medición **nunca estuvo en condiciones de responder la pregunta a la escala en la
+      que el sistema ya actúa**. La decisión no cambia (nada entra al score sin edge demostrado,
+      y acá no hay ninguno), pero **decir "es cero" sería afirmar más de lo que el test puede**.
+    - **LA MDE VA AL LADO DE CADA NULO, Y SE CALCULA SOBRE EL MISMO NULL QUE EL p-VALOR
+      (2026-11).** Un `p=0.91` sin la MDE no distingue "no hay efecto" de "no se podía ver", y
+      esas dos cosas llevan a decisiones distintas. Y la MDE **no** puede salir de la fórmula de
+      dos muestras: esa supone observaciones independientes, que es exactamente lo que la trampa
+      del n niega. Medido: en el baseline largo la MDE ingenua da **0.13 pp** y la de rotación
+      **0.93 pp** — **7.1× optimista**. La correcta sale de la distribución nula que ya decide el
+      p-valor (valor crítico a dos colas + el margen para superarlo el 80% de las veces),
+      **centrada** antes de medir su dispersión: si el null queda corrido, una MDE que lo asume
+      en cero sale absurdamente chica. Para la rotación el centrado no mueve nada (1.930 → 1.922:
+      el null de rotación sí está centrado), lo que confirma de paso que el test era sano.
     - **Lo único que sí se ve es del MERCADO, no de la señal, y va al revés de la intuición**: en
       régimen de concentración alta el baseline LARGO rinde mejor (+0.37 pp) y el CORTO peor
       (−0.33 pp). O sea que "concentración alta = caro = cuidado" no aparece: lo que aparece es
@@ -1422,13 +1437,23 @@ invalidar ⇒ se acepta, y el panel ya trata el EPS negativo como hueco.
 - **NO entra en el score ni en el veredicto**, y con la historia larga eso pasó de *"no se puede
   medir"* a **un nulo con potencia real** (`tools/medir_pe.py`, 97 acciones, **74.407 entradas**,
   ventana **2017-11 → 2026-11**; antes 35.013 entradas y 2.5 años):
-  - **Baseline largo: n=35.775, MDE 0.18 pp ⇒ +0.07 pp (p(perm)=0.807).** Los cinco buckets son
-    planos (0.446 / 0.359 / 0.424 / 0.386 / 0.357). Esto **no** es "no lo vimos": con esa muestra,
-    si hubiera un efecto mayor a ~0.2 pp se habría visto. El percentil propio de P/E **no predice
-    el retorno incondicional**.
-  - **Señal de compra (n=394, antes 205)**: barato−caro **−0.46 pp, p(perm)=0.364** — y con el
-    signo al revés de la intuición. **Señal de venta (n=1.200)**: +0.77 pp, t=1.86 pero
-    **p(perm)=0.131**. Ninguna significativa; los buckets no son monótonos.
+  - **EL TEST SEPARA "QUÉ DÍA" DE "QUÉ ACCIÓN", y hay que leer las dos partes.** Barajar el
+    percentil **dentro de cada fecha** mantiene fijo de qué días salen los trades baratos y caros
+    — en un desplome casi todo el universo queda barato para sí mismo, y eso es un efecto de
+    **fecha**, no de la valuación del símbolo. Por eso el null **no se centra en cero** sino en la
+    parte de fecha (verificado: barajando **global** sí centra, en +0.007). Entonces:
+    `observado = parte de FECHA + parte PROPIA`, y lo que el panel muestra —y lo único que podría
+    entrar al score— es la parte PROPIA. Sin esta descomposición, un "+0.77 pp con p=0.13" parece
+    un efecto grande que no llegó a significar, cuando en realidad **+0.54 de esos 0.77 son el
+    día, no la acción**.
+  - **Baseline largo: n=35.775 ⇒ observado +0.070 pp = fecha +0.121 + PROPIA −0.051, con MDE
+    0.162 pp (p=0.807).** Los cinco buckets son planos (0.446 / 0.359 / 0.424 / 0.386 / 0.357).
+    Esto **no** es "no lo vimos": con esa muestra un efecto propio mayor a ~0.16 pp se habría
+    visto. El percentil propio de P/E **no predice el retorno incondicional**.
+  - **Señal de compra (n=394, antes 205)**: observado −0.46 pp = fecha +0.28 + **propia −0.74**,
+    p=0.364, **MDE 1.17 pp**. **Señal de venta (n=1.200)**: observado +0.77 = fecha +0.54 +
+    **propia +0.23**, p=0.131, **MDE 0.56 pp**. Ninguna detectable: en las dos la parte propia
+    queda por debajo de la MDE. Los buckets tampoco son monótonos.
   - **La interacción** (lo único que justificaría tocar el score) da **−0.53 pp comprando y +0.80
     vendiendo**: signos opuestos, ninguno significativo. Ruido.
   - **UNA LECCIÓN DE LA RE-MEDICIÓN**: con la muestra corta, el *value tilt* transversal daba

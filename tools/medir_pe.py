@@ -161,11 +161,35 @@ def _hi_lo(pnl, p, lo_t=30, hi_t=70):
 
 
 def _mde(pnl, nh, nl):
-    """Minimum detectable effect al 80% de potencia, 5% a dos colas."""
+    """MDE INGENUA: supone observaciones independientes. Se imprime solo al
+    lado de la de permutacion, para que se vea cuanto cuesta la dependencia."""
     s = pnl.std(ddof=1)
     if not nh or not nl or not s:
         return float("nan")
     return 2.80 * s * math.sqrt(1 / nh + 1 / nl)
+
+
+def _mde_perm(nulos, poder=0.80):
+    """MDE sobre la MISMA distribucion nula que decide el p-valor.
+
+    Es la honesta: hereda la estructura de dependencia del test (acá, que los
+    trades del mismo dia comparten el movimiento del mercado). Con la ingenua,
+    un nulo puede parecer "bien potenciado" cuando en realidad no se podia ver.
+    """
+    from scipy.stats import norm as _norm
+    v = np.asarray([x for x in nulos if x is not None], dtype=float)
+    if len(v) < 50:
+        return float("nan")
+    # CENTRAR el null antes de medir su dispersion. Si la permutacion tiene
+    # poca libertad (p.ej. pocas fechas con mas de un simbolo), el estadistico
+    # permutado queda PEGADO al observado en vez de centrado en cero, y una MDE
+    # que asume centro cero sale absurdamente chica — justo el error que se
+    # quiere evitar. El p-valor sigue siendo el de siempre (|null| vs |obs|):
+    # esto solo corrige la lectura de POTENCIA.
+    c0 = float(v.mean())
+    crit = float(np.quantile(np.abs(v - c0), 0.95))
+    return (crit + float(_norm.ppf(poder)) * float(v.std(ddof=1)),
+            c0, float(v.std(ddof=1)))
 
 
 def reportar(T, col, nombre):
@@ -204,7 +228,7 @@ def reportar(T, col, nombre):
         for k, f in enumerate(s["date"].tolist()):
             por_fecha[f].append(k)
         idx = list(por_fecha.values())
-        cnt = 0
+        cnt, nulos = 0, []
         for _ in range(NPERM):
             pp = p.copy()
             for grupo in idx:
@@ -213,13 +237,27 @@ def reportar(T, col, nombre):
                     rng.shuffle(vals)
                     pp[grupo] = vals
             d2, a, b = _hi_lo(pnl, pp)
+            nulos.append(d2)
             if d2 is not None and abs(d2) >= abs(d):
                 cnt += 1
         multi = sum(1 for g in idx if len(g) > 1)
+        mp, c0, sd = _mde_perm(nulos)
+        mi = _mde(pnl, nh, nl)
         print(f"   BARATO(p<=30,n={nl}) − CARO(p>=70,n={nh}): {d:+.3f} pp   "
               f"t {d / se:+.2f}   p(perm) {(cnt + 1) / (NPERM + 1):.3f}")
-        print(f"   MDE al 80% de potencia: {_mde(pnl, nh, nl):.3f} pp   "
-              f"(fechas con >1 simbolo para permutar: {multi} de {len(idx)})")
+        # EL CENTRO DEL NULL NO ES UN DEFECTO: ES LA DESCOMPOSICION.
+        # Barajar DENTRO de cada fecha mantiene fijo, a proposito, de que DIAS
+        # salen los trades baratos y caros — en un desplome casi todo el
+        # universo queda barato para si mismo, y eso es un efecto de FECHA, no
+        # de la valuacion del simbolo. Por eso el null se centra en la parte de
+        # fecha y no en cero (verificado: barajando GLOBAL el null si centra en
+        # +0.007). Lo que el test aisla es el residuo:
+        #     observado = parte de FECHA (centro del null) + parte PROPIA
+        # y la MDE (sobre el null centrado) es la potencia para ese residuo.
+        print(f"   MDE 80%: {mp:.3f} pp (permutacion)  vs {mi:.3f} pp (ingenua)"
+              f"   | fechas permutables: {multi} de {len(idx)}")
+        print(f"      descomposicion: fecha {c0:+.3f} pp  +  PROPIA "
+              f"{d - c0:+.3f} pp   (null sd {sd:.3f})")
 
     # interaccion: lo unico que justificaria tocar el score
     print()
