@@ -191,11 +191,19 @@ stock_list = []            # list of symbol strings
 analysis_cache = {}        # {symbol: result_dict}
 fundamentals_cache = {}    # {symbol: {"data": {...}, "ts": timestamp}}
 last_update_time = ""
+# Epoch UTC del ultimo analisis. `last_update_time` es solo "HH:MM:SS" en la
+# hora LOCAL DEL SERVIDOR, y eso no sirve para contestar "¿esto esta vivo?":
+# (1) sin fecha, una pagina de hace tres dias se ve igual que una de recien, y
+# (2) en el cloud el contenedor corre en UTC, asi que el numero que se muestra
+# no es la hora del que mira. Con el epoch el navegador lo pasa a SU huso y
+# puede decir cuanto hace — que es la pregunta real.
+last_update_ts = 0.0
 update_lock = threading.Lock()
 
 etf_list = []              # list of ETF symbol strings
 etf_analysis_cache = {}    # {symbol: result_dict}
 etf_last_update_time = ""
+etf_last_update_ts = 0.0
 etf_update_lock = threading.Lock()
 
 
@@ -525,7 +533,7 @@ def get_rt_price(symbol):
 
 
 def run_analysis():
-    global analysis_cache, last_update_time
+    global analysis_cache, last_update_time, last_update_ts
     _IB_HIST_FAILS["n"] = 0  # reintentar IB al inicio de cada ciclo
     epoch = signal_epoch()
     total = len(stock_list)
@@ -549,6 +557,7 @@ def run_analysis():
         with update_lock:
             analysis_cache[symbol] = result
             last_update_time = datetime.now().strftime("%H:%M:%S")
+            last_update_ts = time.time()
         time.sleep(1)
 
     if fresh == total and total:
@@ -585,7 +594,7 @@ def get_etf_rt_price(symbol):
 
 
 def run_etf_analysis():
-    global etf_analysis_cache, etf_last_update_time
+    global etf_analysis_cache, etf_last_update_time, etf_last_update_ts
     _IB_HIST_FAILS_ETF["n"] = 0  # reintentar IB al inicio de cada ciclo
     epoch = signal_epoch()
     total = len(etf_list)
@@ -605,6 +614,7 @@ def run_etf_analysis():
         with etf_update_lock:
             etf_analysis_cache[symbol] = result
             etf_last_update_time = datetime.now().strftime("%H:%M:%S")
+            etf_last_update_ts = time.time()
         time.sleep(1)
 
     if fresh == total and total:
@@ -3001,6 +3011,13 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .mp-chg{font-size:13px;font-weight:700}
 .mp-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .mp-upd{margin-left:auto;font-size:10px;color:var(--muted);letter-spacing:.3px}
+.mp-conds{display:flex;gap:18px;flex-wrap:wrap}
+.mp-cond{flex:1 1 260px;min-width:220px}
+.mp-cond-h{font-size:11px;font-weight:700;letter-spacing:.4px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
+.mp-cond-h.buy{color:var(--buy)}.mp-cond-h.sell{color:var(--sell)}
+.mp-cond-i{font-size:11px;color:var(--dim);line-height:1.5}
+.mp-cond-i.ok{color:var(--buy);font-weight:600}
+.mp-cond-none{font-size:11px;color:var(--muted);margin-bottom:6px;line-height:1.5}
 .mp-chip{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:800;letter-spacing:.4px;cursor:default;white-space:nowrap}
 .mp-chip.buy{background:rgba(11,122,75,.12);color:var(--buy)}
 .mp-chip.sell{background:rgba(194,36,54,.10);color:var(--sell)}
@@ -3019,7 +3036,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 .mp-sec{font-size:11.5px;color:var(--muted);margin-top:2px}
 .mp-period-bar{display:flex;gap:4px;margin-bottom:8px}
 .mp-err{font-size:12px;color:var(--muted);padding:8px 0}
-@media(max-width:700px){.mp-k{flex-basis:60px}.mp-upd{display:none}}
+@media(max-width:700px){.mp-k{flex-basis:60px}.mp-upd{margin-left:0;flex-basis:100%;order:9}}
 .top3-title::before{content:'';display:inline-block;width:3px;height:16px;background:var(--accent);border-radius:2px}
 .top3-empty{color:var(--dim);font-size:12px;font-style:italic;padding:8px 0}
 .rec-details{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:12px;overflow:hidden;transition:all .3s ease}
@@ -6773,7 +6790,7 @@ function _renderStockList(data){
         "Puerto: "+data.port+(_mode?(" \u00b7 "+_mode+" "+(_acc.code||"")).trimEnd():"");
     }
     document.getElementById("footer-port").textContent="Puerto: "+data.port;
-    document.getElementById("last-update").textContent=data.last_update||"--";
+    document.getElementById("last-update").innerHTML=_fmtUpd(data.last_update_ts,data.last_update);
     let _sigTxt=data.signals_label||(data.signals_as_of?('cierre del '+data.signals_as_of):'');
     if(_sigTxt){
       document.getElementById("signals-asof").textContent=_sigTxt;
@@ -7126,6 +7143,38 @@ function updateMarketPulse(){
   }).catch(e=>console.error('spy-pulse',e));
 }
 
+// Marca de tiempo legible desde el huso DEL QUE MIRA, con la antiguedad.
+//
+// Por que el epoch y no el string: el server manda "HH:MM:SS" en SU hora
+// local — en el cloud eso es UTC, asi que el numero no es la hora de nadie
+// que lo lea — y SIN FECHA, con lo cual una pagina de hace tres dias se ve
+// exactamente igual que una de recien. La pregunta que hay que contestar no
+// es "a que hora se calculo" sino "¿esto esta vivo?", y eso es la EDAD.
+// `viejoS` marca a partir de cuando se pinta en ambar.
+function _updAge(ts){return ts?Math.max(0,Date.now()/1000-ts):null;}
+function _fmtAge(sec){
+  if(sec==null)return '';
+  if(sec<90)return 'recien';
+  if(sec<5400)return 'hace '+Math.round(sec/60)+' min';
+  if(sec<172800)return 'hace '+Math.round(sec/3600)+' h';
+  return 'hace '+Math.round(sec/86400)+' d';
+}
+function _fmtUpd(ts,fallback,viejoS){
+  let age=_updAge(ts);
+  if(age==null)return _mpEsc(fallback||'--');
+  let d=new Date(ts*1000),hoy=new Date();
+  let hh=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  let mismoDia=d.toDateString()===hoy.toDateString();
+  // La FECHA solo cuando no es hoy: en el caso normal no estorba, y en el
+  // anormal — que es el que importa — esta.
+  let cuando=mismoDia?hh:(String(d.getDate()).padStart(2,'0')+'/'+
+                          String(d.getMonth()+1).padStart(2,'0')+' '+hh);
+  let viejo=age>(viejoS||900);
+  return '<span'+(viejo?' style="color:var(--hold);font-weight:700"':'')+
+    ' title="'+(viejo?'El dato no se refresca hace rato: puede que el analisis no este corriendo.':'Hora de tu equipo, no la del servidor.')+
+    '">'+cuando+' <span style="opacity:.75">('+_fmtAge(age)+')</span>'+(viejo?' &#9888;':'')+'</span>';
+}
+
 function _mpChipsHTML(d){
   let chips=_mpChip(d.verdict.label,_mpDirCls(d.verdict.bias),'Score '+(d.verdict.score>=0?'+':'')+d.verdict.score+'\n'+(d.verdict.factors||[]).join('\n'));
   let sysLbl=d.system&&d.system.label;
@@ -7137,6 +7186,36 @@ function _mpChipsHTML(d){
   if(b)chips+=_mpChip('Compra '+b.met+'/3',(b.met>=3?'buy':'ghost'),'Condiciones de COMPRA del sistema:\n'+b.items.map(i=>(i.ok?'[OK] ':'[ - ] ')+i.text).join('\n'));
   if(s)chips+=_mpChip('Venta '+s.met+'/3',(s.met>=3?'sell':'ghost'),'Condiciones de VENTA del sistema:\n'+s.items.map(i=>(i.ok?'[OK] ':'[ - ] ')+i.text).join('\n'));
   return chips;
+}
+
+// Las 3 condiciones de cada lado, VISIBLES. Vivian solo en el `title` de los
+// chips: en el header se leia "Compra 0/3 · Venta 0/3" y nada mas, que parece
+// un contador roto — "estan en cero cuando realmente no lo estan". Dos cosas
+// las hacian invisibles: el tooltip no existe en tactil, y el cuerpo de la
+// tarjeta nunca las mostro (solo Momentum/Niveles/Figura/Sesion/Lectura).
+// Y 0/3 de los dos lados es un ESTADO legitimo — el sistema pide 3 de 3 —,
+// asi que lo que faltaba no era el numero sino el porque.
+function _mpCondLado(c,titulo,cls){
+  if(!c)return '';
+  let h='<div class="mp-cond"><div class="mp-cond-h '+(c.met>=3?cls:'')+'">'+
+        titulo+' <b>'+c.met+'/3</b></div>';
+  for(let it of (c.items||[])){
+    h+='<div class="mp-cond-i'+(it.ok?' ok':'')+'">'+
+       (it.ok?'&#10003;':'&middot;')+' '+_mpEsc(it.text)+'</div>';
+  }
+  return h+'</div>';
+}
+function _mpCondsHTML(d){
+  let b=d.conditions&&d.conditions.buy,s2=d.conditions&&d.conditions.sell;
+  if(!b&&!s2)return null;
+  let h='';
+  if(b&&s2&&!b.met&&!s2.met){
+    h+='<div class="mp-cond-none">El sistema no tiene se&ntilde;al en SPY: ninguna de '+
+       'las 3 condiciones se cumple, ni de compra ni de venta. Pide las <b>3 de 3</b> '+
+       'para disparar, as&iacute; que 0/3 es el estado normal la mayor parte del tiempo.</div>';
+  }
+  h+='<div class="mp-conds">'+_mpCondLado(b,'Compra','buy')+_mpCondLado(s2,'Venta','sell')+'</div>';
+  return h;
 }
 
 function _mpFiguraHTML(p){
@@ -7155,10 +7234,11 @@ function _mpHeadInner(){
     '<span class="mp-px">$'+_n(d.price,2)+'</span>'+
     '<span class="mp-chg" style="color:'+chCol+'">'+(ch>=0?'+':'')+_n(ch,2)+'% <span style="font-weight:600;color:var(--muted)">'+when+'</span></span>'+
     '<span class="mp-chips">'+_mpChipsHTML(d)+'</span>'+
-    '<span class="mp-upd"'+(d.analysis_as_of?' title="'+(d.analysis_live?'Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) mira la vela de HOY y se recalcula cada hora en punto':'Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) se calcula sobre el ultimo cierre confirmado')+'"':'')+'>'+(live?'&#9679; sesion en vivo':'al cierre')+' &middot; act. '+_mpEsc((d.updated||'').slice(11,16))+' NY'+(d.analysis_as_of?(d.analysis_live?' &middot; analisis de la rueda en curso':' &middot; analisis al cierre del '+_mpEsc(d.analysis_as_of)):'')+'</span>'+
+    '<span class="mp-upd"'+(d.analysis_as_of?' title="'+(d.analysis_live?'Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) mira la vela de HOY y se recalcula cada hora en punto':'Precio y sesion en vivo; el analisis (momentum, condiciones, veredicto, figuras) se calcula sobre el ultimo cierre confirmado')+'"':'')+'>'+(live?'&#9679; sesion en vivo':'al cierre')+' &middot; act. '+_fmtUpd(d.updated_ts,(d.updated||'').slice(11,16),900)+(d.analysis_as_of?(d.analysis_live?' &middot; analisis de la rueda en curso':' &middot; analisis al cierre del '+_mpEsc(d.analysis_as_of)):'')+'</span>'+
   '</div>';
   let rows=[
     ['Momentum',d.momentum?_mpEsc(d.momentum.text):null],
+    ['Sistema',_mpCondsHTML(d)],
     ['Niveles',d.levels?_mpEsc(d.levels.text):null],
     ['Figura',_mpFiguraHTML(d.pattern)],
     ['Sesion',d.session?_mpEsc(d.session.text):null],
@@ -8821,7 +8901,7 @@ def api_data():
     # simbolo, quedaba frenado decenas de segundos en cada request.
     with update_lock:
         snapshot = dict(analysis_cache)
-        lu = last_update_time
+        lu, lu_ts = last_update_time, last_update_ts
     results, stale_map = {}, {}
     # Misma fuente de verdad que compute_top3 (universe_items): la tabla y el
     # ranking no pueden discrepar sobre que simbolos estan vigentes.
@@ -8882,6 +8962,7 @@ def api_data():
         "results": results,
         "stale": stale_map,
         "last_update": lu,
+        "last_update_ts": lu_ts,
         "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
                              default=""),
         "signals_label": signals_label(snapshot),
@@ -8896,7 +8977,7 @@ def api_etf_data():
     # idem api_data: el lock cubre solo el snapshot, no la red ni la serializacion
     with etf_update_lock:
         snapshot = dict(etf_analysis_cache)
-        lu = etf_last_update_time
+        lu, lu_ts = etf_last_update_time, etf_last_update_ts
     results, stale_map = {}, {}
     # Misma fuente de verdad que compute_top3 — ver universe_items.
     for sym, sig, stale in universe_items(snapshot, etf_list):
@@ -8957,6 +9038,7 @@ def api_etf_data():
         "results": results,
         "stale": stale_map,
         "last_update": lu,
+        "last_update_ts": lu_ts,
         "signals_as_of": max((_analysis_as_of(s) for s in snapshot.values() if s),
                              default=""),
         "signals_label": signals_label(snapshot),

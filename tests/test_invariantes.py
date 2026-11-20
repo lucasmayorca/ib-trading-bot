@@ -2793,3 +2793,90 @@ def test_ninguna_lectura_de_la_db_indexa_la_fila_por_numero():
                 and isinstance(n.slice.value, int):
             malas.append(ast.get_source_segment(src, n))
     assert not malas, f"filas indexadas por numero con RealDictCursor: {malas}"
+
+
+# ── 24. "¿esto esta vivo?" y "¿por que 0/3?" ─────────────────────────
+# Dos reportes del usuario sobre la misma tarjeta (Pulso del SPY): las
+# condiciones en 0/3 parecian un contador roto, y no habia forma de saber si
+# lo que estaba viendo era de recien o de hace tres dias.
+
+def _raiz():
+    return os.path.join(os.path.dirname(__file__), "..")
+
+
+def test_la_marca_de_tiempo_viaja_como_EPOCH_no_solo_como_hora():
+    """`last_update`/`updated` son "HH:MM:SS" en la hora LOCAL DEL SERVIDOR, y
+    eso no contesta "¿esto esta vivo?": sin fecha, una pagina de hace tres dias
+    se ve igual que una de recien, y en el cloud el contenedor corre en UTC,
+    asi que el numero no es la hora de nadie que lo lea. Con el epoch el
+    navegador lo pasa a SU huso y puede decir la EDAD, que es la pregunta."""
+    src = open(os.path.join(_raiz(), "vista_web.py")).read()
+    assert src.count('"last_update_ts": lu_ts,') == 2, "acciones + ETFs"
+    cloud = open(os.path.join(_raiz(), "cloud", "server.py")).read()
+    assert cloud.count('"last_update_ts": store.get("last_update_ts", 0) or 0,') == 4
+    # y se setea en TODOS los puntos donde se setea la hora, o queda vieja
+    assert (cloud.count('store["last_update"] = datetime.now()')
+            == cloud.count('store["last_update_ts"] = time.time()'))
+    mp = open(os.path.join(_raiz(), "market_pulse.py")).read()
+    assert '"updated_ts": time.time(),' in mp
+
+
+def test_la_edad_se_muestra_y_lo_viejo_se_marca():
+    """`_fmtUpd` es el unico formateador: el pie y el pulso lo comparten, asi
+    que no pueden decir cosas distintas sobre la misma pregunta."""
+    h = vw.DASHBOARD_HTML
+    assert "function _fmtUpd(" in h and "function _fmtAge(" in h
+    assert h.count("_fmtUpd(") >= 3, "definicion + pie + pulso"
+    assert '_fmtUpd(data.last_update_ts,data.last_update)' in h, "el pie lo usa"
+    assert "_fmtUpd(d.updated_ts," in h, "el pulso lo usa"
+    # la FECHA solo aparece cuando no es hoy (en el caso normal estorba)
+    assert "toDateString()" in h
+    # y lo viejo se marca, no se muestra igual que lo fresco
+    assert "var(--hold)" in h[h.index("function _fmtUpd("):h.index("function _mpChipsHTML(")]
+
+
+def test_la_marca_de_tiempo_no_se_esconde_en_pantalla_angosta():
+    """Estaba en `display:none` bajo 700px — justo el dato que contesta "¿estoy
+    viendo algo viejo?" desaparecia en el telefono."""
+    h = vw.DASHBOARD_HTML
+    assert ".mp-upd{display:none}" not in h
+    assert "@media(max-width:700px)" in h
+
+
+def test_las_condiciones_del_pulso_se_VEN_no_solo_en_un_tooltip():
+    """Reporte del usuario: "¿por que todas estas señales de compras y ventas
+    estan en cero cuando realmente no lo estan?". El 0/3 era correcto — SPY con
+    RSI 31 (pide <30), MACD negativo pero aun cayendo y Koncorde sin girar —
+    pero el porque vivia SOLO en el `title` del chip: invisible en tactil, y el
+    cuerpo de la tarjeta nunca lo mostraba. Un contador sin su motivo al lado
+    se lee como un contador roto."""
+    h = vw.DASHBOARD_HTML
+    assert "function _mpCondsHTML(" in h and "function _mpCondLado(" in h
+    assert "['Sistema',_mpCondsHTML(d)]" in h, "la fila tiene que estar en el cuerpo"
+    # y cuando los dos lados dan 0 se dice con palabras que es un estado normal
+    cuerpo = h[h.index("function _mpCondsHTML("):h.index("function _mpFiguraHTML(")]
+    assert "!b.met&&!s2.met" in cuerpo
+    assert "3 de 3" in cuerpo
+
+
+def test_el_JS_del_dashboard_parsea():
+    """`ast.parse` valida el PYTHON y no ve una sola linea del JS, que son
+    ~280k caracteres dentro de un raw string. Una comilla de mas deja el
+    dashboard entero en blanco con los tests en verde — ya paso al editar
+    `_mpHeadInner`. Se saltea si no hay node."""
+    import shutil
+    import subprocess
+    import re
+    import tempfile
+    if not shutil.which("node"):
+        import pytest
+        pytest.skip("node no instalado")
+    bloques = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
+                         vw.DASHBOARD_HTML, re.S)
+    assert bloques, "no se encontro el <script> del dashboard"
+    for b in bloques:
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(b)
+            ruta = f.name
+        r = subprocess.run(["node", "--check", ruta], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr[:2000]

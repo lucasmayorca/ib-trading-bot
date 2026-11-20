@@ -478,6 +478,7 @@ def handle_stock_list(data):
     store["stocks"] = symbols
     _prune_analysis(store, "analysis", symbols)
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
+    store["last_update_ts"] = time.time()
 
 
 @socketio.on("analysis_data")
@@ -493,6 +494,7 @@ def handle_analysis_data(data):
         store["analysis"][symbol] = valuation.attach_pe(
             attach_to_analysis(data.get("result", {})), symbol)
         store["last_update"] = datetime.now().strftime("%H:%M:%S")
+        store["last_update_ts"] = time.time()
 
 
 @socketio.on("analysis_batch")
@@ -516,6 +518,7 @@ def handle_analysis_batch(data):
             attach_to_analysis(result), symbol)
     _record_failures(store, data.get("failed") or [], "ANALYSIS_BATCH")
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
+    store["last_update_ts"] = time.time()
     schedule_persist(user_id)
 
 
@@ -543,6 +546,7 @@ def handle_etf_analysis_batch(data):
         store["etf_analysis"][symbol] = attach_to_analysis(result)
     _record_failures(store, data.get("failed") or [], "ETF_BATCH")
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
+    store["last_update_ts"] = time.time()
     schedule_persist(user_id)
 
 
@@ -558,6 +562,7 @@ def handle_portfolio_data(data):
     store["executions"] = data.get("executions", [])
     store["portfolio_received"] = True
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
+    store["last_update_ts"] = time.time()
     schedule_persist(user_id)
 
 
@@ -664,6 +669,7 @@ def api_data():
             "stale": stale_map,
             "top3": top3,
             "last_update": store.get("last_update", ""),
+            "last_update_ts": store.get("last_update_ts", 0) or 0,
             "signals_as_of": _signals_as_of(analysis),
             "signals_label": _signals_label(analysis),
             "bridge_connected": store.get("connected", False),
@@ -734,6 +740,7 @@ def api_etf_data():
             "stale": stale_map,
             "top3": etf_top3,
             "last_update": store.get("last_update", ""),
+            "last_update_ts": store.get("last_update_ts", 0) or 0,
             "signals_as_of": _signals_as_of(etf_analysis),
             "signals_label": _signals_label(etf_analysis),
             "bridge_connected": store.get("connected", False),
@@ -1272,6 +1279,7 @@ def api_status():
         "stocks_count": len(store.get("stocks", [])),
         "analysis_count": len(store.get("analysis", {})),
         "last_update": store.get("last_update", ""),
+        "last_update_ts": store.get("last_update_ts", 0) or 0,
         "email": email,
     })
 
@@ -1316,6 +1324,7 @@ def api_debug():
         "analysis_symbols": list(analysis.keys())[:10],  # First 10
         "analysis_sample": analysis.get(stocks[0], {}) if stocks else None,
         "last_update": store.get("last_update", ""),
+        "last_update_ts": store.get("last_update_ts", 0) or 0,
         "bridge_sessions_total": len(bridge_sessions),
         "all_connected_bridge_users": all_connected_users,
         "portfolio_positions_count": len(store.get("portfolio_positions", [])),

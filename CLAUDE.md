@@ -1386,6 +1386,36 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   - **Lo que queda pendiente y por qué**: el percentil de P/E PROPIO exige acumular (grabar el P/E
     diario, patrón `save_daily_snapshot`); a los 6 meses hay percentil usable. Hoy no sirve, pero
     sin arrancar nunca se tiene. Tests: §19.
+- **LAS 3 CONDICIONES SE VEN, no viven en un tooltip (2026-11)**. Reporte: *"¿por qué todas
+  estas señales de compras y ventas están en cero cuando realmente no lo están?"* sobre un header
+  que decía `Compra 0/3 · Venta 0/3`. **El 0/3 era correcto** — SPY con RSI 31 (el setup pide
+  <30), MACD hist −5.28 negativo pero **todavía cayendo** (sin giro contra la barra de hace 3
+  ruedas) y el marrón del Koncorde bajo su media pero sin girar; del lado vendedor, las tres
+  claramente lejos. Lo que fallaba era la **presentación**: el porqué vivía sólo en el `title` del
+  chip — invisible en táctil, igual que el `why` del score antes de 2026-11 — y el cuerpo de la
+  tarjeta nunca lo mostró (sólo Momentum/Niveles/Figura/Sesión/Lectura). **Un contador sin su
+  motivo al lado se lee como un contador roto**, y encima `ZONA DE SOBREVENTA` al lado de
+  `Compra 0/3` parece una contradicción cuando no lo es (la zona es RSI<35, la condición es <30).
+  Ahora hay una fila **Sistema** con los dos lados y sus 3 renglones, y cuando los dos dan 0 se
+  dice con palabras que el sistema pide **3 de 3** y que 0/3 es el estado normal casi siempre.
+- **LA MARCA DE TIEMPO VIAJA COMO EPOCH** (`last_update_ts` en `/api/data` y `/api/etf-data`,
+  `updated_ts` en el pulso; `_fmtUpd`/`_fmtAge` en el JS, compartidos por el pie y por el pulso).
+  Pedido: *"agregar en algún lado del reporte la fecha de la última actualización para saber que
+  estoy viendo algo en tiempo real y no que quedó viejo"*. Lo que había era `"HH:MM:SS"` de
+  `datetime.now()`, y **no contesta esa pregunta por dos motivos independientes**:
+  1. **Sin fecha**, una pestaña abierta hace tres días se ve **idéntica** a una de recién.
+  2. Es la hora **local del servidor**: en el cloud el contenedor corre en **UTC**, así que el
+     número no es la hora de nadie que lo lea (para Buenos Aires, 3 h de desfasaje).
+  Con el epoch el navegador lo pasa a SU huso y muestra **la EDAD**, que es lo único que responde
+  "¿esto está vivo?": `11:56 (recien)`, `11:49 (hace 7 min)`, y en ámbar con ⚠ a partir de 15 min
+  — `17/11 11:56 (hace 3 d) ⚠`. **La fecha aparece sólo cuando no es hoy**: en el caso normal
+  estorba, y en el anormal —que es el que importa— está. Si falta el epoch se cae al string viejo.
+  **`.mp-upd` dejó de estar en `display:none` bajo 700px**: era justo el dato que contesta "¿estoy
+  viendo algo viejo?" y desaparecía en el teléfono.
+- **EL JS SE VALIDA CON `node --check`** (test §24). `ast.parse` valida el **Python** y no ve una
+  sola línea de los ~280k caracteres de JS que viven dentro del raw string: una comilla de más
+  deja el dashboard **entero en blanco** con los 1.748 tests en verde. Ya pasó editando
+  `_mpHeadInner`. El test se saltea si no hay `node`.
 - **Endpoint `/api/spy-pulse`** (local y espejo cloud con `@login_required`). ¡OJO!:
   `/api/market-pulse` YA EXISTE y es OTRA cosa (quotes + sentimiento miedo/codicia del ticker
   del header/briefing) — no reutilizar ese nombre.

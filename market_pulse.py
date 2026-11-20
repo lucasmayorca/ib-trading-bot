@@ -824,6 +824,10 @@ def _build_pulse():
     return {
         "symbol": SYMBOL, "name": NAME,
         "updated": datetime.now(_NY).strftime("%Y-%m-%d %H:%M:%S"),
+        # Epoch UTC: `updated` es hora de NUEVA YORK, que no es la del que
+        # mira. Con el epoch el navegador lo pasa a su huso y puede decir
+        # cuanto hace — que es lo unico que contesta "¿esto esta vivo?".
+        "updated_ts": time.time(),
         # price = cotizacion viva (header); el analisis corre al cierre confirmado
         "price": _r(live_close), "prev_close": _r(prev_close),
         "change_pct": _r(change_pct, 2),
