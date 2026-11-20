@@ -113,7 +113,16 @@ def test_sobreventa_no_es_bajista():
 # ── 4. Trades Historicos: la plata reportada cuadra con IB ───────────
 
 def test_suma_de_pnl_igual_a_realized_pnl():
-    """Sum(pnl de los trades construidos) == Sum(realized_pnl del archivo)."""
+    """Sum(pnl de los trades construidos) == Sum(realized_pnl del archivo).
+
+    OJO: este test corre sobre el ARCHIVO YA ARMADO, y se saltea si no esta.
+    No alcanzo para cazar el dedup roto del cloud (2026-11) porque ese bug
+    vivia ANTES, en el armado de los fills (`_merged_trades_file_path`): para
+    cuando `build_trades_history` leia, ya faltaban 200 de 419 fills y la suma
+    cuadraba igual — contra un archivo mutilado. El camino completo lo cubre
+    `test_el_total_del_tab_cuadra_por_el_camino_COMPLETO`, con datos
+    sinteticos, que corre siempre.
+    """
     import json
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "trades_imported.json")
@@ -2998,3 +3007,128 @@ def test_el_cloud_usa_la_misma_fusion():
     cloud = open(os.path.join(_raiz(), "cloud", "server.py")).read()
     assert "merge_fills(flex_trades, seed_trades, live_trades)" in cloud
     assert "seen_keys" not in cloud, "volvio el dedup por order_id"
+
+
+# Un set de fills con las formas que rompen cosas, para probar el camino
+# entero SIN depender del archivo real (que es personal y esta gitignoreado).
+FILLS_MIX = [
+    # largo con la apertura PARTIDA EN DOS FILLS de la misma orden: el caso
+    # exacto que el dedup por order_id se comia
+    {"symbol": "AAPL", "action": "BUY", "date": "2026-01-05", "filled_qty": 50.0,
+     "avg_fill_price": 100.0, "commission": 1.0, "realized_pnl": 0.0, "order_id": "1"},
+    {"symbol": "AAPL", "action": "BUY", "date": "2026-01-05", "filled_qty": 150.0,
+     "avg_fill_price": 100.0, "commission": 1.0, "realized_pnl": 0.0, "order_id": "1"},
+    {"symbol": "AAPL", "action": "SELL", "date": "2026-02-10", "filled_qty": 200.0,
+     "avg_fill_price": 110.0, "commission": 1.0, "realized_pnl": 1950.0, "order_id": "2"},
+    # corto: el realized_pnl viaja en el BUY, no en el SELL
+    {"symbol": "TSLA", "action": "SELL", "date": "2026-03-01", "filled_qty": 100.0,
+     "avg_fill_price": 200.0, "commission": 1.0, "realized_pnl": 0.0, "order_id": "3"},
+    {"symbol": "TSLA", "action": "BUY", "date": "2026-03-20", "filled_qty": 100.0,
+     "avg_fill_price": 180.0, "commission": 1.0, "realized_pnl": 1980.0, "order_id": "4"},
+    # cierre PARCIAL: deja posicion viva
+    {"symbol": "KO", "action": "BUY", "date": "2026-04-01", "filled_qty": 100.0,
+     "avg_fill_price": 60.0, "commission": 1.0, "realized_pnl": 0.0, "order_id": "5"},
+    {"symbol": "KO", "action": "SELL", "date": "2026-05-01", "filled_qty": 40.0,
+     "avg_fill_price": 70.0, "commission": 1.0, "realized_pnl": 395.0, "order_id": "6"},
+    # opcion
+    {"symbol": "COST  260815C00980000", "action": "BUY", "date": "2026-06-02",
+     "filled_qty": 1.0, "avg_fill_price": 5.0, "commission": 1.0,
+     "realized_pnl": 0.0, "order_id": "7"},
+    {"symbol": "COST  260815C00980000", "action": "SELL", "date": "2026-06-20",
+     "filled_qty": 1.0, "avg_fill_price": 8.0, "commission": 1.0,
+     "realized_pnl": 295.0, "order_id": "8"},
+]
+
+
+def _historia_de(fills):
+    import json
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump({"trades": fills}, f)
+        ruta = f.name
+    return vw.build_trades_history(trades_file=ruta)
+
+
+def _dedup_viejo(fills):
+    """La logica que tenia `_merged_trades_file_path` antes del arreglo."""
+    seen, out = set(), []
+    for t in fills:
+        k = (t.get("order_id") or t.get("perm_id") or
+             (t.get("symbol"), t.get("date"), t.get("action"),
+              t.get("filled_qty"), t.get("avg_fill_price")))
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(t)
+    return out
+
+
+def test_el_total_del_tab_cuadra_por_el_camino_COMPLETO():
+    """Lo que muestra Trades Historicos contra los fills, pasando por el MISMO
+    armado del cloud (varias fuentes -> `merge_fills` -> `build_trades_history`).
+    El test que ya existia miraba solo el ultimo tramo, y por eso el dedup roto
+    paso: la suma cuadraba contra un archivo al que ya le faltaba la mitad.
+
+    TRES invariantes, y hace falta el tercero: la plata sola NO alcanza.
+    """
+    flex = [t for t in FILLS_MIX if t["date"] >= "2026-03-01"]
+    seed = list(FILLS_MIX)
+    live = [t for t in FILLS_MIX if t["date"] >= "2026-06-01"]
+    fusion = vw.merge_fills(flex, seed, live)
+    assert len(fusion) == len(FILLS_MIX), "la fusion perdio o duplico fills"
+
+    h = _historia_de(fusion)
+
+    # (1) la plata
+    esperado = sum(float(t["realized_pnl"]) for t in FILLS_MIX)
+    assert esperado == 4620.0, esperado          # fija el fixture
+    obtenido = sum(float(t.get("pnl") or 0) for t in h["trades"])
+    assert abs(obtenido - esperado) < 0.01, (
+        f"el tab muestra {obtenido:.2f} y los fills suman {esperado:.2f}")
+
+    # (2) la CANTIDAD: cada accion comprada termina en un trade cerrado o en
+    #     una posicion abierta. Sin esto, perder una apertura pasa gratis.
+    comprado = sum(float(t["filled_qty"]) for t in FILLS_MIX
+                   if t["action"] == "BUY" and not float(t["realized_pnl"]))
+    cerrado = sum(float(t.get("quantity") or 0) for t in h["trades"]
+                  if t.get("direction") != "SHORT")
+    abierto = sum(float(p.get("quantity") or 0) for p in h["open_positions"]
+                  if p.get("direction") == "LONG")
+    assert cerrado + abierto == comprado, (cerrado, abierto, comprado)
+
+    # (3) NINGUNA entrada estimada. El fixture arranca en flat, asi que cada
+    #     cierre tiene su apertura: un `estimated_entry` aca significa que se
+    #     perdio un fill de apertura — es la huella exacta del bug del cloud,
+    #     y es INVISIBLE para (1), porque una apertura lleva realized_pnl 0.
+    estimados = [t["symbol"] for t in h["trades"] if t.get("estimated_entry")]
+    assert not estimados, f"entradas inventadas: {estimados}"
+
+    assert len(h["trades"]) == 4, [t["symbol"] for t in h["trades"]]
+    assert any(str(p.get("symbol")) == "KO" for p in h["open_positions"])
+
+
+def test_ese_test_HABRIA_cazado_el_dedup_roto():
+    """Una guarda sin dientes es peor que ninguna: da confianza sin darla.
+
+    Y hay que saber POR QUE da dientes. Con el dedup viejo la apertura de AAPL
+    pierde 150 de sus 200 acciones, y entonces:
+      - la SUMA SIGUE CUADRANDO — una apertura lleva `realized_pnl` 0, asi que
+        perderla no mueve el total. En produccion el total si bajo porque el
+        dedup tambien se comia CIERRES, pero el invariante de plata, solo, no
+        es lo que habria sonado.
+      - lo que si se rompe es la ESTRUCTURA: un trade se parte en dos y el
+        pedazo sin apertura queda con `estimated_entry`. Eso explica el 59 ->
+        78 de produccion: menos fills, MAS trades.
+    """
+    mutilado = _dedup_viejo(FILLS_MIX)
+    assert len(mutilado) < len(FILLS_MIX), "el dedup viejo tiene que perder fills"
+    h = _historia_de(mutilado)
+
+    esperado = sum(float(t["realized_pnl"]) for t in FILLS_MIX)
+    obtenido = sum(float(t.get("pnl") or 0) for t in h["trades"])
+    assert abs(obtenido - esperado) < 0.01, (
+        "la plata cuadra igual: por eso hacen falta los otros dos invariantes")
+
+    assert any(t.get("estimated_entry") for t in h["trades"]), (
+        "sin esta guarda el bug pasa: aparece un trade con la entrada inventada")
+    assert len(h["trades"]) > 4, "y el conteo sube, que es el sintoma raro"
