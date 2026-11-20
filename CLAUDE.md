@@ -1218,7 +1218,13 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   2. **El cloud deduplicaba por `order_id` SOLO** en `_merged_trades_file_path`, y **una orden
      tiene varios fills** (AMD: 5 + 245 acciones con el mismo `order_id`). Medido sobre los mismos
      419 fills: descartaba **200**, el **35% de la cantidad operada** y **$39.259,81 de P&L
-     realizado** — el **24% del total**.
+     realizado** — el **24% del total**. **Y el contador de trades sube, no baja**: 78 contra 59
+     reales. Perder fills PARTE un episodio flat→flat en pedazos, así que aparecían **22 trades
+     que no existieron**, faltaban **3 reales**, y 30 quedaban con P&L distinto (PBR mostraba
+     $2.063,59 de sus $14.557,95 — el 14%). También inventaba **5 posiciones abiertas** (ARKK,
+     ENPH, MS, PBR, USO) que en realidad estaban cerradas. Es el patrón de siempre: el síntoma
+     visible (menos plata) no apunta a la causa (menos fills), y el número que delataba el
+     problema —el conteo— se movía para el lado contrario al que uno buscaría.
   `merge_fills(*fuentes)` (en `vista_web`, la usan el local y el cloud — una sola implementación)
   agrupa por **ORDEN**, que es la unidad de verdad: cada descarga trae el set COMPLETO de fills de
   las órdenes de su ventana, así que se conserva o se reemplaza el **grupo entero**, nunca fill por
