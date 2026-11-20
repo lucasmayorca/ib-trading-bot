@@ -1207,6 +1207,25 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   5. **`_option_root`**: tras un ajuste/split IB renombra el contrato agregando un dígito al root
      ('SQQQ' → 'SQQQ2'), así que la apertura y el cierre quedaban en símbolos distintos y el
      spread se listaba partido en dos filas (una en $0.00, otra con media pata).
+- **FUSIONAR LOS FILLS, NUNCA PISARLOS (`merge_fills`, 2026-11)**. Salió al sincronizar Flex de
+  verdad, y eran **dos bugs del camino del dinero**, los dos con un total que se veía bien:
+  1. **El refresh SOBRESCRIBÍA `trades_imported.json`** con lo que devolviera la query. La Flex
+     Query es una **ventana móvil de 365 días**, así que un click en "Actualizar desde IB" borraba
+     lo anterior — medido sobre el archivo real: **55 fills, 4 meses**. Y no es sólo "ver menos
+     trades": el emparejado es por EPISODIO (flat→flat) y la ventana importada **casi nunca
+     arranca en flat**, así que perder los fills más viejos cambia **cuál ABRE y cuál CIERRA**, y
+     el P&L de las posiciones que cruzan el borde se reporta mal.
+  2. **El cloud deduplicaba por `order_id` SOLO** en `_merged_trades_file_path`, y **una orden
+     tiene varios fills** (AMD: 5 + 245 acciones con el mismo `order_id`). Medido sobre los mismos
+     419 fills: descartaba **200**, el **35% de la cantidad operada** y **$39.259,81 de P&L
+     realizado** — el **24% del total**.
+  `merge_fills(*fuentes)` (en `vista_web`, la usan el local y el cloud — una sola implementación)
+  agrupa por **ORDEN**, que es la unidad de verdad: cada descarga trae el set COMPLETO de fills de
+  las órdenes de su ventana, así que se conserva o se reemplaza el **grupo entero**, nunca fill por
+  fill. Gana la primera fuente (cloud: flex > seed > live). Los fills sin `order_id` se indexan por
+  contenido **más su número de aparición dentro de esa fuente**: dos fills realmente idénticos
+  sobreviven los dos, y la misma fuente dos veces no duplica. El refresh además **no escribe** si
+  la fusión diera menos fills que los que ya había. Tests: §25.
 - Shorts de acciones soportados de punta a punta: `direction` LONG/SHORT en el payload, badge
   SHORT, filtro "Shorts", etiquetas "Precio Venta (entrada)" / "Precio Compra (salida)", flechas
   del gráfico invertidas (SELL abre / BUY cierra) y `_generate_trade_thesis(..., direction)` que

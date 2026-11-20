@@ -1637,14 +1637,14 @@ def _merged_trades_file_path(user_id):
     store = get_user_store(user_id)
     live_trades = store.get("live_trades", [])
 
-    seen_keys = set()
-    combined = []
-    for t in flex_trades + seed_trades + live_trades:
-        key = t.get("order_id") or t.get("perm_id") or (t.get("symbol"), t.get("date"), t.get("action"), t.get("filled_qty"), t.get("avg_fill_price"))
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        combined.append(t)
+    # OJO: deduplicar por `order_id` SOLO descarta fills de verdad — una orden
+    # tiene varios (AMD: 5 + 245 acciones con el mismo order_id). Medido sobre
+    # el archivo real: se perdian 200 de 419 fills, el 35% de la cantidad
+    # operada y $39.259,81 de P&L realizado, con un total que se veia bien.
+    # `merge_fills` agrupa por ORDEN y se queda con el grupo COMPLETO de la
+    # primera fuente que la tenga (flex > seed > live, igual que antes).
+    from vista_web import merge_fills
+    combined = merge_fills(flex_trades, seed_trades, live_trades)
 
     tmp_dir = os.path.join(os.path.dirname(__file__), "_tmp_trades")
     os.makedirs(tmp_dir, exist_ok=True)

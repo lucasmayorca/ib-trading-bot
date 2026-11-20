@@ -12125,6 +12125,59 @@ def api_trades_history():
     return Response(to_json(result), mimetype="application/json")
 
 
+def _fill_grupos(fills):
+    """Agrupa fills por ORDEN, que es la unidad de verdad: cada descarga de IB
+    trae el set COMPLETO de fills de las ordenes que caen en su ventana.
+
+    Los fills sin `order_id` se indexan por contenido MAS su numero de
+    aparicion dentro de esta misma fuente: asi dos fills realmente identicos
+    (misma orden, fecha, cantidad y precio) sobreviven los dos dentro de una
+    fuente, y siguen deduplicandose contra otra fuente que traiga los mismos.
+    """
+    g = {}
+    vistos = {}
+    for t in (fills or []):
+        oid = t.get("order_id") or t.get("perm_id")
+        if oid:
+            k = ("oid", oid)
+        else:
+            c = (t.get("symbol"), t.get("date"), t.get("action"),
+                 t.get("filled_qty"), t.get("avg_fill_price"))
+            vistos[c] = vistos.get(c, 0) + 1
+            k = ("c", c, vistos[c])
+        g.setdefault(k, []).append(t)
+    return g
+
+
+def merge_fills(*fuentes):
+    """Une listas de fills sin perder ninguno y sin duplicar. Gana la PRIMERA
+    fuente que tenga la orden (pasar primero la mas confiable/reciente).
+
+    DOS BUGS REALES QUE ESTO CIERRA (2026-11, medidos sobre el archivo del
+    usuario: 419 fills, $163.476,62 de P&L realizado):
+    1. **El refresh de Flex SOBRESCRIBIA el archivo entero** con lo que
+       devolviera la query. La Flex Query es una ventana movil de 365 dias, asi
+       que un click en "Actualizar desde IB" borraba **55 fills** (4 meses) de
+       historia anterior a esa ventana. Y no es solo "ver menos trades": el
+       emparejado es por EPISODIO (flat->flat) y la ventana importada casi
+       nunca arranca en flat, asi que perder los fills mas viejos cambia que
+       fill ABRE y cual CIERRA — el P&L de las posiciones que cruzan el borde
+       se reporta mal.
+    2. **El cloud deduplicaba por `order_id` SOLO**, y una orden tiene varios
+       fills (AMD: 5 + 245 acciones con el mismo order_id). Resultado medido
+       sobre esos mismos datos: se descartaban **200 de 419 fills**, el 35% de
+       la cantidad operada y **$39.259,81 de P&L realizado** — un total que se
+       ve perfectamente bien y esta 24% abajo.
+    """
+    out = {}
+    for f in fuentes:
+        for k, v in _fill_grupos(f).items():
+            out.setdefault(k, v)
+    fills = [t for v in out.values() for t in v]
+    fills.sort(key=lambda t: (str(t.get("date") or ""), str(t.get("order_id") or "")))
+    return fills
+
+
 @flask_app.route("/api/trades-history/refresh", methods=["POST"])
 def api_trades_refresh():
     """Fetch latest trades from IB Flex Web Service and update trades_imported.json."""
@@ -12145,14 +12198,29 @@ def api_trades_refresh():
 
     import os as _os
     trades_file = _os.path.join(_os.path.dirname(__file__), "trades_imported.json")
+    # FUSIONAR, no pisar: la Flex Query es una ventana movil (365 dias), asi
+    # que sobrescribir borra la historia anterior a esa ventana. Ver merge_fills.
+    previos = []
+    if _os.path.exists(trades_file):
+        try:
+            with open(trades_file) as f:
+                previos = json.load(f).get("trades", [])
+        except Exception as e:
+            print(f"  [TRADES] no se pudo leer el archivo previo: {e}")
+    fusion = merge_fills(new_trades, previos)
+    if previos and len(fusion) < len(previos):
+        return Response(to_json({"error": "La fusion perderia fills; no se escribio nada."}),
+                        mimetype="application/json")
     with open(trades_file, "w") as f:
-        json.dump({"trades": new_trades}, f, indent=2)
+        json.dump({"trades": fusion}, f, indent=2)
 
     with trades_history_lock:
         trades_history_cache["data"] = None
         trades_history_cache["ts"] = 0
 
-    return Response(to_json({"ok": True, "trades_count": len(new_trades)}), mimetype="application/json")
+    return Response(to_json({"ok": True, "trades_count": len(fusion),
+                             "nuevos": len(fusion) - len(previos)}),
+                    mimetype="application/json")
 
 
 @flask_app.route("/api/trades-history/chart/<trade_id>")

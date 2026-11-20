@@ -2914,3 +2914,87 @@ def test_la_marca_de_trades_es_la_SINCRONIZACION_no_el_recalculo():
     assert "Infinity" in trozo
     # y el formateador tiene que saber desactivar la alarma
     assert "viejoS==null?900:viejoS" in h
+
+
+# ── 25. Fusionar fills sin perder ni duplicar ────────────────────────
+# Dos bugs encontrados al sincronizar Flex de verdad, los dos sobre el camino
+# del DINERO y los dos con un total que se veia perfectamente bien.
+
+MULTI = [  # una orden, DOS fills: el caso que el dedup por order_id se comia
+    {"symbol": "AMD", "action": "BUY", "date": "2026-03-13", "filled_qty": 5.0,
+     "avg_fill_price": 193.0, "commission": 1.0, "realized_pnl": 0.0,
+     "order_id": "4980719907"},
+    {"symbol": "AMD", "action": "BUY", "date": "2026-03-13", "filled_qty": 245.0,
+     "avg_fill_price": 193.0, "commission": 0.25, "realized_pnl": 0.0,
+     "order_id": "4980719907"},
+]
+VIEJO = [{"symbol": "GOOG", "action": "SELL", "date": "2025-07-21",
+          "filled_qty": 150.0, "avg_fill_price": 185.0, "commission": 1.0,
+          "realized_pnl": 2500.0, "order_id": "111"}]
+
+
+def test_una_orden_con_varios_fills_no_se_colapsa():
+    """El cloud deduplicaba por `order_id` SOLO, y una orden tiene varios
+    fills. Medido sobre el archivo real del usuario (419 fills): se
+    descartaban 200, el 35% de la cantidad operada y $39.259,81 de P&L
+    realizado — el 24% del total, con un numero que se veia bien."""
+    f = vw.merge_fills(MULTI)
+    assert len(f) == 2, f
+    assert sum(t["filled_qty"] for t in f) == 250.0
+    # y no se duplica si la misma orden llega por dos fuentes
+    f2 = vw.merge_fills(MULTI, list(MULTI))
+    assert len(f2) == 2
+    assert sum(t["filled_qty"] for t in f2) == 250.0
+
+
+def test_la_fusion_no_pierde_lo_que_quedo_fuera_de_la_ventana():
+    """La Flex Query es una ventana movil de 365 dias. Sobrescribir con lo que
+    devuelve borra lo anterior — medido: 55 fills, 4 meses. Y no es solo "ver
+    menos trades": el emparejado es por EPISODIO (flat->flat) y la ventana casi
+    nunca arranca en flat, asi que perder los fills mas viejos cambia cual ABRE
+    y cual CIERRA, y el P&L de lo que cruza el borde sale mal."""
+    f = vw.merge_fills(MULTI, VIEJO)
+    assert len(f) == 3
+    assert any(t["order_id"] == "111" for t in f), "se perdio el fill viejo"
+    # orden cronologico, para que el episodio se arme en secuencia
+    fechas = [t["date"] for t in f]
+    assert fechas == sorted(fechas), fechas
+
+
+def test_gana_la_primera_fuente_y_la_fusion_es_idempotente():
+    nuevo = [dict(MULTI[0], realized_pnl=99.0)]
+    f = vw.merge_fills(nuevo, MULTI)          # la primera fuente manda
+    assert len(f) == 1 and f[0]["realized_pnl"] == 99.0
+    g = vw.merge_fills(MULTI, nuevo)
+    assert len(g) == 2 and sum(t["filled_qty"] for t in g) == 250.0
+    assert len(vw.merge_fills(g, g)) == len(g), "fusionar dos veces no agrega"
+
+
+def test_fills_identicos_sin_order_id_no_se_comen_entre_si():
+    """Sin `order_id` hay que distinguir "el mismo fill por dos fuentes" de
+    "dos fills realmente iguales": el indice de aparicion DENTRO de la fuente
+    hace las dos cosas a la vez."""
+    a = {"symbol": "KO", "action": "BUY", "date": "2026-01-05",
+         "filled_qty": 10.0, "avg_fill_price": 60.0}
+    dos = [dict(a), dict(a)]
+    assert len(vw.merge_fills(dos)) == 2, "dos fills iguales son dos"
+    assert len(vw.merge_fills(dos, list(dos))) == 2, "la misma fuente dos veces no duplica"
+
+
+def test_el_refresh_de_flex_fusiona_en_vez_de_pisar():
+    src = open(os.path.join(_raiz(), "vista_web.py")).read()
+    i = src.index('def api_trades_refresh')
+    cuerpo = src[i:i + 2500]
+    assert "merge_fills(new_trades, previos)" in cuerpo
+    assert 'json.dump({"trades": fusion}' in cuerpo
+    assert 'json.dump({"trades": new_trades}' not in src, "volvio el pisado"
+    # y si la fusion diera menos que lo que habia, no escribe
+    assert "len(fusion) < len(previos)" in cuerpo
+
+
+def test_el_cloud_usa_la_misma_fusion():
+    """Una segunda implementacion se desincroniza en el primer cambio — es la
+    leccion que este archivo repite en media docena de lugares."""
+    cloud = open(os.path.join(_raiz(), "cloud", "server.py")).read()
+    assert "merge_fills(flex_trades, seed_trades, live_trades)" in cloud
+    assert "seen_keys" not in cloud, "volvio el dedup por order_id"

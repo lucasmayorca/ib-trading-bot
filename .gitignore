@@ -8,6 +8,7 @@ dist/
 build/
 portfolio_history.json
 trades_imported.json
+trades_imported.json.bak-*
 executions_history.json
 .DS_Store
 cloud/_tmp_trades/
