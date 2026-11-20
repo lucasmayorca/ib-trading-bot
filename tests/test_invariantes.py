@@ -2880,3 +2880,37 @@ def test_el_JS_del_dashboard_parsea():
             ruta = f.name
         r = subprocess.run(["node", "--check", ruta], capture_output=True, text=True)
         assert r.returncode == 0, r.stderr[:2000]
+
+
+def test_cartera_y_trades_tambien_dicen_su_edad():
+    """Misma marca que el pie y el pulso, por `_fmtUpd`: una sola funcion para
+    una sola pregunta. En Mi Cartera la foto sale del ultimo envio del bridge
+    (con el bridge caido la pagina responde igual y los numeros envejecen sin
+    que nada lo diga); en Trades, de la sincronizacion de Flex."""
+    port = open(os.path.join(_raiz(), "portfolio.py")).read()
+    assert 'result["portfolio_ts"] = time.time()' in port
+    cloud = open(os.path.join(_raiz(), "cloud", "server.py")).read()
+    assert 'store["portfolio_ts"] = time.time()' in cloud
+    assert '"portfolio_ts": store.get("portfolio_ts", 0) or 0,' in cloud
+    assert 'result["flex_last_update_ts"] = cached["ts"]' in cloud
+    vw_src = open(os.path.join(_raiz(), "vista_web.py")).read()
+    assert 'result["flex_last_update_ts"] = _mt' in vw_src
+    h = vw.DASHBOARD_HTML
+    assert "_fmtUpd(d.portfolio_ts,null,900)" in h
+    assert "_fmtUpd(data.flex_last_update_ts,null,Infinity)" in h
+
+
+def test_la_marca_de_trades_es_la_SINCRONIZACION_no_el_recalculo():
+    """La lista se rearma cada hora, pero los fills pueden ser de hace meses
+    (medido en el archivo local: lista recien construida, operaciones de hace
+    122 dias). Mostrar la fecha del recalculo seria un numero fresco
+    describiendo un dato viejo — el error que este proyecto trata como el
+    peor. Y NO se pinta en ambar: sincronizar es manual, que haga 3 dias no es
+    un sintoma, y un ambar que salta sin problema deja de querer decir algo."""
+    h = vw.DASHBOARD_HTML
+    i = h.index("data.flex_last_update_ts")
+    trozo = h[i - 400:i + 200]
+    assert "Operaciones sincronizadas" in trozo
+    assert "Infinity" in trozo
+    # y el formateador tiene que saber desactivar la alarma
+    assert "viejoS==null?900:viejoS" in h

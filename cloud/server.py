@@ -561,6 +561,7 @@ def handle_portfolio_data(data):
     store["open_orders"] = data.get("open_orders", [])
     store["executions"] = data.get("executions", [])
     store["portfolio_received"] = True
+    store["portfolio_ts"] = time.time()
     store["last_update"] = datetime.now().strftime("%H:%M:%S")
     store["last_update_ts"] = time.time()
     schedule_persist(user_id)
@@ -1227,6 +1228,9 @@ def api_portfolio():
             "metrics": metrics,
             "bridge_connected": store.get("connected", False),
             "portfolio_received": store.get("portfolio_received", False),
+            # Del ultimo envio del BRIDGE, no de cuando se pidio la pagina:
+            # con el bridge caido la pagina responde igual y el dato envejece.
+            "portfolio_ts": store.get("portfolio_ts", 0) or 0,
             # "Nunca conectaste un bridge" vs "se cayo el socket hace 4s" son
             # dos estados MUY distintos y el dashboard los mostraba igual: el
             # CTA "instala el bridge" aparecia en cada microcorte, al lado de
@@ -1692,6 +1696,7 @@ def api_trades_history():
         if cached:
             import datetime
             result["flex_last_update"] = datetime.datetime.fromtimestamp(cached["ts"]).strftime("%Y-%m-%d %H:%M")
+            result["flex_last_update_ts"] = cached["ts"]
             if cached.get("error"):
                 result["flex_error"] = cached["error"]
         return Response(to_json(result), mimetype="application/json")

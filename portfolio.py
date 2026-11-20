@@ -1983,6 +1983,11 @@ def register_portfolio_endpoint(flask_app, ib_app_ref, analyze_symbol_fn=None,
             payload = json.dumps({"error": "No se pudieron obtener datos del portafolio."})
             return Response(payload, status=500, mimetype="application/json")
 
+        # Cuando se tomo ESTA foto. Local la arma en vivo por request, asi que
+        # es "ahora"; en el cloud sale del ultimo envio del bridge. En los dos
+        # casos lo que el usuario necesita saber es la EDAD del dato.
+        result["portfolio_ts"] = time.time()
+
         if to_json_fn:
             return Response(to_json_fn(result), mimetype="application/json")
         else:

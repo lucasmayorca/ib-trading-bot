@@ -1412,6 +1412,16 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   estorba, y en el anormal —que es el que importa— está. Si falta el epoch se cae al string viejo.
   **`.mp-upd` dejó de estar en `display:none` bajo 700px**: era justo el dato que contesta "¿estoy
   viendo algo viejo?" y desaparecía en el teléfono.
+  **La misma marca va en Mi Cartera y en Trades** (`portfolio_ts`, `flex_last_update_ts`), por la
+  misma función: una sola pregunta, un solo formateador. Dos cosas que NO son iguales entre
+  superficies y hay que preservar:
+  1. **En Trades la marca es la SINCRONIZACIÓN, no el recálculo.** La lista se rearma cada hora,
+     pero los fills pueden ser de hace meses — medido en el archivo local: lista construida hace
+     segundos, operaciones de hace **122 días**. Mostrar la fecha del recálculo sería un número
+     fresco describiendo un dato viejo.
+  2. **Trades no se pinta en ámbar** (`viejoS = Infinity`): sincronizar es manual, que haga 3 días
+     no es un síntoma si no operaste. Un ámbar que salta sin problema deja de querer decir algo —
+     es el error opuesto al que se está arreglando.
 - **EL JS SE VALIDA CON `node --check`** (test §24). `ast.parse` valida el **Python** y no ve una
   sola línea de los ~280k caracteres de JS que viven dentro del raw string: una comilla de más
   deja el dashboard **entero en blanco** con los 1.748 tests en verde. Ya pasó editando

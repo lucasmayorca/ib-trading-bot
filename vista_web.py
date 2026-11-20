@@ -3808,7 +3808,7 @@ details[open] .arrow{transform:rotate(90deg);color:var(--accent)}
 <!-- TAB: MI CARTERA -->
 <div id="tab-portfolio" class="tab-content">
 <div class="portfolio-section" id="portfolio-section">
-  <div class="port-title"><em>MI CARTERA</em> &mdash; Posiciones & Análisis</div>
+  <div class="port-title" style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><span><em>MI CARTERA</em> &mdash; Posiciones & Análisis</span><span id="port-upd" style="font-size:11px;font-weight:500;color:var(--muted);letter-spacing:.3px"></span></div>
   <div id="port-loading" class="tab-loading"><div class="tab-loading-spinner"></div><div class="tab-loading-text">Cargando cartera... los datos se actualizan con el escaner.</div></div>
   <div id="port-content" style="display:none">
     <!-- Summary cards -->
@@ -4346,6 +4346,11 @@ function renderPortfolio(d){
     sumHtml+='<div class="port-card"><div class="port-card-label">Poder de Compra</div><div class="port-card-value" style="color:var(--text)">$'+fmtN(acct.BuyingPower.value)+'</div></div>';
   }
   document.getElementById('port-summary').innerHTML=sumHtml;
+  // Edad de la foto: local se arma en vivo por request, en el cloud sale del
+  // ultimo envio del bridge — con el bridge caido la pagina responde igual y
+  // los numeros envejecen sin que nada lo diga.
+  let pu=document.getElementById('port-upd');
+  if(pu)pu.innerHTML=d.portfolio_ts?('Posiciones al '+_fmtUpd(d.portfolio_ts,null,900)):'';
 
   // Prominent CTA banner (accionable) — solo BUY/SELL/REDUCE/WATCH
   let alertsHtml='';
@@ -7169,7 +7174,11 @@ function _fmtUpd(ts,fallback,viejoS){
   // anormal — que es el que importa — esta.
   let cuando=mismoDia?hh:(String(d.getDate()).padStart(2,'0')+'/'+
                           String(d.getMonth()+1).padStart(2,'0')+' '+hh);
-  let viejo=age>(viejoS||900);
+  // Infinity = nunca alarmar. La sync de Flex es manual y ocasional: que
+  // haga 3 dias no es un sintoma, es lo normal si no operaste. Pintar eso en
+  // ambar seria el error opuesto al que se esta arreglando — ruido donde no
+  // hay problema, y entonces el ambar deja de querer decir nada.
+  let viejo=age>(viejoS==null?900:viejoS);
   return '<span'+(viejo?' style="color:var(--hold);font-weight:700"':'')+
     ' title="'+(viejo?'El dato no se refresca hace rato: puede que el analisis no este corriendo.':'Hora de tu equipo, no la del servidor.')+
     '">'+cuando+' <span style="opacity:.75">('+_fmtAge(age)+')</span>'+(viejo?' &#9888;':'')+'</span>';
@@ -8507,7 +8516,11 @@ function loadTradesHistory(){
     renderThOpen(data.open_positions);
     _thUpdateFilterCounts(data.trades);
     let st=document.getElementById('th-refresh-status');
-    if(data.flex_last_update)st.textContent='Ultima sync: '+data.flex_last_update;
+    // Dice de cuando son los FILLS, no de cuando se recalculo la lista: un
+    // "hace 2 min" sobre operaciones de hace un mes seria un numero fresco
+    // describiendo un dato viejo. Sin alarma: sincronizar es manual.
+    if(data.flex_last_update_ts)st.innerHTML='Operaciones sincronizadas: '+_fmtUpd(data.flex_last_update_ts,null,Infinity);
+    else if(data.flex_last_update)st.textContent='Ultima sync: '+data.flex_last_update;
     else if(data.flex_configured===false)st.textContent='Flex no configurado';
   }).catch(e=>{
     document.getElementById('th-loading').innerHTML='<span style="color:var(--sell)">Error cargando trades: '+e.message+'</span>';
@@ -12097,7 +12110,13 @@ def api_trades_history():
     result["flex_configured"] = bool(config.FLEX_TOKEN and config.FLEX_QUERY_ID)
     trades_file = _os.path.join(_os.path.dirname(__file__), "trades_imported.json")
     if _os.path.exists(trades_file):
-        result["flex_last_update"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(_os.path.getmtime(trades_file)))
+        # OJO: la marca que importa aca es cuando se BAJARON los fills, no
+        # cuando se recalculo la lista. El cache se rearma cada hora, asi que
+        # mostrar esa otra fecha diria "hace 2 min" sobre operaciones de hace
+        # un mes — un numero fresco describiendo un dato viejo.
+        _mt = _os.path.getmtime(trades_file)
+        result["flex_last_update"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(_mt))
+        result["flex_last_update_ts"] = _mt
 
     with trades_history_lock:
         trades_history_cache["data"] = result
