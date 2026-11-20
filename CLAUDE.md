@@ -1231,7 +1231,25 @@ calendar que no se inventa). ⚠ **No requiere reinstalar el bridge**: todo es s
   fill. Gana la primera fuente (cloud: flex > seed > live). Los fills sin `order_id` se indexan por
   contenido **más su número de aparición dentro de esa fuente**: dos fills realmente idénticos
   sobreviven los dos, y la misma fuente dos veces no duplica. El refresh además **no escribe** si
-  la fusión diera menos fills que los que ya había. Tests: §25.
+  la fusión diera menos fills que los que ya había.
+- **EL INVARIANTE DE LA PLATA, SOLO, NO ALCANZA** (y por eso el test que ya existía no cazó nada).
+  `Σ pnl == Σ realized_pnl` (§4) corría sobre el **archivo ya armado** y se salteaba si no estaba,
+  así que miraba el último tramo del camino: cuando `build_trades_history` leía, ya faltaban 200
+  de 419 fills y **la suma cuadraba igual** — contra un archivo mutilado. Peor: una **apertura
+  lleva `realized_pnl` 0**, así que perder fills de apertura **no mueve el total ni un centavo**.
+  Verificado con un fixture: con el dedup viejo la suma sigue dando exacta y aun así un trade de
+  200 acciones aparece partido en dos, de 150 y 50. Hacen falta **tres** invariantes sobre el
+  camino COMPLETO (fuentes → `merge_fills` → `build_trades_history`):
+  1. **la plata**: `Σ pnl == Σ realized_pnl`;
+  2. **la cantidad**: cada acción comprada termina en un trade cerrado o en una posición abierta;
+  3. **`estimated_entry`**: sobre un set que arranca en flat, **ninguna** entrada puede ser
+     estimada. Ese flag es la huella exacta de un fill de apertura perdido, y es el único de los
+     tres que suena fuerte. (En el archivo real sí hay estimadas legítimas: la ventana importada
+     casi nunca arranca en flat — por eso el invariante se fija sobre un fixture sintético.)
+  Y explica el síntoma raro de producción: **menos fills ⇒ MÁS trades** (59 → 78), porque el
+  pedazo que queda sin apertura se cuenta como un trade propio. Tests: §25, incluido uno que
+  verifica que el guard TIENE dientes — con el dedup viejo la plata sigue cuadrando y los otros
+  dos fallan.
 - Shorts de acciones soportados de punta a punta: `direction` LONG/SHORT en el payload, badge
   SHORT, filtro "Shorts", etiquetas "Precio Venta (entrada)" / "Precio Compra (salida)", flechas
   del gráfico invertidas (SELL abre / BUY cierra) y `_generate_trade_thesis(..., direction)` que
